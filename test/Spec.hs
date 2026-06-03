@@ -1,6 +1,6 @@
 module Main (main) where
 
-import Control.Monad (when)
+import Control.Monad (forM_, when)
 import Data.Char (isSpace)
 import Data.Either (isLeft)
 import Data.List (find, isInfixOf)
@@ -11,10 +11,12 @@ import System.Directory
   , doesFileExist
   , removeDirectoryRecursive
   )
+import System.FilePath (takeDirectory, (</>))
 import System.Process (readProcess)
 import Test.Hspec
 import Zinc.CLI (Command (..), parseArgs)
 import Zinc.Git (cloneAt)
+import Zinc.Store (contentHash, storeSrcPath, verifyContent)
 import Zinc.Manifest
   ( Dependency (..)
   , MemberManifest (..)
@@ -32,6 +34,16 @@ bodyOf p = fmap specBody . find ((== p) . specPath)
 
 trimStr :: String -> String
 trimStr = f . f where f = reverse . dropWhile isSpace
+
+-- | Write a fresh directory tree from (relative path, contents) pairs.
+writeTree :: FilePath -> [(FilePath, String)] -> IO ()
+writeTree root files = do
+  stale <- doesDirectoryExist root
+  when stale $ removeDirectoryRecursive root
+  forM_ files $ \(rel, content) -> do
+    let full = root </> rel
+    createDirectoryIfMissing True (takeDirectory full)
+    writeFile full content
 
 -- | Build a throwaway local git repo: commit c1 (tagged v1.0), then commit c2
 -- on the default branch plus a `feature` branch at c2. Returns the repo path
@@ -230,6 +242,45 @@ main = hspec $ do
     it "fails on an unknown ref" $ do
       r <- cloneAt repo "no-such-ref" "/tmp/zinc-git-fixture/co-bad"
       r `shouldSatisfy` isLeft
+
+  describe "Zinc.Store" $ do
+    let base = "/tmp/zinc-store-test"
+
+    it "computes the canonical store source path" $
+      storeSrcPath "/store" "aeson" "abc123" `shouldBe` "/store/src/aeson-abc123"
+
+    it "hashes a tree deterministically" $ do
+      let d = base ++ "/det"
+      writeTree d [("a.hs", "module A"), ("sub/b.hs", "module B")]
+      h1 <- contentHash d
+      h2 <- contentHash d
+      h1 `shouldBe` h2
+
+    it "ignores the .git directory when hashing" $ do
+      let d1 = base ++ "/nogit"
+          d2 = base ++ "/withgit"
+      writeTree d1 [("a.hs", "x")]
+      writeTree d2 [("a.hs", "x"), (".git/HEAD", "ref: refs/heads/main"), (".git/config", "junk")]
+      ha <- contentHash d1
+      hb <- contentHash d2
+      ha `shouldBe` hb
+
+    it "changes the hash when a file's contents change" $ do
+      let d1 = base ++ "/one"
+          d2 = base ++ "/two"
+      writeTree d1 [("a.hs", "one")]
+      writeTree d2 [("a.hs", "two")]
+      h1 <- contentHash d1
+      h2 <- contentHash d2
+      h1 `shouldNotBe` h2
+
+    it "verifies matching content and rejects a mismatch" $ do
+      let d = base ++ "/verify"
+      writeTree d [("a.hs", "hello")]
+      h <- contentHash d
+      ok <- verifyContent d h
+      bad <- verifyContent d "sha256:deadbeef"
+      (ok, bad) `shouldBe` (True, False)
 
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do

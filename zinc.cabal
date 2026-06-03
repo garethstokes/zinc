@@ -16,8 +16,11 @@ library
                     Zinc.Lock
                     Zinc.Manifest
                     Zinc.Scaffold
+                    Zinc.Store
                     Zinc.TOML
   build-depends:    base
+                  , SHA
+                  , bytestring
                   , containers
                   , directory
                   , filepath

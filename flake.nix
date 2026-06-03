@@ -16,6 +16,7 @@
           ghc = pkgs.haskellPackages.ghcWithPackages (p: [
             p.optparse-applicative
             p.toml-parser
+            p.SHA
             p.hspec
           ]);
         in {
