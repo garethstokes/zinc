@@ -11,6 +11,14 @@ import System.Directory
   )
 import Test.Hspec
 import Zinc.CLI (Command (..), parseArgs)
+import Zinc.Manifest
+  ( Dependency (..)
+  , MemberManifest (..)
+  , Ref (..)
+  , WorkspaceManifest (..)
+  , parseMember
+  , parseWorkspace
+  )
 import Zinc.Scaffold (FileSpec (..), materialize, scaffoldNew)
 
 -- | Body of the generated file at the given path, if present.
@@ -63,6 +71,63 @@ main = hspec $ do
 
     it "writes a Main.hs entrypoint for the member" $
       bodyOf "packages/myapp/app/Main.hs" files `shouldSatisfy` isJust
+
+  describe "parseWorkspace" $ do
+    let sample =
+          unlines
+            [ "[workspace]"
+            , "members = [\"packages/myapp\", \"packages/mylib\"]"
+            , "ghc = \"9.6.5\""
+            , ""
+            , "[dependencies]"
+            , "aeson = { tag = \"v2.2.3.0\" }"
+            , "hspec = \"*\""
+            , ""
+            , "[registry]"
+            , "aeson = \"https://github.com/haskell/aeson\""
+            ]
+        parsed = parseWorkspace sample
+        refOf name = lookup name . map (\d -> (depName d, depRef d)) . wsDependencies
+
+    it "reads the workspace members" $
+      (wsMembers <$> parsed) `shouldBe` Right ["packages/myapp", "packages/mylib"]
+
+    it "reads the ghc version" $
+      (wsGhc <$> parsed) `shouldBe` Right "9.6.5"
+
+    it "reads a tag-pinned dependency" $
+      (refOf "aeson" <$> parsed) `shouldBe` Right (Just (Tag "v2.2.3.0"))
+
+    it "reads a `*` dependency as Latest" $
+      (refOf "hspec" <$> parsed) `shouldBe` Right (Just Latest)
+
+    it "reads registry entries" $
+      ((lookup "aeson" . wsRegistry) <$> parsed)
+        `shouldBe` Right (Just "https://github.com/haskell/aeson")
+
+    it "fails on a missing [workspace] table" $
+      parseWorkspace "[dependencies]\n" `shouldSatisfy` isLeft
+
+  describe "parseMember" $ do
+    let sample =
+          unlines
+            [ "[package]"
+            , "name = \"myapp\""
+            , "version = \"0.2.3\""
+            , ""
+            , "[build.exe.myapp]"
+            , "main = \"Main.hs\""
+            ]
+
+    it "reads the package name" $
+      (pkgName <$> parseMember sample) `shouldBe` Right "myapp"
+
+    it "reads the package version" $
+      (pkgVersion <$> parseMember sample) `shouldBe` Right "0.2.3"
+
+    it "parses the member manifest produced by scaffoldNew" $
+      let body = maybe "" id (bodyOf "packages/demo/zinc.toml" (scaffoldNew "demo"))
+       in (pkgName <$> parseMember body) `shouldBe` Right "demo"
 
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do

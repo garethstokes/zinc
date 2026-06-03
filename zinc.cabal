@@ -12,11 +12,14 @@ library
   import:           warnings
   hs-source-dirs:   src
   exposed-modules:  Zinc.CLI
+                    Zinc.Manifest
                     Zinc.Scaffold
   build-depends:    base
+                  , containers
                   , directory
                   , filepath
                   , optparse-applicative
+                  , toml-parser
 
 executable zinc
   import:           warnings

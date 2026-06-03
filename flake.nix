@@ -15,6 +15,7 @@
           # Provided via Nix (not cabal's solver) — dogfooding zinc's own thesis.
           ghc = pkgs.haskellPackages.ghcWithPackages (p: [
             p.optparse-applicative
+            p.toml-parser
             p.hspec
           ]);
         in {
