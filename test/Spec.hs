@@ -33,7 +33,7 @@ import Zinc.Manifest
 import Zinc.Fetch (gitFetchManifest)
 import Zinc.Add (freezeClosure, lockEntry)
 import Zinc.Cabal (parseCabalComponents)
-import Zinc.Env (envCacheKey, provisionEnv)
+import Zinc.Env (envCacheKey, nixPrintDevEnv, provisionEnv)
 import Zinc.Macros (emitCabalMacros)
 import Zinc.Nix (generateFlake)
 import Zinc.Paths (pathsModuleName, synthesizePaths)
@@ -716,6 +716,16 @@ main = hspec $ do
           length (lockRev lp) `shouldBe` 40 -- git sha1 hex
           take 7 (lockSha256 lp) `shouldBe` "sha256:"
         other -> expectationFailure ("unexpected freeze result: " ++ show other)
+
+  describe "nixPrintDevEnv" $
+    it "evaluates a generated flake and exposes the pinned ghc" $ do
+      let dir = "/tmp/zinc-devenv-test"
+      stale <- doesDirectoryExist dir
+      when stale $ removeDirectoryRecursive dir
+      r <- nixPrintDevEnv dir "9.6.5" []
+      case r of
+        Right out -> ("ghc-9.6.5" `isInfixOf` out) `shouldBe` True
+        Left err  -> expectationFailure err
 
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do

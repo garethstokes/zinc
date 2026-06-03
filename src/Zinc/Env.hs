@@ -6,13 +6,17 @@
 module Zinc.Env
   ( envCacheKey
   , provisionEnv
+  , nixPrintDevEnv
   ) where
 
 import qualified Data.ByteString.Lazy.Char8 as BL8
 import Data.Digest.Pure.SHA (sha256, showDigest)
 import Data.List (intercalate, sort)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
+import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
+import System.Process (readProcessWithExitCode)
+import Zinc.Nix (generateFlake)
 
 -- | A stable key over the inputs that determine the dev env. Order of system
 -- libs is irrelevant; the GHC version matters.
@@ -42,3 +46,21 @@ provisionEnv eval cacheRoot ghcVersion systemLibs = do
           createDirectoryIfMissing True cacheRoot
           writeFile file env
           pure (Right env)
+
+-- | The concrete evaluator (suitable as @provisionEnv@'s @eval@ argument,
+-- partially applied to a work dir): generate the flake, git-track it (flakes
+-- require tracked files), and run @nix print-dev-env@, returning its output.
+nixPrintDevEnv :: FilePath -> String -> [String] -> IO (Either String String)
+nixPrintDevEnv workDir ghcVersion systemLibs = do
+  createDirectoryIfMissing True workDir
+  writeFile (workDir </> "flake.nix") (generateFlake ghcVersion systemLibs)
+  _ <- readProcessWithExitCode "git" ["-C", workDir, "init", "-q"] ""
+  _ <- readProcessWithExitCode "git" ["-C", workDir, "add", "flake.nix"] ""
+  (code, out, err) <-
+    readProcessWithExitCode
+      "nix"
+      ["--extra-experimental-features", "nix-command flakes", "print-dev-env", workDir]
+      ""
+  pure $ case code of
+    ExitSuccess   -> Right out
+    ExitFailure _ -> Left (if null err then "nix print-dev-env failed" else err)
