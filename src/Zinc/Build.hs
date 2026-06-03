@@ -7,11 +7,13 @@ module Zinc.Build
   , renderConf
   , archiveArgs
   , registerPackage
+  , preprocessorFor
+  , runPreprocessor
   ) where
 
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist)
 import System.Exit (ExitCode (..))
-import System.FilePath (takeDirectory, (</>))
+import System.FilePath (takeDirectory, takeExtension, (-<.>), (</>))
 import System.Process (readProcessWithExitCode)
 
 -- | Everything needed to compile one component with @ghc --make@.
@@ -97,3 +99,19 @@ runUnit cmd args = do
   pure $ case code of
     ExitSuccess   -> Right ()
     ExitFailure _ -> Left (cmd ++ ": " ++ err)
+
+-- | The preprocessor command for a source file, or 'Nothing' for plain .hs.
+-- Each turns @file.<ext>@ into the sibling @file.hs@.
+preprocessorFor :: FilePath -> Maybe (String, [String])
+preprocessorFor file = case takeExtension file of
+  ".x"   -> Just ("alex", [file, "-o", file -<.> "hs"])
+  ".y"   -> Just ("happy", [file, "-o", file -<.> "hs"])
+  ".hsc" -> Just ("hsc2hs", [file, "-o", file -<.> "hs"])
+  _      -> Nothing
+
+-- | Run the preprocessor for a source file (no-op for plain .hs). The tools
+-- (alex/happy/hsc2hs) come from the Nix-provided toolchain.
+runPreprocessor :: FilePath -> IO (Either String ())
+runPreprocessor file = case preprocessorFor file of
+  Nothing            -> pure (Right ())
+  Just (prog, args)  -> runUnit prog args

@@ -32,7 +32,7 @@ import Zinc.Manifest
   )
 import Zinc.Fetch (gitFetchManifest)
 import Zinc.Add (freezeClosure, lockEntry)
-import Zinc.Build (GhcInvocation (..), PackageConf (..), archiveArgs, ghcMakeArgs, registerPackage, renderConf)
+import Zinc.Build (GhcInvocation (..), PackageConf (..), archiveArgs, ghcMakeArgs, preprocessorFor, registerPackage, renderConf, runPreprocessor)
 import Zinc.Cabal (parseCabalComponents)
 import Zinc.Env (envCacheKey, nixPrintDevEnv, provisionEnv)
 import Zinc.Macros (emitCabalMacros)
@@ -823,6 +823,25 @@ main = hspec $ do
                 }
       r <- registerPackage db conf
       r `shouldBe` Right ()
+
+  describe "preprocessors" $ do
+    it "maps source extensions to their preprocessor command" $ do
+      preprocessorFor "Lexer.x" `shouldBe` Just ("alex", ["Lexer.x", "-o", "Lexer.hs"])
+      preprocessorFor "Parser.y" `shouldBe` Just ("happy", ["Parser.y", "-o", "Parser.hs"])
+      preprocessorFor "Foo.hsc" `shouldBe` Just ("hsc2hs", ["Foo.hsc", "-o", "Foo.hs"])
+
+    it "leaves plain .hs files alone" $
+      preprocessorFor "Plain.hs" `shouldBe` Nothing
+
+    it "runPreprocessor runs hsc2hs and produces the .hs" $ do
+      let dir = "/tmp/zinc-pp-test"
+      stale <- doesDirectoryExist dir
+      when stale $ removeDirectoryRecursive dir
+      createDirectoryIfMissing True dir
+      writeFile (dir ++ "/Foo.hsc") "module Foo where\nanswer :: Int\nanswer = 42\n"
+      r <- runPreprocessor (dir ++ "/Foo.hsc")
+      produced <- doesFileExist (dir ++ "/Foo.hs")
+      (r, produced) `shouldBe` (Right (), True)
 
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do
