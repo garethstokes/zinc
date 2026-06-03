@@ -124,6 +124,17 @@ depends = ["myapp", "hspec"]
 `system-libs` naming nixpkgs attrs directly sidesteps the
 `.cabal extra-libraries → nixpkgs` mapping problem in Opt 1.
 
+**External deps live at the workspace root (decided 2026-06-03).** All external
+dependencies are declared once in the root `[dependencies]` + `[registry]`
+(consistent with "one ref per name across the workspace", §2). A member's
+`depends = […]` only *references* names already declared at the root — siblings
+or shared external deps — and never introduces a new external repo of its own.
+Consequence: `zinc add` always edits the **root** manifest + lockfile, never a
+member's. A member's `zinc.toml` therefore holds only `[package]` + `[build.*]`,
+no `[dependencies]`/`[registry]`. (A lone single-package project is just a
+workspace with one implicit member and needs no `[workspace]` boilerplate; the
+resolver reads its `[dependencies]`/`[registry]` directly — see §4 parsing.)
+
 ## 5. Lockfile — `zinc.lock`
 
 Pins every package in the closure to an exact commit + content hash. Lives at
