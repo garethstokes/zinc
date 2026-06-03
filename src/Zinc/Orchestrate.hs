@@ -8,6 +8,7 @@
 -- and their sibling links.
 module Zinc.Orchestrate
   ( runBuild
+  , runBuildMember
   , buildAndRun
   , runTests
   , orderMembers
@@ -39,8 +40,10 @@ import Zinc.Store (storeSrcPath)
 
 -- | Build a workspace: each member's library (so siblings can link) plus every
 -- component whose kind satisfies @keep@, returned as built executable paths.
-buildWorkspace :: FilePath -> (ComponentKind -> Bool) -> IO (Either String [FilePath])
-buildWorkspace wsDir keep = do
+-- @target@ (when 'Just') restricts which member's @keep@-components are built;
+-- libraries are always built so dependencies remain available.
+buildWorkspace :: FilePath -> Maybe String -> (ComponentKind -> Bool) -> IO (Either String [FilePath])
+buildWorkspace wsDir target keep = do
   wsSrc <- readFile (wsDir </> "zinc.toml")
   case parseWorkspace wsSrc of
     Left err -> pure (Left err)
@@ -83,7 +86,9 @@ buildWorkspace wsDir keep = do
         []        -> pure (Right ())
         (lib : _) -> buildLib (LibBuild dir (dir </> ".zinc" </> "lib") wsDb (pkgName mem) (pkgVersion mem) lib)
 
-    wanted mem = filter (keep . compKind) (pkgComponents mem)
+    wanted mem
+      | maybe True (== pkgName mem) target = filter (keep . compKind) (pkgComponents mem)
+      | otherwise = []
 
     buildComps _ _ acc [] = pure (Right (reverse acc))
     buildComps wsDb dir acc (comp : rest) = do
@@ -94,7 +99,11 @@ buildWorkspace wsDir keep = do
 
 -- | @zinc build@: build every member's executables (libraries first).
 runBuild :: FilePath -> IO (Either String [FilePath])
-runBuild wsDir = buildWorkspace wsDir (== Executable)
+runBuild wsDir = buildWorkspace wsDir Nothing (== Executable)
+
+-- | @zinc build \<member\>@: build only the named member's executables.
+runBuildMember :: FilePath -> Maybe String -> IO (Either String [FilePath])
+runBuildMember wsDir target = buildWorkspace wsDir target (== Executable)
 
 -- | @zinc run@: build, then run the first executable with the given args,
 -- returning its stdout.
@@ -110,7 +119,7 @@ buildAndRun wsDir args = do
 -- passed. Fails on the first non-zero exit.
 runTests :: FilePath -> IO (Either String Int)
 runTests wsDir = do
-  built <- buildWorkspace wsDir (== TestSuite)
+  built <- buildWorkspace wsDir Nothing (== TestSuite)
   case built of
     Left err   -> pure (Left err)
     Right exes -> runEach 0 exes

@@ -41,7 +41,7 @@ import Zinc.Cabal (parseCabalComponents)
 import Zinc.Env (envCacheKey, nixPrintDevEnv, provisionEnv)
 import Zinc.Macros (emitCabalMacros)
 import Zinc.Nix (generateFlake)
-import Zinc.Orchestrate (buildAndRun, lockDrift, orderMembers, runBuild, runTests)
+import Zinc.Orchestrate (buildAndRun, lockDrift, orderMembers, runBuild, runBuildMember, runTests)
 import Zinc.Paths (pathsModuleName, synthesizePaths)
 import Zinc.Report (renderResolution)
 import Zinc.SysLibs (toNixpkgs)
@@ -159,7 +159,10 @@ main :: IO ()
 main = hspec $ do
   describe "parseArgs" $ do
     it "parses the `build` subcommand" $
-      parseArgs ["build"] `shouldBe` Right Build
+      parseArgs ["build"] `shouldBe` Right (Build Nothing)
+
+    it "parses `build <member>` with a target" $
+      parseArgs ["build", "mylib"] `shouldBe` Right (Build (Just "mylib"))
 
     it "parses `new <name>` with its argument" $
       parseArgs ["new", "myapp"] `shouldBe` Right (New "myapp")
@@ -1115,6 +1118,22 @@ main = hspec $ do
           comp = Component Executable "demo" ["app"] [] [] (Just "Main.hs") [] [] [] []
       out <- readProcess "ghci" (replArgs Nothing memberDir comp ++ ["-e", "main"]) ""
       out `shouldBe` "Hello from demo!\n"
+
+  describe "runBuildMember (target selection)" $
+    it "builds only the named member's executable" $ do
+      let d = "/tmp/zinc-target-ws"
+      stale <- doesDirectoryExist d
+      when stale $ removeDirectoryRecursive d
+      writeFileIn (d ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/a", "packages/b"] "9.6.5" [] []))
+      let member n =
+            do
+              writeFileIn (d ++ "/packages/" ++ n ++ "/zinc.toml") (unlines ["[package]", "name = \"" ++ n ++ "\"", "version = \"1.0\"", "[build.exe." ++ n ++ "]", "source-dirs = [\"app\"]", "main = \"Main.hs\""])
+              writeFileIn (d ++ "/packages/" ++ n ++ "/app/Main.hs") ("module Main where\nmain :: IO ()\nmain = putStrLn \"" ++ n ++ "\"\n")
+      member "a"
+      member "b"
+      one <- runBuildMember d (Just "a")
+      allB <- runBuildMember d Nothing
+      (length <$> one, length <$> allB) `shouldBe` (Right 1, Right 2)
 
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do

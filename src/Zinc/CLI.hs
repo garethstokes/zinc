@@ -9,7 +9,7 @@ import Options.Applicative
 data Command
   = New String            -- ^ scaffold a new workspace
   | Add String            -- ^ resolve a dependency closure and freeze it
-  | Build                 -- ^ resolve → provision → build
+  | Build (Maybe String)  -- ^ build the workspace, or a single member
   | Run [String]          -- ^ build then run an executable, passing through args
   | Repl (Maybe String)   -- ^ ghci for an optional target
   | Test (Maybe String)   -- ^ build and run tests for an optional target
@@ -38,7 +38,7 @@ commandParser =
     mconcat
       [ sub "new"    "Scaffold a new workspace"       (New <$> strArgument (metavar "NAME"))
       , sub "add"    "Add a dependency"               (Add <$> strArgument (metavar "PKG"))
-      , sub "build"  "Build the workspace"            (pure Build)
+      , sub "build"  "Build the workspace or a member" (Build <$> optional (strArgument (metavar "MEMBER")))
       , sub "run"    "Build then run an executable"   (Run <$> many (strArgument (metavar "ARGS")))
       , sub "repl"   "Open ghci for a target"         (Repl <$> optional (strArgument (metavar "TARGET")))
       , sub "test"   "Build and run tests"            (Test <$> optional (strArgument (metavar "TARGET")))

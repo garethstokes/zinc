@@ -5,7 +5,7 @@ import Data.List (intercalate)
 import System.Environment (getArgs)
 import Zinc.Add (addInWorkspace)
 import Zinc.CLI (Command (..), parseArgs)
-import Zinc.Orchestrate (buildAndRun, checkLockDrift, runBuild, runRepl, runTests)
+import Zinc.Orchestrate (buildAndRun, checkLockDrift, runBuildMember, runRepl, runTests)
 import Zinc.Scaffold (materialize, scaffoldNew)
 
 -- | Thin executable shim. Parsing/dispatch logic lives in (and is tested via)
@@ -24,11 +24,11 @@ dispatch (New name) = do
   putStrLn ("Created workspace member at ./packages/" ++ name)
 dispatch (Add name) =
   addInWorkspace name >>= either (\e -> putStrLn ("zinc add: " ++ e)) putStr
-dispatch Build = do
+dispatch (Build target) = do
   drift <- checkLockDrift "."
   unless (null drift) $
     putStrLn ("warning: zinc.lock is missing: " ++ intercalate ", " drift ++ " (run `zinc add`)")
-  runBuild "." >>= \r -> case r of
+  runBuildMember "." target >>= \r -> case r of
     Left e -> putStrLn ("zinc build: " ++ e)
     Right exes -> do
       putStrLn ("Built " ++ show (length exes) ++ " executable(s):")
