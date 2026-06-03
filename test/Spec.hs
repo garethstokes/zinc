@@ -4,6 +4,7 @@ import Control.Monad (forM_, when)
 import Data.Char (isSpace)
 import Data.Either (isLeft)
 import Data.Functor.Identity (runIdentity)
+import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.List (find, isInfixOf, sort)
 import Data.Maybe (isJust)
 import System.Directory
@@ -30,6 +31,7 @@ import Zinc.Manifest
   , parseWorkspace
   )
 import Zinc.Fetch (gitFetchManifest)
+import Zinc.Env (envCacheKey, provisionEnv)
 import Zinc.Nix (generateFlake)
 import Zinc.Resolve (DepManifest (..), ResolvedDep (..), resolve, topoSort)
 import Zinc.Lock (LockedPackage (..), parseLock, renderLock)
@@ -498,6 +500,35 @@ main = hspec $ do
 
     it "works with no system libraries" $
       ("haskell.compiler.ghc965" `isInfixOf` generateFlake "9.6.5" []) `shouldBe` True
+
+  describe "dev env provisioning" $ do
+    it "key is order-independent for system libs" $
+      envCacheKey "9.6.5" ["a", "b"] `shouldBe` envCacheKey "9.6.5" ["b", "a"]
+
+    it "key changes with the ghc version" $
+      (envCacheKey "9.6.5" [] == envCacheKey "9.8.2" []) `shouldBe` False
+
+    it "evaluates on a cache miss and reuses on a hit" $ do
+      let root = "/tmp/zinc-env-test/hit"
+      stale <- doesDirectoryExist root
+      when stale $ removeDirectoryRecursive root
+      counter <- newIORef (0 :: Int)
+      let evalr _ _ = modifyIORef' counter (+ 1) >> pure (Right "ENVDATA")
+      a <- provisionEnv evalr root "9.6.5" ["zlib"]
+      b <- provisionEnv evalr root "9.6.5" ["zlib"]
+      n <- readIORef counter
+      (a, b, n) `shouldBe` (Right "ENVDATA", Right "ENVDATA", 1)
+
+    it "re-evaluates when the inputs change" $ do
+      let root = "/tmp/zinc-env-test/change"
+      stale <- doesDirectoryExist root
+      when stale $ removeDirectoryRecursive root
+      counter <- newIORef (0 :: Int)
+      let evalr _ libs = modifyIORef' counter (+ 1) >> pure (Right (unwords libs))
+      _ <- provisionEnv evalr root "9.6.5" ["zlib"]
+      _ <- provisionEnv evalr root "9.6.5" ["zlib", "pcre"]
+      n <- readIORef counter
+      n `shouldBe` 2
 
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do
