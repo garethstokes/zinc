@@ -7,6 +7,8 @@ module Zinc.Cabal
   ) where
 
 import qualified Data.ByteString.Char8 as BS
+import Data.List (nub)
+import Data.Maybe (mapMaybe)
 import Distribution.Compiler (CompilerFlavor (GHC))
 import Distribution.PackageDescription
   ( BuildInfo
@@ -20,10 +22,12 @@ import Distribution.PackageDescription
   , condTestSuites
   , defaultExtensions
   , exposedModules
+  , extraLibs
   , hcOptions
   , hsSourceDirs
   , libBuildInfo
   , otherModules
+  , pkgconfigDepends
   , targetBuildDepends
   )
 import Distribution.PackageDescription.Parsec (parseGenericPackageDescription, runParseResult)
@@ -31,9 +35,12 @@ import Distribution.Pretty (prettyShow)
 import Distribution.Types.CondTree (condTreeData)
 import Distribution.Types.Dependency (depPkgName)
 import Distribution.Types.PackageName (unPackageName)
+import Distribution.Types.PkgconfigDependency (PkgconfigDependency (..))
+import Distribution.Types.PkgconfigName (unPkgconfigName)
 import Distribution.Types.UnqualComponentName (unUnqualComponentName)
 import Distribution.Utils.Path (getSymbolicPath)
 import Zinc.Manifest (Component (..), ComponentKind (..))
+import Zinc.SysLibs (toNixpkgs)
 
 -- | Derive zinc 'Component's from @.cabal@ source: the library (named @"lib"@),
 -- each executable, and each test-suite.
@@ -88,5 +95,7 @@ fromBuildInfo kind name bi =
     , compExtensions = map prettyShow (defaultExtensions bi)
     , compGhcOptions = hcOptions GHC bi
     , compDepends = map (unPackageName . depPkgName) (targetBuildDepends bi)
-    , compSystemLibs = []
+    , compSystemLibs = nub (mapMaybe toNixpkgs (extraLibs bi ++ pkgconfigNames bi))
     }
+  where
+    pkgconfigNames b = [unPkgconfigName n | PkgconfigDependency n _ <- pkgconfigDepends b]

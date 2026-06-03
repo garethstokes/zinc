@@ -37,6 +37,7 @@ import Zinc.Macros (emitCabalMacros)
 import Zinc.Nix (generateFlake)
 import Zinc.Paths (pathsModuleName, synthesizePaths)
 import Zinc.Report (renderResolution)
+import Zinc.SysLibs (toNixpkgs)
 import Zinc.Resolve (DepManifest (..), ResolvedDep (..), resolve, topoSort)
 import Zinc.Version (newestTag)
 import Zinc.Lock (LockedPackage (..), parseLock, renderLock)
@@ -568,6 +569,7 @@ main = hspec $ do
             , "  default-extensions: OverloadedStrings"
             , "  ghc-options: -Wall"
             , "  build-depends: base, aeson"
+            , "  extra-libraries: z pthread"
             , "executable demo-exe"
             , "  main-is: Main.hs"
             , "  hs-source-dirs: app"
@@ -594,7 +596,7 @@ main = hspec $ do
             , compExtensions = ["OverloadedStrings"]
             , compGhcOptions = ["-Wall"]
             , compDepends = ["base", "aeson"]
-            , compSystemLibs = []
+            , compSystemLibs = ["zlib"]
             }
 
     it "derives an executable component" $
@@ -662,6 +664,17 @@ main = hspec $ do
 
     it "reports an empty closure" $
       renderResolution [] `shouldBe` "(no dependencies)\n"
+
+  describe "toNixpkgs" $ do
+    it "maps known C lib names to nixpkgs attrs" $ do
+      toNixpkgs "z" `shouldBe` Just "zlib"
+      toNixpkgs "crypto" `shouldBe` Just "openssl"
+
+    it "drops libc-provided system libs" $
+      toNixpkgs "pthread" `shouldBe` Nothing
+
+    it "falls back to identity for unknown libs" $
+      toNixpkgs "ncurses" `shouldBe` Just "ncurses"
 
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do

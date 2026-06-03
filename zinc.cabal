@@ -25,6 +25,7 @@ library
                     Zinc.Resolve
                     Zinc.Scaffold
                     Zinc.Store
+                    Zinc.SysLibs
                     Zinc.TOML
                     Zinc.Version
   build-depends:    base
