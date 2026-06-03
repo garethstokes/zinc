@@ -37,7 +37,7 @@ import Zinc.Fetch (gitFetchManifest)
 import Zinc.Add (freezeClosure, lockEntry, runAdd)
 import Zinc.Build (GhcInvocation (..), MemberBuild (..), PackageConf (..), archiveArgs, buildMember, ghcMakeArgs, preprocessorFor, registerPackage, renderConf, replArgs, runPreprocessor)
 import Zinc.Cache (BuildKey (..), buildCacheKey, cacheHit, storeConfPath, storePkgPath, writeCachedConf)
-import Zinc.Cabal (parseCabalComponents, parseCabalComponentsForGhc)
+import Zinc.Cabal (cabalBuildType, parseCabalComponents, parseCabalComponentsForGhc)
 import Zinc.Env (envCacheKey, nixPrintDevEnv, provisionEnv)
 import Zinc.Macros (emitCabalMacros)
 import Zinc.Nix (generateFlake)
@@ -1235,6 +1235,15 @@ main = hspec $ do
       removeDirectoryRecursive (ws ++ "/.zinc/store/src")
       second <- buildAndRun ws []
       (first, second) `shouldBe` (Right "A+B\n", Right "A+B\n")
+
+  describe "cabalBuildType" $ do
+    it "reads a Simple build-type" $
+      cabalBuildType (unlines ["cabal-version: 2.4", "name: d", "version: 1", "build-type: Simple", "library", "  build-depends: base"])
+        `shouldBe` Right "Simple"
+
+    it "reads a Custom build-type" $
+      cabalBuildType (unlines ["cabal-version: 2.4", "name: d", "version: 1", "build-type: Custom", "custom-setup", "  setup-depends: base, Cabal", "library", "  build-depends: base"])
+        `shouldBe` Right "Custom"
 
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do

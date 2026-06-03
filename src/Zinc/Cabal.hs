@@ -8,6 +8,7 @@
 module Zinc.Cabal
   ( parseCabalComponents
   , parseCabalComponentsForGhc
+  , cabalBuildType
   ) where
 
 import qualified Data.ByteString.Char8 as BS
@@ -26,7 +27,9 @@ import Distribution.PackageDescription
   , PackageDescription (executables, library, testSuites)
   , TestSuite (testBuildInfo, testInterface, testName)
   , TestSuiteInterface (TestSuiteExeV10)
+  , buildType
   , defaultExtensions
+  , packageDescription
   , exposedModules
   , extraLibs
   , hcOptions
@@ -122,3 +125,12 @@ fromBuildInfo kind name bi =
     }
   where
     pkgconfigNames b = [unPkgconfigName n | PkgconfigDependency n _ <- pkgconfigDepends b]
+
+-- | The declared @build-type@ of a @.cabal@ (e.g. @"Simple"@, @"Custom"@).
+-- zinc only builds Simple-ish packages directly; Custom (Setup.hs) deps are
+-- rejected with a clear message by the build pipeline.
+cabalBuildType :: String -> Either String String
+cabalBuildType src =
+  case snd (runParseResult (parseGenericPackageDescription (BS.pack src))) of
+    Left err  -> Left ("cabal parse error: " ++ show err)
+    Right gpd -> Right (prettyShow (buildType (packageDescription gpd)))

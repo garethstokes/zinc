@@ -24,7 +24,7 @@ import System.Exit (ExitCode (..))
 import System.FilePath (takeExtension, (</>))
 import System.Process (callProcess, readProcess, readProcessWithExitCode)
 import Zinc.Build (LibBuild (..), MemberBuild (..), buildLib, buildMember, initPackageDb, registerPackage, replArgs)
-import Zinc.Cabal (parseCabalComponentsForGhc)
+import Zinc.Cabal (cabalBuildType, parseCabalComponentsForGhc)
 import Zinc.Cache (BuildKey (..), buildCacheKey, storeConfPath, storePkgPath)
 import Zinc.Git (cloneAt)
 import Zinc.Lock (LockedPackage (..), parseLock)
@@ -229,9 +229,11 @@ buildClosure wsDir storeRoot wsDb ghcVersion = do
           case filter ((== ".cabal") . takeExtension) entries of
             (cabal : _) -> do
               src <- readFile (dest </> cabal)
-              pure $ case parseCabalComponentsForGhc ghcVersion src of
-                Left err -> Left err
-                Right cs -> Right ("0", cs)
+              pure $ case cabalBuildType src of
+                Right "Custom" -> Left "build-type: Custom (Setup.hs) is not supported yet"
+                _ -> case parseCabalComponentsForGhc ghcVersion src of
+                  Left err -> Left err
+                  Right cs -> Right ("0", cs)
             [] -> pure (Left "no zinc.toml or .cabal")
 
 -- | Direct dependencies declared in the manifest but absent from the lockfile
