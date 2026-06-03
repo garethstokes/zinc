@@ -1,0 +1,201 @@
+# zinc — A git-native, Nix-assisted build tool for Haskell
+
+**Status:** Design approved 2026-06-03
+**Author:** Gareth (with Claude)
+
+## 1. Motivation & thesis
+
+`cabal-install` bundles seven jobs: describe the project, **solve dependency
+versions**, fetch packages, provide the toolchain, build the world, build your
+code, and run/publish. The pain is concentrated in the solver and the
+Hackage-version dance. zinc keeps the good parts and replaces the painful ones.
+
+**Thesis: ergonomics.** zinc is a Cargo-like front-end where Nix is a hidden
+implementation detail the user never has to touch. Speed (prebuilt/cached
+artifacts, fast inner loop) and "it just works" (no solver errors, ever) are the
+north stars.
+
+**Division of labour:**
+
+| Concern | Owner |
+|---|---|
+| Haskell source dependencies | **git** (plain clone at a ref) |
+| GHC toolchain + system/native libs (zlib, pkg-config) | **Nix** |
+| Resolve / build / run / UX | **zinc** (a Haskell CLI) |
+
+## 2. Dependency model (decided)
+
+- **Whole-graph git.** Every non-boot package is a `repo + ref`
+  (`hash | tag | branch`), fetched with plain `git`. No Hackage at build time.
+- **GHC boot libraries** (`base`, `text`, `bytestring`, `containers`, …) ship
+  with the Nix-provided GHC and are never fetched.
+- **One git ref per package name** across the whole workspace (GHC strongly
+  prefers a single version of each package). **No solver, ever.**
+- **Version selection:** latest release tag by default; the user overrides any
+  package's ref by hand; cabal-style version bounds are **ignored** (at most a
+  warning). The resolved commit is frozen in the lockfile.
+- **Self-describing graph.** Because zinc-native packages declare their deps
+  *with* repos in their own `zinc.toml`, the graph is self-describing (like Go's
+  `go.mod`): the workspace lists only its **direct** deps' repos; transitive
+  repos are discovered by cloning each dep and reading *its* manifest.
+- **Conflict rule:** if multiple packages reference the same name at different
+  refs, the workspace-root override wins; otherwise the latest referenced ref;
+  default latest tag. There is only ever one ref per name in the final build.
+
+## 3. Build model (decided)
+
+zinc drives the **GHC toolchain directly** (`ghc --make`, `ghc-pkg`) — it does
+**not** execute Cabal's build machinery (no `Setup.hs`, no `configure/build`
+delegation).
+
+- **Now (Opt 1 — zinc-native):** a package describes itself with a `[build]`
+  block in its `zinc.toml`. zinc reads that block and drives ghc. To depend on
+  something it must be zinc-native (your code, or wrapped upstreams).
+- **Later (Opt 2 — `.cabal` reader):** a future mode *reads* `.cabal` files
+  (using the `Cabal` library as a parser only — never its builder) to
+  auto-derive the `[build]` block, so arbitrary upstream packages can be pulled
+  from git unmodified. This phase adds the autogen-fidelity work below.
+
+**What driving ghc directly requires (Opt 2 fidelity work):**
+- Synthesize `Paths_<pkg>.hs` (many packages `import Paths_foo`).
+- Emit `cabal_macros.h` (`MIN_VERSION_<pkg>(x,y,z)` CPP macros).
+- Run preprocessors (alex/happy/hsc2hs/c2hs) before ghc.
+
+**Known casualty:** `build-type: Custom` / `Setup.hs` packages are unsupported
+until specially handled (deferred).
+
+## 4. Manifest — `zinc.toml`
+
+Workspaces are first-class from the MVP. A workspace root declares members,
+shared dependencies, and the registry; each member declares its components.
+
+**Workspace root:**
+```toml
+[workspace]
+members = ["packages/myapp", "packages/mylib"]
+ghc = "9.8.2"                      # Nix pins exactly this compiler
+
+[dependencies]                     # shared across the workspace; one ref per name
+aeson = { tag = "v2.2.3.0" }
+hspec = "*"                        # "*" = latest release tag, frozen in lock
+
+[registry]                         # repos for DIRECT deps; transitives self-describe
+aeson = "https://github.com/haskell/aeson"
+hspec = "https://github.com/hspec/hspec"
+```
+
+**Member package (`packages/myapp/zinc.toml`):**
+```toml
+[package]
+name = "myapp"
+version = "0.1.0"
+
+[build.lib]                        # optional library component
+source-dirs     = ["src"]
+exposed-modules = ["Myapp", "Myapp.Core"]
+other-modules   = ["Myapp.Internal"]
+extensions      = ["OverloadedStrings", "LambdaCase"]
+ghc-options     = ["-Wall"]
+depends         = ["aeson", "mylib"]   # workspace siblings allowed
+system-libs     = ["zlib"]             # nixpkgs attr names → Nix supplies them
+
+[build.exe.myapp]                  # named executable
+source-dirs = ["app"]
+main = "Main.hs"
+depends = ["myapp"]
+
+[build.test.spec]                  # test component
+source-dirs = ["test"]
+main = "Spec.hs"
+depends = ["myapp", "hspec"]
+```
+
+`system-libs` naming nixpkgs attrs directly sidesteps the
+`.cabal extra-libraries → nixpkgs` mapping problem in Opt 1.
+
+## 5. Lockfile — `zinc.lock`
+
+Pins every package in the closure to an exact commit + content hash. Lives at
+the workspace root.
+```toml
+[[locked]]
+name = "aeson"
+repo = "https://github.com/haskell/aeson"
+rev = "a1b2c3d…"          # resolved commit, not the tag
+sha256 = "sha256-Xk9…"    # validates the fetch; part of the cache key
+depends = ["scientific", "witherable"]   # flattened for fast graph load
+```
+
+## 6. The hidden Nix env (the only Nix in the project)
+
+zinc generates and manages one `flake.nix` pinning `nixpkgs` + selecting
+`haskell.compiler.ghc982` (**just the compiler, not nixpkgs' package set**) +
+the union of all `system-libs` in the closure + preprocessors (alex/happy). It
+evaluates this **once** (`nix print-dev-env`, cached) to get
+`ghc`/`ghc-pkg`/`hsc2hs` and lib paths. The user never writes Nix; `flake.lock`
+pins it. Nix is re-consulted **only** when the GHC version or `system-libs`
+change — it never touches the inner loop.
+
+**Limitation:** Nix ⇒ macOS/Linux only. Windows is out of scope.
+
+## 7. GHC build driver
+
+Topo-sort the closure; for each non-boot package:
+1. Fetch source at locked rev → `~/.zinc/store/src/<name>-<rev>`, verify `sha256`.
+2. **Cache check:** key = `hash(rev, ghc-version, dep unit-ids, options)`.
+   Hit → `ghc-pkg register` the cached build, skip compile.
+3. Miss → run preprocessors → `ghc --make -hide-all-packages
+   -package-db <store> -package <dep…> -i<srcdirs> -this-unit-id <name>-<ver>
+   -O <modules>` → build archive → write `.conf` → register into
+   `~/.zinc/store/pkg/<key>`.
+4. **Workspace member packages** build into `.zinc/build/` directly, relying on
+   ghc's own recompilation avoidance — never cache-keyed, so the edit→build loop
+   stays fast.
+
+## 8. Artifact cache (decided: yes)
+
+Content-addressed `~/.zinc/store`. A dep compiles **once per machine**;
+branch-switching reuses builds. This is what makes "pure git, no shared binary
+cache" tolerable.
+
+## 9. `zinc add` flow
+
+`zinc add <pkg>` resolves the full transitive closure (walking self-describing
+manifests; in Opt 2, seeding unknown repos once from Hackage `source-repository`
+metadata), prints the whole closure with proposed repos and resolved refs, and
+**requires confirmation** before freezing into `[registry]` + `zinc.lock`.
+Packages with no resolvable repo are flagged for the user to supply one.
+
+## 10. CLI surface (Cargo-like)
+
+```
+zinc new <name>     scaffold a workspace (zinc.toml + packages/)
+zinc add <pkg>      resolve closure → confirm → freeze registry+lock
+zinc build          resolve → provision → build closure + workspace members
+zinc run [exe --…]  build then run an executable component
+zinc repl [target]  ghci with project package-db + local modules
+zinc test [target]  build + run test components
+zinc update [pkg]   bump ref(s) to latest, rewrite lock
+zinc clean          drop .zinc/build (keep the store)
+```
+
+## 11. Implementation language
+
+**Haskell.** Dogfoods the ecosystem; the `Cabal` library needed for the
+Opt-2 `.cabal` reader is a Haskell library imported directly (no
+reimplementation). `typed-process` drives ghc; `ghc-paths`/Nix locate it.
+
+## 12. Testing strategy
+
+- **Unit:** manifest/lock TOML parsers, resolver graph walk, ghc-command
+  construction, `flake.nix` generation (golden tests).
+- **Integration:** a tiny zinc-native fixture workspace depending on a small
+  real leaf package (e.g. `integer-logarithms`), built end-to-end, asserting the
+  executable runs.
+
+## 13. Deferred (YAGNI / roadmap)
+
+`.cabal` reader + `Paths_`/`cabal_macros.h` synthesis (Opt 2) ·
+`build-type: Custom`/`Setup.hs` · benchmarks · Haddock · sdist/Hackage publish ·
+profiling builds · HLS/`hie-bios` cradle (important for real editor use, but
+post-MVP) · cross-compilation · Windows.
