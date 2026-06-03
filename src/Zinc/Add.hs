@@ -6,6 +6,8 @@ module Zinc.Add
   , freezeClosure
   , runAdd
   , addInWorkspace
+  , runUpdate
+  , updateInWorkspace
   ) where
 
 import Control.Monad (when)
@@ -103,3 +105,33 @@ addInWorkspace name = do
           Just repo ->
             let ref = maybe Latest depRef (find ((== name) . depName) (wsDependencies ws))
              in runAdd wsFile (home </> ".zinc" </> "store") name ref repo
+
+-- | Re-resolve the workspace's dependencies (bumping Latest refs) and rewrite
+-- the lockfile. Like 'runAdd' but without adding a new dependency.
+runUpdate :: FilePath -> FilePath -> IO (Either String String)
+runUpdate wsFile storeRoot = do
+  src <- readFile wsFile
+  case parseWorkspace src of
+    Left err -> pure (Left err)
+    Right ws -> do
+      resolved <- resolve isBootLib (gitFetchManifest storeRoot) (wsDependencies ws) (wsRegistry ws)
+      case resolved of
+        Left err -> pure (Left err)
+        Right closure -> do
+          frozen <- freezeClosure storeRoot closure
+          case frozen of
+            Left err -> pure (Left err)
+            Right locks -> do
+              writeFile (takeDirectory wsFile </> "zinc.lock") (renderLock locks)
+              pure (Right (renderResolution closure))
+
+-- | CLI entry: @zinc update@ in the current workspace.
+updateInWorkspace :: IO (Either String String)
+updateInWorkspace = do
+  let wsFile = "zinc.toml"
+  present <- doesFileExist wsFile
+  if not present
+    then pure (Left "no zinc.toml in the current directory")
+    else do
+      home <- getHomeDirectory
+      runUpdate wsFile (home </> ".zinc" </> "store")

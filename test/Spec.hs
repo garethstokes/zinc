@@ -34,14 +34,14 @@ import Zinc.Manifest
   , renderWorkspace
   )
 import Zinc.Fetch (gitFetchManifest)
-import Zinc.Add (freezeClosure, lockEntry, runAdd)
+import Zinc.Add (freezeClosure, lockEntry, runAdd, runUpdate)
 import Zinc.Build (GhcInvocation (..), MemberBuild (..), PackageConf (..), archiveArgs, buildMember, ghcMakeArgs, preprocessorFor, registerPackage, renderConf, replArgs, runPreprocessor)
 import Zinc.Cache (BuildKey (..), buildCacheKey, cacheHit, storeConfPath, storePkgPath, writeCachedConf)
 import Zinc.Cabal (cabalBuildType, parseCabalComponents, parseCabalComponentsForGhc)
 import Zinc.Env (envCacheKey, nixPrintDevEnv, provisionEnv)
 import Zinc.Macros (emitCabalMacros)
 import Zinc.Nix (generateFlake)
-import Zinc.Orchestrate (buildAndRun, lockDrift, orderMembers, runBuild, runBuildMember, runTests)
+import Zinc.Orchestrate (buildAndRun, lockDrift, orderMembers, runBuild, runBuildMember, runClean, runTests)
 import Zinc.Paths (pathsModuleName, synthesizePaths)
 import Zinc.Report (renderResolution)
 import Zinc.SysLibs (toNixpkgs)
@@ -1244,6 +1244,32 @@ main = hspec $ do
     it "reads a Custom build-type" $
       cabalBuildType (unlines ["cabal-version: 2.4", "name: d", "version: 1", "build-type: Custom", "custom-setup", "  setup-depends: base, Cabal", "library", "  build-depends: base"])
         `shouldBe` Right "Custom"
+
+  describe "runClean" $
+    it "removes build artifacts but keeps the store" $ do
+      let d = "/tmp/zinc-clean-test"
+      stale <- doesDirectoryExist d
+      when stale $ removeDirectoryRecursive d
+      writeFileIn (d ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/a"] "9.6.5" [] []))
+      writeFileIn (d ++ "/packages/a/zinc.toml") "[package]\nname = \"a\"\nversion = \"1.0\"\n"
+      writeFileIn (d ++ "/.zinc/store/keep.txt") "cached"
+      writeFileIn (d ++ "/.zinc/pkgdb/x") "db"
+      writeFileIn (d ++ "/packages/a/.zinc/build/x.o") "obj"
+      runClean d
+      store <- doesDirectoryExist (d ++ "/.zinc/store")
+      pkgdb <- doesDirectoryExist (d ++ "/.zinc/pkgdb")
+      memberZinc <- doesDirectoryExist (d ++ "/packages/a/.zinc")
+      (store, pkgdb, memberZinc) `shouldBe` (True, False, False)
+
+  describe "runUpdate" $ do
+    (wsFile, store, _leafRepo) <- runIO setupAddFixture
+
+    it "re-resolves and rewrites the lockfile" $ do
+      r <- runUpdate wsFile store
+      lockText <- readFile (takeDirectory wsFile </> "zinc.lock")
+      case r of
+        Right _ -> ("leaf" `isInfixOf` lockText) `shouldBe` True
+        Left err -> expectationFailure err
 
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do

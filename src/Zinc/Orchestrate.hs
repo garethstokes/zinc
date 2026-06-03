@@ -15,6 +15,7 @@ module Zinc.Orchestrate
   , lockDrift
   , checkLockDrift
   , runRepl
+  , runClean
   ) where
 
 import Control.Monad (when)
@@ -281,3 +282,19 @@ runRepl wsDir = do
                 (comp : _) -> do
                   callProcess "ghci" (replArgs (Just (wsDir </> ".zinc" </> "pkgdb")) dir comp)
                   pure (Right ())
+
+-- | @zinc clean@: remove build artifacts (members' .zinc dirs + the workspace
+-- package db) while keeping the content-addressed store (spec §10).
+runClean :: FilePath -> IO ()
+runClean wsDir = do
+  hasWs <- doesFileExist (wsDir </> "zinc.toml")
+  members <-
+    if hasWs
+      then either (const []) wsMembers . parseWorkspace <$> readFile (wsDir </> "zinc.toml")
+      else pure []
+  mapM_ (\m -> rm (wsDir </> m </> ".zinc")) members
+  rm (wsDir </> ".zinc" </> "pkgdb")
+  where
+    rm p = do
+      there <- doesDirectoryExist p
+      when there (removeDirectoryRecursive p)

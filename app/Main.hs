@@ -3,9 +3,9 @@ module Main (main) where
 import Control.Monad (unless)
 import Data.List (intercalate)
 import System.Environment (getArgs)
-import Zinc.Add (addInWorkspace)
+import Zinc.Add (addInWorkspace, updateInWorkspace)
 import Zinc.CLI (Command (..), parseArgs)
-import Zinc.Orchestrate (buildAndRun, checkLockDrift, runBuildMember, runRepl, runTests)
+import Zinc.Orchestrate (buildAndRun, checkLockDrift, runBuildMember, runClean, runRepl, runTests)
 import Zinc.Scaffold (materialize, scaffoldNew)
 
 -- | Thin executable shim. Parsing/dispatch logic lives in (and is tested via)
@@ -41,4 +41,8 @@ dispatch (Test _) =
     Right n -> putStrLn (show n ++ " test suite(s) passed")
 dispatch (Repl _) =
   runRepl "." >>= either (\e -> putStrLn ("zinc repl: " ++ e)) (const (pure ()))
-dispatch cmd = putStrLn ("zinc: not yet implemented: " ++ show cmd)
+dispatch (Update _) =
+  updateInWorkspace >>= either (\e -> putStrLn ("zinc update: " ++ e)) putStr
+dispatch Clean = do
+  runClean "."
+  putStrLn "Cleaned build artifacts (kept the store)."
