@@ -12,8 +12,10 @@ library
   import:           warnings
   hs-source-dirs:   src
   exposed-modules:  Zinc.CLI
+                    Zinc.Lock
                     Zinc.Manifest
                     Zinc.Scaffold
+                    Zinc.TOML
   build-depends:    base
                   , containers
                   , directory

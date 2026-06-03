@@ -19,6 +19,7 @@ import Zinc.Manifest
   , parseMember
   , parseWorkspace
   )
+import Zinc.Lock (LockedPackage (..), parseLock, renderLock)
 import Zinc.Scaffold (FileSpec (..), materialize, scaffoldNew)
 
 -- | Body of the generated file at the given path, if present.
@@ -128,6 +129,49 @@ main = hspec $ do
     it "parses the member manifest produced by scaffoldNew" $
       let body = maybe "" id (bodyOf "packages/demo/zinc.toml" (scaffoldNew "demo"))
        in (pkgName <$> parseMember body) `shouldBe` Right "demo"
+
+  describe "Zinc.Lock" $ do
+    let pkgs =
+          [ LockedPackage
+              { lockName = "aeson"
+              , lockRepo = "https://github.com/haskell/aeson"
+              , lockRev = "a1b2c3d"
+              , lockSha256 = "sha256-Xk9"
+              , lockDepends = ["scientific", "witherable"]
+              }
+          , LockedPackage
+              { lockName = "scientific"
+              , lockRepo = "https://github.com/basvandijk/scientific"
+              , lockRev = "f4e5d6"
+              , lockSha256 = "sha256-Yz1"
+              , lockDepends = []
+              }
+          ]
+        sample =
+          unlines
+            [ "[[locked]]"
+            , "name = \"aeson\""
+            , "repo = \"https://github.com/haskell/aeson\""
+            , "rev = \"a1b2c3d\""
+            , "sha256 = \"sha256-Xk9\""
+            , "depends = [\"scientific\", \"witherable\"]"
+            , ""
+            , "[[locked]]"
+            , "name = \"scientific\""
+            , "repo = \"https://github.com/basvandijk/scientific\""
+            , "rev = \"f4e5d6\""
+            , "sha256 = \"sha256-Yz1\""
+            , "depends = []"
+            ]
+
+    it "parses a lockfile into locked packages, preserving order" $
+      parseLock sample `shouldBe` Right pkgs
+
+    it "round-trips: parse . render == id" $
+      parseLock (renderLock pkgs) `shouldBe` Right pkgs
+
+    it "treats an empty/absent [[locked]] array as no packages" $
+      parseLock "" `shouldBe` Right []
 
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do

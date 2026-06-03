@@ -11,6 +11,7 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 import qualified Toml
 import Toml.Value (Value (..))
+import Zinc.TOML (stringArrayField, stringField, subTable, tableField)
 
 -- | How a dependency is pinned. There is exactly one ref per package name
 -- across a workspace, and bounds are ignored (spec §2).
@@ -70,12 +71,6 @@ parseWorkspace src = do
       , wsRegistry     = parseRegistry (subTable "registry" top)
       }
 
--- | A nested table by key, or empty if absent/not-a-table.
-subTable :: String -> Map String Value -> Map String Value
-subTable k t = case Map.lookup k t of
-  Just (Table v) -> v
-  _              -> Map.empty
-
 parseDeps :: Map String Value -> [Dependency]
 parseDeps = map (\(name, val) -> Dependency name (refOf val)) . Map.toList
   where
@@ -90,22 +85,3 @@ parseRegistry = foldr keep [] . Map.toList
   where
     keep (name, String url) acc = (name, url) : acc
     keep _                  acc = acc
-
-tableField :: String -> Map String Value -> Either String (Map String Value)
-tableField k t = case Map.lookup k t of
-  Just (Table v) -> Right v
-  Just _         -> Left ("expected a table for [" ++ k ++ "]")
-  Nothing        -> Left ("missing required table [" ++ k ++ "]")
-
-stringField :: String -> Map String Value -> Either String String
-stringField k t = case Map.lookup k t of
-  Just (String s) -> Right s
-  _               -> Left ("missing required string field: " ++ k)
-
-stringArrayField :: String -> Map String Value -> Either String [String]
-stringArrayField k t = case Map.lookup k t of
-  Just (Array xs) -> mapM asString xs
-  _               -> Left ("missing required array field: " ++ k)
-  where
-    asString (String s) = Right s
-    asString _          = Left ("non-string element in array: " ++ k)
