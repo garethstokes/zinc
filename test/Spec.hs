@@ -1,16 +1,20 @@
 module Main (main) where
 
 import Control.Monad (when)
+import Data.Char (isSpace)
 import Data.Either (isLeft)
 import Data.List (find, isInfixOf)
 import Data.Maybe (isJust)
 import System.Directory
-  ( doesDirectoryExist
+  ( createDirectoryIfMissing
+  , doesDirectoryExist
   , doesFileExist
   , removeDirectoryRecursive
   )
+import System.Process (readProcess)
 import Test.Hspec
 import Zinc.CLI (Command (..), parseArgs)
+import Zinc.Git (cloneAt)
 import Zinc.Manifest
   ( Dependency (..)
   , MemberManifest (..)
@@ -25,6 +29,35 @@ import Zinc.Scaffold (FileSpec (..), materialize, scaffoldNew)
 -- | Body of the generated file at the given path, if present.
 bodyOf :: FilePath -> [FileSpec] -> Maybe String
 bodyOf p = fmap specBody . find ((== p) . specPath)
+
+trimStr :: String -> String
+trimStr = f . f where f = reverse . dropWhile isSpace
+
+-- | Build a throwaway local git repo: commit c1 (tagged v1.0), then commit c2
+-- on the default branch plus a `feature` branch at c2. Returns the repo path
+-- and the two commit SHAs. No network involved.
+setupGitFixture :: IO (FilePath, String, String)
+setupGitFixture = do
+  let base = "/tmp/zinc-git-fixture"
+      repo = base ++ "/repo"
+  stale <- doesDirectoryExist base
+  when stale $ removeDirectoryRecursive base
+  createDirectoryIfMissing True repo
+  let git args = readProcess "git" ("-C" : repo : args) ""
+  _ <- git ["init", "--quiet"]
+  _ <- git ["config", "user.email", "t@example.com"]
+  _ <- git ["config", "user.name", "Test"]
+  writeFile (repo ++ "/a.txt") "a"
+  _ <- git ["add", "."]
+  _ <- git ["commit", "--quiet", "-m", "c1"]
+  c1 <- trimStr <$> git ["rev-parse", "HEAD"]
+  _ <- git ["tag", "v1.0"]
+  writeFile (repo ++ "/b.txt") "b"
+  _ <- git ["add", "."]
+  _ <- git ["commit", "--quiet", "-m", "c2"]
+  c2 <- trimStr <$> git ["rev-parse", "HEAD"]
+  _ <- git ["branch", "feature"]
+  pure (repo, c1, c2)
 
 main :: IO ()
 main = hspec $ do
@@ -172,6 +205,31 @@ main = hspec $ do
 
     it "treats an empty/absent [[locked]] array as no packages" $
       parseLock "" `shouldBe` Right []
+
+  describe "cloneAt" $ do
+    (repo, c1, c2) <- runIO setupGitFixture
+
+    it "resolves a tag to its commit" $ do
+      r <- cloneAt repo "v1.0" "/tmp/zinc-git-fixture/co-tag"
+      r `shouldBe` Right c1
+
+    it "resolves a branch to its commit" $ do
+      r <- cloneAt repo "feature" "/tmp/zinc-git-fixture/co-branch"
+      r `shouldBe` Right c2
+
+    it "resolves an explicit commit SHA" $ do
+      r <- cloneAt repo c1 "/tmp/zinc-git-fixture/co-rev"
+      r `shouldBe` Right c1
+
+    it "checks out the worktree at the requested ref" $ do
+      _ <- cloneAt repo "v1.0" "/tmp/zinc-git-fixture/co-wt"
+      hasA <- doesFileExist "/tmp/zinc-git-fixture/co-wt/a.txt"
+      hasB <- doesFileExist "/tmp/zinc-git-fixture/co-wt/b.txt"
+      (hasA, hasB) `shouldBe` (True, False)
+
+    it "fails on an unknown ref" $ do
+      r <- cloneAt repo "no-such-ref" "/tmp/zinc-git-fixture/co-bad"
+      r `shouldSatisfy` isLeft
 
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do
