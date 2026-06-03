@@ -28,7 +28,7 @@ import Zinc.Manifest
   , parseMember
   , parseWorkspace
   )
-import Zinc.Resolve (DepManifest (..), ResolvedDep (..), resolve)
+import Zinc.Resolve (DepManifest (..), ResolvedDep (..), resolve, topoSort)
 import Zinc.Lock (LockedPackage (..), parseLock, renderLock)
 import Zinc.Scaffold (FileSpec (..), materialize, scaffoldNew)
 
@@ -396,6 +396,23 @@ main = hspec $ do
             ]
           r = run fix [dep "a" Latest] [("a", "r/a")]
       (sort . map rdName <$> r) `shouldBe` Right ["a", "b"]
+
+  describe "topoSort" $ do
+    let rd n ds = ResolvedDep n ("r/" ++ n) Latest ds
+
+    it "orders dependencies before dependents (linear chain)" $
+      (map rdName <$> topoSort [rd "aeson" ["scientific"], rd "scientific" ["il"], rd "il" []])
+        `shouldBe` Right ["il", "scientific", "aeson"]
+
+    it "produces a valid order for a diamond" $
+      (map rdName <$> topoSort [rd "a" ["b", "c"], rd "b" ["d"], rd "c" ["d"], rd "d" []])
+        `shouldBe` Right ["d", "b", "c", "a"]
+
+    it "rejects a dependency cycle" $
+      topoSort [rd "a" ["b"], rd "b" ["a"]] `shouldSatisfy` isLeft
+
+    it "handles an empty closure" $
+      topoSort [] `shouldBe` Right []
 
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do

@@ -10,9 +10,13 @@ module Zinc.Resolve
   ( DepManifest (..)
   , ResolvedDep (..)
   , resolve
+  , topoSort
   ) where
 
+import Control.Monad (foldM)
 import qualified Data.Map as Map
+import Data.Set (Set)
+import qualified Data.Set as Set
 import Zinc.Manifest (Dependency (..), Ref)
 
 -- | What a fetched package declares about its own dependencies: their pins
@@ -70,3 +74,28 @@ resolve isBoot fetch rootDeps rootReg =
                in case traverse (toReq (dmRegistry dm) name) transitive of
                     Left err      -> pure (Left err)
                     Right newReqs -> go (Map.insert name node seen) (rest ++ newReqs)
+
+-- | Topologically sort a resolved closure so each package appears after all
+-- the in-closure dependencies it builds against (build order). Dependency
+-- names not in the closure (e.g. boot libs) are ignored. Fails on a cycle —
+-- GHC cannot build cyclic package dependencies.
+topoSort :: [ResolvedDep] -> Either String [ResolvedDep]
+topoSort nodes = do
+  (_, ordered) <- foldM (visit Set.empty) (Set.empty, []) (map rdName nodes)
+  pure (map (byName Map.!) (reverse ordered))
+  where
+    byName = Map.fromList [(rdName n, n) | n <- nodes]
+    depsOf name = maybe [] (filter (`Map.member` byName) . rdDepends) (Map.lookup name byName)
+
+    -- DFS post-order with a path set for cycle detection.
+    visit
+      :: Set String                 -- names on the current DFS path
+      -> (Set String, [String])     -- (finished, reverse build order)
+      -> String
+      -> Either String (Set String, [String])
+    visit path acc@(done, _) name
+      | name `Set.member` done = Right acc
+      | name `Set.member` path = Left ("dependency cycle involving '" ++ name ++ "'")
+      | otherwise = do
+          (done', order') <- foldM (visit (Set.insert name path)) acc (depsOf name)
+          pure (Set.insert name done', name : order')
