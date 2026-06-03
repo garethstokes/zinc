@@ -17,6 +17,7 @@ library
                     Zinc.Fetch
                     Zinc.Git
                     Zinc.Lock
+                    Zinc.Macros
                     Zinc.Manifest
                     Zinc.Nix
                     Zinc.Paths

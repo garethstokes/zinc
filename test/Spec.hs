@@ -33,6 +33,7 @@ import Zinc.Manifest
 import Zinc.Fetch (gitFetchManifest)
 import Zinc.Cabal (parseCabalComponents)
 import Zinc.Env (envCacheKey, provisionEnv)
+import Zinc.Macros (emitCabalMacros)
 import Zinc.Nix (generateFlake)
 import Zinc.Paths (pathsModuleName, synthesizePaths)
 import Zinc.Resolve (DepManifest (..), ResolvedDep (..), resolve, topoSort)
@@ -618,6 +619,29 @@ main = hspec $ do
 
     it "encodes the version via makeVersion" $
       ("makeVersion [0,1,0]" `isInfixOf` src) `shouldBe` True
+
+  describe "emitCabalMacros" $ do
+    let h = emitCabalMacros [("base", [4, 18, 2, 1]), ("my-dep", [1, 2])]
+
+    it "defines VERSION_ with the full version string" $
+      ("#define VERSION_base \"4.18.2.1\"" `isInfixOf` h) `shouldBe` True
+
+    it "defines MIN_VERSION_ using the first three components" $
+      all
+        (`isInfixOf` h)
+        [ "#define MIN_VERSION_base(major1,major2,minor)"
+        , "(major1) <  4"
+        , "(major2) <  18"
+        , "(minor) <= 2"
+        ]
+        `shouldBe` True
+
+    it "munges dashes in macro identifiers" $
+      all (`isInfixOf` h) ["VERSION_my_dep", "MIN_VERSION_my_dep(major1,major2,minor)"]
+        `shouldBe` True
+
+    it "pads short versions with zeros" $
+      ("(minor) <= 0" `isInfixOf` h) `shouldBe` True
 
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do
