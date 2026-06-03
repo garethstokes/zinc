@@ -41,6 +41,12 @@ north stars.
 - **Conflict rule:** if multiple packages reference the same name at different
   refs, the workspace-root override wins; otherwise the latest referenced ref;
   default latest tag. There is only ever one ref per name in the final build.
+- **Resolution transparency (decided 2026-06-03):** because the thesis is "no
+  surprises," resolution is never silent. `zinc add` and `zinc build` print the
+  full resolved closure as a table (name → repo → chosen ref), and a conflict —
+  where the rule picked one ref over another a package asked for — is called out
+  explicitly in that table. The table is shown on closure resolution only, not
+  on the member-only inner loop, so edit→build stays quiet.
 
 ## 3. Build model (decided)
 
@@ -48,21 +54,26 @@ zinc drives the **GHC toolchain directly** (`ghc --make`, `ghc-pkg`) — it does
 **not** execute Cabal's build machinery (no `Setup.hs`, no `configure/build`
 delegation).
 
-- **Now (Opt 1 — zinc-native):** a package describes itself with a `[build]`
-  block in its `zinc.toml`. zinc reads that block and drives ghc. To depend on
-  something it must be zinc-native (your code, or wrapped upstreams).
-- **Later (Opt 2 — `.cabal` reader):** a future mode *reads* `.cabal` files
-  (using the `Cabal` library as a parser only — never its builder) to
-  auto-derive the `[build]` block, so arbitrary upstream packages can be pulled
-  from git unmodified. This phase adds the autogen-fidelity work below.
+- **Opt 1 — zinc-native:** a package describes itself with a `[build]`
+  block in its `zinc.toml`. zinc reads that block and drives ghc. This is the
+  path for your own code.
+- **Opt 2 — `.cabal` reader (in MVP):** zinc *reads* `.cabal` files (using the
+  `Cabal` library as a parser only — never its builder) to auto-derive the
+  `[build]` block, so arbitrary upstream packages can be pulled from git
+  unmodified. **Decision (2026-06-03): Opt 2 is MVP scope, not deferred** — the
+  MVP must depend on real Hackage packages (it is the only way `zinc add aeson`,
+  a real-leaf integration test, and self-hosting can work), so the build driver
+  and the `.cabal`-fidelity layer land together.
 
-**What driving ghc directly requires (Opt 2 fidelity work):**
+**What driving ghc directly requires (Opt 2 fidelity work, all MVP):**
 - Synthesize `Paths_<pkg>.hs` (many packages `import Paths_foo`).
 - Emit `cabal_macros.h` (`MIN_VERSION_<pkg>(x,y,z)` CPP macros).
 - Run preprocessors (alex/happy/hsc2hs/c2hs) before ghc.
+- Discover repos for unknown packages from Hackage `source-repository` metadata
+  (seeds `zinc add` for packages not yet in `[registry]`).
 
-**Known casualty:** `build-type: Custom` / `Setup.hs` packages are unsupported
-until specially handled (deferred).
+**Known casualty:** `build-type: Custom` / `Setup.hs` packages remain
+unsupported until specially handled (deferred — see §13).
 
 ## 4. Manifest — `zinc.toml`
 
@@ -189,13 +200,26 @@ reimplementation). `typed-process` drives ghc; `ghc-paths`/Nix locate it.
 
 - **Unit:** manifest/lock TOML parsers, resolver graph walk, ghc-command
   construction, `flake.nix` generation (golden tests).
-- **Integration:** a tiny zinc-native fixture workspace depending on a small
-  real leaf package (e.g. `integer-logarithms`), built end-to-end, asserting the
-  executable runs.
+- **Integration (a test ladder, decided 2026-06-03):** three rungs of
+  increasing realism, each a gate on the next:
+  1. **Synthetic** zinc-native workspace (lib + exe + test, hand-written
+     `[build]`, no upstream) builds end-to-end and the exe runs.
+  2. **Real leaf** — the same, now depending on a small real Hackage package
+     (e.g. `integer-logarithms`) pulled from git and built via the Opt-2
+     `.cabal` reader.
+  3. **Self-hosting — the MVP definition of done:** `zinc build` builds zinc
+     itself from a clean checkout, resolving and building zinc's own real
+     dependencies (`typed-process`, a TOML parser, `optparse-applicative`, …).
+     This single test exercises the resolver, Opt-2 reader, Nix env, build
+     driver, cache, and orchestration against genuine real-world packages at
+     once. **The MVP is not complete until this passes.**
 
 ## 13. Deferred (YAGNI / roadmap)
 
-`.cabal` reader + `Paths_`/`cabal_macros.h` synthesis (Opt 2) ·
+*(Opt 2 — `.cabal` reader + `Paths_`/`cabal_macros.h` synthesis — was here; it
+is now MVP scope, see §3.)*
+
 `build-type: Custom`/`Setup.hs` · benchmarks · Haddock · sdist/Hackage publish ·
 profiling builds · HLS/`hie-bios` cradle (important for real editor use, but
-post-MVP) · cross-compilation · Windows.
+post-MVP) · store garbage collection · parallel closure builds ·
+cross-compilation · Windows.
