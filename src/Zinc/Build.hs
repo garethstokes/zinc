@@ -20,9 +20,11 @@ module Zinc.Build
 import Data.List (nub)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, listDirectory)
 import System.Exit (ExitCode (..))
-import System.FilePath (takeDirectory, takeExtension, (-<.>), (</>))
+import System.FilePath (takeDirectory, takeExtension, (-<.>), (<.>), (</>))
 import System.Process (readProcessWithExitCode)
+import Zinc.Macros (emitCabalMacros)
 import Zinc.Manifest (Component (..))
+import Zinc.Paths (pathsModuleName, synthesizePaths)
 
 -- | Everything needed to compile one component with @ghc --make@.
 data GhcInvocation = GhcInvocation
@@ -177,14 +179,24 @@ data LibBuild = LibBuild
 buildLib :: LibBuild -> IO (Either String ())
 buildLib lb = do
   createDirectoryIfMissing True (lbDistDir lb)
+  -- Synthesize the Cabal-autogen files (Paths_<pkg>, cabal_macros.h) into a
+  -- generated-source dir so the package's own modules can import/use them.
+  let gen = lbDistDir lb </> "zinc-gen"
+  createDirectoryIfMissing True gen
   let comp = lbComponent lb
       unitId = lbName lb ++ "-" ++ lbVersion lb
-      srcDirs = if null (compSourceDirs comp) then ["."] else compSourceDirs comp
-      modules = compExposedModules comp ++ compOtherModules comp
+      pathsMod = pathsModuleName (lbName lb)
+      macrosHeader = gen </> "cabal_macros.h"
+  writeFile (gen </> pathsMod <.> "hs") (synthesizePaths (lbName lb) (versionInts (lbVersion lb)))
+  writeFile macrosHeader $
+    emitCabalMacros ((lbName lb, versionInts (lbVersion lb)) : [(d, [0]) | d <- compDepends comp])
+  let srcDirs = if null (compSourceDirs comp) then ["."] else compSourceDirs comp
+      modules = compExposedModules comp ++ compOtherModules comp ++ [pathsMod]
       compileArgs =
         ["--make", "-hide-all-packages", "-package-db", lbPackageDb lb]
           ++ concatMap (\p -> ["-package", p]) (nub ("base" : compDepends comp))
           ++ map (\d -> "-i" ++ (lbMemberDir lb </> d)) srcDirs
+          ++ ["-i" ++ gen, "-optP-include", "-optP" ++ macrosHeader]
           ++ ["-this-unit-id", unitId, "-outputdir", lbDistDir lb]
           ++ map ("-X" ++) (compExtensions comp)
           ++ compGhcOptions comp
@@ -238,3 +250,14 @@ replArgs packageDb memberDir comp =
     targets = case compMain comp of
       Just m  -> [memberDir </> head srcDirs </> m]
       Nothing -> compExposedModules comp
+
+-- | Parse a dotted version string into integer components (non-numeric -> 0).
+versionInts :: String -> [Int]
+versionInts = map readInt . splitDots
+  where
+    splitDots s = case break (== '.') s of
+      (a, [])    -> [a]
+      (a, _ : r) -> a : splitDots r
+    readInt x = case reads x of
+      [(n, "")] -> n
+      _         -> 0
