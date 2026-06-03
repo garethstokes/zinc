@@ -24,6 +24,7 @@ library
                     Zinc.Macros
                     Zinc.Manifest
                     Zinc.Nix
+                    Zinc.Orchestrate
                     Zinc.Paths
                     Zinc.Report
                     Zinc.Resolve

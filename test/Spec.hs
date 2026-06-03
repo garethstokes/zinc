@@ -41,6 +41,7 @@ import Zinc.Cabal (parseCabalComponents)
 import Zinc.Env (envCacheKey, nixPrintDevEnv, provisionEnv)
 import Zinc.Macros (emitCabalMacros)
 import Zinc.Nix (generateFlake)
+import Zinc.Orchestrate (runBuild)
 import Zinc.Paths (pathsModuleName, synthesizePaths)
 import Zinc.Report (renderResolution)
 import Zinc.SysLibs (toNixpkgs)
@@ -991,6 +992,21 @@ main = hspec $ do
         Right exe -> do
           out <- readProcess exe [] ""
           out `shouldBe` "hello from zinc\n"
+        Left err -> expectationFailure err
+
+  describe "runBuild (scaffold -> build -> run)" $
+    it "builds a scaffolded workspace member that runs" $ do
+      let dir = "/tmp/zinc-build-test"
+      stale <- doesDirectoryExist dir
+      when stale $ removeDirectoryRecursive dir
+      createDirectoryIfMissing True dir
+      materialize dir (scaffoldNew "demo")
+      r <- runBuild dir
+      case r of
+        Right (exe : _) -> do
+          out <- readProcess exe [] ""
+          out `shouldBe` "Hello from demo!\n"
+        Right [] -> expectationFailure "no executable built"
         Left err -> expectationFailure err
 
   describe "materialize" $
