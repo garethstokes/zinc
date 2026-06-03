@@ -32,6 +32,7 @@ import Zinc.Manifest
   )
 import Zinc.Fetch (gitFetchManifest)
 import Zinc.Add (freezeClosure, lockEntry)
+import Zinc.Build (GhcInvocation (..), ghcMakeArgs)
 import Zinc.Cabal (parseCabalComponents)
 import Zinc.Env (envCacheKey, nixPrintDevEnv, provisionEnv)
 import Zinc.Macros (emitCabalMacros)
@@ -726,6 +727,55 @@ main = hspec $ do
       case r of
         Right out -> ("ghc-9.6.5" `isInfixOf` out) `shouldBe` True
         Left err  -> expectationFailure err
+
+  describe "ghcMakeArgs" $ do
+    it "builds a fully-specified ghc --make invocation" $
+      ghcMakeArgs
+        GhcInvocation
+          { giUnitId = "myapp-0.1.0"
+          , giPackageDb = "/store/pkgdb"
+          , giDeps = ["aeson", "scientific"]
+          , giSourceDirs = ["src"]
+          , giModules = ["Myapp", "Myapp.Core"]
+          , giExtensions = ["OverloadedStrings"]
+          , giGhcOptions = ["-Wall"]
+          , giOutputDir = ".zinc/build/myapp"
+          }
+        `shouldBe` [ "--make"
+                   , "-hide-all-packages"
+                   , "-package-db", "/store/pkgdb"
+                   , "-package", "aeson"
+                   , "-package", "scientific"
+                   , "-isrc"
+                   , "-this-unit-id", "myapp-0.1.0"
+                   , "-outputdir", ".zinc/build/myapp"
+                   , "-O"
+                   , "-XOverloadedStrings"
+                   , "-Wall"
+                   , "Myapp", "Myapp.Core"
+                   ]
+
+    it "always isolates packages even with no deps/extensions/options" $
+      ghcMakeArgs
+        GhcInvocation
+          { giUnitId = "leaf-1.0"
+          , giPackageDb = "/db"
+          , giDeps = []
+          , giSourceDirs = ["."]
+          , giModules = ["Leaf"]
+          , giExtensions = []
+          , giGhcOptions = []
+          , giOutputDir = "out"
+          }
+        `shouldBe` [ "--make"
+                   , "-hide-all-packages"
+                   , "-package-db", "/db"
+                   , "-i."
+                   , "-this-unit-id", "leaf-1.0"
+                   , "-outputdir", "out"
+                   , "-O"
+                   , "Leaf"
+                   ]
 
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do

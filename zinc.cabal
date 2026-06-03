@@ -12,6 +12,7 @@ library
   import:           warnings
   hs-source-dirs:   src
   exposed-modules:  Zinc.Add
+                    Zinc.Build
                     Zinc.CLI
                     Zinc.Cabal
                     Zinc.Env
