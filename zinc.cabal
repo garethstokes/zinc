@@ -12,7 +12,10 @@ library
   import:           warnings
   hs-source-dirs:   src
   exposed-modules:  Zinc.CLI
+                    Zinc.Scaffold
   build-depends:    base
+                  , directory
+                  , filepath
                   , optparse-applicative
 
 executable zinc
@@ -28,5 +31,6 @@ test-suite spec
   hs-source-dirs:   test
   main-is:          Spec.hs
   build-depends:    base
+                  , directory
                   , zinc
                   , hspec
