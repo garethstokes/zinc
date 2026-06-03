@@ -1,31 +1,36 @@
--- | Build orchestration (spec §7): the @zinc build@ command. Builds each
--- workspace member, ordering them so a member's sibling-library dependencies
--- are built and registered (into a workspace package db) before it.
+-- | Build orchestration (spec §7, §10): the @zinc build@ / @run@ / @test@
+-- commands. Builds each workspace member, ordering them so a member's
+-- sibling-library dependencies are built and registered (into a workspace
+-- package db) before it.
 --
 -- Note: compiling the git /dependency closure/ from source is a separate,
 -- larger concern (tracked as a follow-up); this builds the workspace members
 -- and their sibling links.
 module Zinc.Orchestrate
   ( runBuild
+  , buildAndRun
+  , runTests
   , orderMembers
   ) where
 
 import qualified Data.Map as Map
+import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
+import System.Process (readProcess, readProcessWithExitCode)
 import Zinc.Build (LibBuild (..), MemberBuild (..), buildLib, buildMember, initPackageDb)
 import Zinc.Manifest
   ( Component (compDepends, compKind)
-  , ComponentKind (Executable, Library)
+  , ComponentKind (Executable, Library, TestSuite)
   , MemberManifest (pkgComponents, pkgName, pkgVersion)
   , WorkspaceManifest (wsMembers)
   , parseMember
   , parseWorkspace
   )
 
--- | Build every member's executables in a workspace, building sibling
--- libraries first. Returns the built executable paths, or the first error.
-runBuild :: FilePath -> IO (Either String [FilePath])
-runBuild wsDir = do
+-- | Build a workspace: each member's library (so siblings can link) plus every
+-- component whose kind satisfies @keep@, returned as built executable paths.
+buildWorkspace :: FilePath -> (ComponentKind -> Bool) -> IO (Either String [FilePath])
+buildWorkspace wsDir keep = do
   wsSrc <- readFile (wsDir </> "zinc.toml")
   case parseWorkspace wsSrc of
     Left err -> pure (Left err)
@@ -54,7 +59,7 @@ runBuild wsDir = do
       case libResult of
         Left err -> pure (Left err)
         Right () -> do
-          exeResult <- buildExes wsDb dir [] (executables mem)
+          exeResult <- buildComps wsDb dir [] (wanted mem)
           case exeResult of
             Left err    -> pure (Left err)
             Right paths -> buildAll wsDb (acc ++ paths) rest
@@ -64,14 +69,44 @@ runBuild wsDir = do
         []        -> pure (Right ())
         (lib : _) -> buildLib (LibBuild dir (dir </> ".zinc" </> "lib") wsDb (pkgName mem) (pkgVersion mem) lib)
 
-    executables mem = filter ((== Executable) . compKind) (pkgComponents mem)
+    wanted mem = filter (keep . compKind) (pkgComponents mem)
 
-    buildExes _ _ acc [] = pure (Right (reverse acc))
-    buildExes wsDb dir acc (comp : rest) = do
+    buildComps _ _ acc [] = pure (Right (reverse acc))
+    buildComps wsDb dir acc (comp : rest) = do
       result <- buildMember (MemberBuild dir (dir </> ".zinc" </> "build") (Just wsDb) comp)
       case result of
         Left err  -> pure (Left err)
-        Right exe -> buildExes wsDb dir (exe : acc) rest
+        Right exe -> buildComps wsDb dir (exe : acc) rest
+
+-- | @zinc build@: build every member's executables (libraries first).
+runBuild :: FilePath -> IO (Either String [FilePath])
+runBuild wsDir = buildWorkspace wsDir (== Executable)
+
+-- | @zinc run@: build, then run the first executable with the given args,
+-- returning its stdout.
+buildAndRun :: FilePath -> [String] -> IO (Either String String)
+buildAndRun wsDir args = do
+  built <- runBuild wsDir
+  case built of
+    Left err        -> pure (Left err)
+    Right []        -> pure (Left "no executable to run")
+    Right (exe : _) -> Right <$> readProcess exe args ""
+
+-- | @zinc test@: build and run all test-suite components, returning how many
+-- passed. Fails on the first non-zero exit.
+runTests :: FilePath -> IO (Either String Int)
+runTests wsDir = do
+  built <- buildWorkspace wsDir (== TestSuite)
+  case built of
+    Left err   -> pure (Left err)
+    Right exes -> runEach 0 exes
+  where
+    runEach n [] = pure (Right n)
+    runEach n (exe : rest) = do
+      (code, _, _) <- readProcessWithExitCode exe [] ""
+      case code of
+        ExitSuccess   -> runEach (n + 1) rest
+        ExitFailure _ -> pure (Left (exe ++ ": test suite failed"))
 
 -- | Topologically order members so a member is preceded by the sibling
 -- members it depends on (so their libraries are registered first).

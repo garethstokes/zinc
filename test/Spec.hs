@@ -41,7 +41,7 @@ import Zinc.Cabal (parseCabalComponents)
 import Zinc.Env (envCacheKey, nixPrintDevEnv, provisionEnv)
 import Zinc.Macros (emitCabalMacros)
 import Zinc.Nix (generateFlake)
-import Zinc.Orchestrate (orderMembers, runBuild)
+import Zinc.Orchestrate (buildAndRun, orderMembers, runBuild, runTests)
 import Zinc.Paths (pathsModuleName, synthesizePaths)
 import Zinc.Report (renderResolution)
 import Zinc.SysLibs (toNixpkgs)
@@ -1040,6 +1040,27 @@ main = hspec $ do
           out `shouldBe` "hi from core\n"
         Right [] -> expectationFailure "no executable built"
         Left err -> expectationFailure err
+
+  describe "buildAndRun (zinc run)" $
+    it "builds and runs the member executable" $ do
+      let dir = "/tmp/zinc-run-test"
+      stale <- doesDirectoryExist dir
+      when stale $ removeDirectoryRecursive dir
+      createDirectoryIfMissing True dir
+      materialize dir (scaffoldNew "demo")
+      r <- buildAndRun dir []
+      r `shouldBe` Right "Hello from demo!\n"
+
+  describe "runTests (zinc test)" $
+    it "builds and runs a passing test component" $ do
+      let dir = "/tmp/zinc-test-test"
+      stale <- doesDirectoryExist dir
+      when stale $ removeDirectoryRecursive dir
+      writeFileIn (dir ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/t"] "9.6.5" [] []))
+      writeFileIn (dir ++ "/packages/t/zinc.toml") (unlines ["[package]", "name = \"t\"", "version = \"1.0\"", "[build.test.spec]", "source-dirs = [\"test\"]", "main = \"Spec.hs\""])
+      writeFileIn (dir ++ "/packages/t/test/Spec.hs") "module Main where\nmain :: IO ()\nmain = putStrLn \"tests ok\"\n"
+      r <- runTests dir
+      r `shouldBe` Right 1
 
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do

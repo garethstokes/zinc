@@ -3,7 +3,7 @@ module Main (main) where
 import System.Environment (getArgs)
 import Zinc.Add (addInWorkspace)
 import Zinc.CLI (Command (..), parseArgs)
-import Zinc.Orchestrate (runBuild)
+import Zinc.Orchestrate (buildAndRun, runBuild, runTests)
 import Zinc.Scaffold (materialize, scaffoldNew)
 
 -- | Thin executable shim. Parsing/dispatch logic lives in (and is tested via)
@@ -28,4 +28,10 @@ dispatch Build =
     Right exes -> do
       putStrLn ("Built " ++ show (length exes) ++ " executable(s):")
       mapM_ (putStrLn . ("  " ++)) exes
+dispatch (Run args) =
+  buildAndRun "." args >>= either (\e -> putStrLn ("zinc run: " ++ e)) putStr
+dispatch (Test _) =
+  runTests "." >>= \r -> case r of
+    Left e  -> putStrLn ("zinc test: " ++ e)
+    Right n -> putStrLn (show n ++ " test suite(s) passed")
 dispatch cmd = putStrLn ("zinc: not yet implemented: " ++ show cmd)
