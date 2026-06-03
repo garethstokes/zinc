@@ -3,9 +3,11 @@
 -- involved in fetching.
 module Zinc.Git
   ( cloneAt
+  , listTags
   ) where
 
 import Data.Char (isSpace)
+import Data.List (stripPrefix)
 import System.Exit (ExitCode (..))
 import System.Process (readProcessWithExitCode)
 
@@ -18,6 +20,14 @@ cloneAt repo ref dest =
       fmap (fmap trim) (git ["-C", dest, "rev-parse", "--verify", "HEAD"])
   where
     git = run "git"
+
+-- | List a repo's tag names (without the @refs/tags/@ prefix), via
+-- @git ls-remote@ — works on local paths and remote URLs alike.
+listTags :: String -> IO (Either String [String])
+listTags repo = fmap (fmap parseTags) (run "git" ["ls-remote", "--tags", "--refs", repo])
+  where
+    parseTags out =
+      [t | line <- lines out, (_ : ref : _) <- [words line], Just t <- [stripPrefix "refs/tags/" ref]]
 
 -- | Chain an IO action that may fail, short-circuiting on 'Left'.
 step :: IO (Either String a) -> (a -> IO (Either String b)) -> IO (Either String b)

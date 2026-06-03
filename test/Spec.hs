@@ -17,7 +17,7 @@ import System.FilePath (takeDirectory, (</>))
 import System.Process (readProcess)
 import Test.Hspec
 import Zinc.CLI (Command (..), parseArgs)
-import Zinc.Git (cloneAt)
+import Zinc.Git (cloneAt, listTags)
 import Zinc.Store (contentHash, storeSrcPath, verifyContent)
 import Zinc.Manifest
   ( Component (..)
@@ -34,6 +34,7 @@ import Zinc.Fetch (gitFetchManifest)
 import Zinc.Env (envCacheKey, provisionEnv)
 import Zinc.Nix (generateFlake)
 import Zinc.Resolve (DepManifest (..), ResolvedDep (..), resolve, topoSort)
+import Zinc.Version (newestTag)
 import Zinc.Lock (LockedPackage (..), parseLock, renderLock)
 import Zinc.Scaffold (FileSpec (..), materialize, scaffoldNew)
 
@@ -108,6 +109,7 @@ setupDepRepo = do
   _ <- git ["add", "."]
   _ <- git ["commit", "--quiet", "-m", "c1"]
   _ <- git ["tag", "v1"]
+  _ <- git ["tag", "v2"]
   pure repo
 
 main :: IO ()
@@ -479,9 +481,28 @@ main = hspec $ do
       r <- gitFetchManifest "/tmp/zinc-fetch-store" "dep" repo (Tag "v1")
       r `shouldBe` Right (DepManifest [Dependency "aeson" (Tag "v2")] [("aeson", "r/aeson")])
 
-    it "errors on a Latest ref (not yet implemented)" $ do
+    it "resolves a Latest ref to the newest tag and parses its manifest" $ do
       r <- gitFetchManifest "/tmp/zinc-fetch-store" "dep" repo Latest
-      r `shouldSatisfy` isLeft
+      r `shouldBe` Right (DepManifest [Dependency "aeson" (Tag "v2")] [("aeson", "r/aeson")])
+
+  describe "newestTag" $ do
+    it "picks the highest semver tag (numeric, not lexical)" $
+      newestTag ["v1.0.0", "v1.2.0", "v1.10.0", "v2.0.0"] `shouldBe` Just "v2.0.0"
+
+    it "orders 1.10 above 1.2" $
+      newestTag ["v1.2.0", "v1.10.0"] `shouldBe` Just "v1.10.0"
+
+    it "ignores non-version tags" $
+      newestTag ["nightly", "v1.0.0", "latest"] `shouldBe` Just "v1.0.0"
+
+    it "is Nothing when there are no version tags" $
+      newestTag ["nightly", "HEAD"] `shouldBe` Nothing
+
+  describe "listTags" $ do
+    repo <- runIO setupDepRepo
+    it "lists the repo's tags" $ do
+      r <- listTags repo
+      (sort <$> r) `shouldBe` Right ["v1", "v2"]
 
   describe "generateFlake" $ do
     let flake = generateFlake "9.6.5" ["zlib", "pcre"]

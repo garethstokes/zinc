@@ -22,6 +22,7 @@ library
                     Zinc.Scaffold
                     Zinc.Store
                     Zinc.TOML
+                    Zinc.Version
   build-depends:    base
                   , SHA
                   , bytestring
