@@ -12,6 +12,7 @@ library
   import:           warnings
   hs-source-dirs:   src
   exposed-modules:  Zinc.CLI
+                    Zinc.Fetch
                     Zinc.Git
                     Zinc.Lock
                     Zinc.Manifest

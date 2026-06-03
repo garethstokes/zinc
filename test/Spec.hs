@@ -25,9 +25,11 @@ import Zinc.Manifest
   , MemberManifest (..)
   , Ref (..)
   , WorkspaceManifest (..)
+  , parseDependencies
   , parseMember
   , parseWorkspace
   )
+import Zinc.Fetch (gitFetchManifest)
 import Zinc.Resolve (DepManifest (..), ResolvedDep (..), resolve, topoSort)
 import Zinc.Lock (LockedPackage (..), parseLock, renderLock)
 import Zinc.Scaffold (FileSpec (..), materialize, scaffoldNew)
@@ -74,6 +76,36 @@ setupGitFixture = do
   c2 <- trimStr <$> git ["rev-parse", "HEAD"]
   _ <- git ["branch", "feature"]
   pure (repo, c1, c2)
+
+-- | Build a throwaway git repo whose zinc.toml declares deps + a registry,
+-- tagged v1. Returns the repo path.
+setupDepRepo :: IO FilePath
+setupDepRepo = do
+  let base = "/tmp/zinc-fetch-fixture"
+      repo = base ++ "/dep"
+  stale <- doesDirectoryExist base
+  when stale $ removeDirectoryRecursive base
+  createDirectoryIfMissing True repo
+  let git args = readProcess "git" ("-C" : repo : args) ""
+  _ <- git ["init", "--quiet"]
+  _ <- git ["config", "user.email", "t@example.com"]
+  _ <- git ["config", "user.name", "Test"]
+  writeFile
+    (repo ++ "/zinc.toml")
+    ( unlines
+        [ "[package]"
+        , "name = \"dep\""
+        , "version = \"1\""
+        , "[dependencies]"
+        , "aeson = { tag = \"v2\" }"
+        , "[registry]"
+        , "aeson = \"r/aeson\""
+        ]
+    )
+  _ <- git ["add", "."]
+  _ <- git ["commit", "--quiet", "-m", "c1"]
+  _ <- git ["tag", "v1"]
+  pure repo
 
 main :: IO ()
 main = hspec $ do
@@ -413,6 +445,40 @@ main = hspec $ do
 
     it "handles an empty closure" $
       topoSort [] `shouldBe` Right []
+
+  describe "parseDependencies" $ do
+    it "reads [dependencies] and [registry] without requiring [workspace]" $
+      parseDependencies
+        ( unlines
+            [ "[package]"
+            , "name = \"foo\""
+            , "version = \"1\""
+            , "[dependencies]"
+            , "aeson = { tag = \"v2\" }"
+            , "scientific = \"*\""
+            , "[registry]"
+            , "aeson = \"r/aeson\""
+            , "scientific = \"r/sci\""
+            ]
+        )
+        `shouldBe` Right
+          ( [Dependency "aeson" (Tag "v2"), Dependency "scientific" Latest]
+          , [("aeson", "r/aeson"), ("scientific", "r/sci")]
+          )
+
+    it "defaults to empty when the sections are absent" $
+      parseDependencies "[package]\nname = \"x\"\nversion = \"1\"" `shouldBe` Right ([], [])
+
+  describe "gitFetchManifest" $ do
+    repo <- runIO setupDepRepo
+
+    it "clones a dep at a ref and parses its manifest" $ do
+      r <- gitFetchManifest "/tmp/zinc-fetch-store" "dep" repo (Tag "v1")
+      r `shouldBe` Right (DepManifest [Dependency "aeson" (Tag "v2")] [("aeson", "r/aeson")])
+
+    it "errors on a Latest ref (not yet implemented)" $ do
+      r <- gitFetchManifest "/tmp/zinc-fetch-store" "dep" repo Latest
+      r `shouldSatisfy` isLeft
 
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do

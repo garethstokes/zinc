@@ -7,6 +7,7 @@ module Zinc.Manifest
   , Ref (..)
   , parseWorkspace
   , parseMember
+  , parseDependencies
   ) where
 
 import Data.Map (Map)
@@ -121,13 +122,24 @@ parseWorkspace src = do
   wsTbl    <- tableField "workspace" top
   members  <- stringArrayField "members" wsTbl
   ghc      <- stringField "ghc" wsTbl
+  let (deps, reg) = depsAndRegistry top
   pure
     WorkspaceManifest
       { wsMembers      = members
       , wsGhc          = ghc
-      , wsDependencies = parseDeps (subTable "dependencies" top)
-      , wsRegistry     = parseRegistry (subTable "registry" top)
+      , wsDependencies = deps
+      , wsRegistry     = reg
       }
+
+-- | Read just @[dependencies]@ + @[registry]@ from any package manifest
+-- (no @[workspace]@ required). This is what the resolver reads from each
+-- fetched dependency to discover the self-describing graph (spec §2).
+parseDependencies :: String -> Either String ([Dependency], [(String, String)])
+parseDependencies src = depsAndRegistry <$> Toml.parse src
+
+depsAndRegistry :: Map String Value -> ([Dependency], [(String, String)])
+depsAndRegistry top =
+  (parseDeps (subTable "dependencies" top), parseRegistry (subTable "registry" top))
 
 parseDeps :: Map String Value -> [Dependency]
 parseDeps = map (\(name, val) -> Dependency name (refOf val)) . Map.toList
