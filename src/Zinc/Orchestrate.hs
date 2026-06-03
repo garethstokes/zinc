@@ -18,11 +18,12 @@ module Zinc.Orchestrate
   ) where
 
 import qualified Data.Map as Map
-import System.Directory (doesDirectoryExist, doesFileExist)
+import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
 import System.Exit (ExitCode (..))
-import System.FilePath ((</>))
+import System.FilePath (takeExtension, (</>))
 import System.Process (callProcess, readProcess, readProcessWithExitCode)
 import Zinc.Build (LibBuild (..), MemberBuild (..), buildLib, buildMember, initPackageDb, replArgs)
+import Zinc.Cabal (parseCabalComponentsForGhc)
 import Zinc.Git (cloneAt)
 import Zinc.Lock (LockedPackage (..), parseLock)
 import Zinc.Manifest
@@ -31,7 +32,7 @@ import Zinc.Manifest
   , Dependency (depName)
   , MemberManifest (pkgComponents, pkgName, pkgVersion)
   , Ref (Latest)
-  , WorkspaceManifest (wsDependencies, wsMembers)
+  , WorkspaceManifest (wsDependencies, wsGhc, wsMembers)
   , parseMember
   , parseWorkspace
   )
@@ -57,7 +58,7 @@ buildWorkspace wsDir target keep = do
           case ready of
             Left err -> pure (Left err)
             Right () -> do
-              closure <- buildClosure wsDir (wsDir </> ".zinc" </> "store") wsDb
+              closure <- buildClosure wsDir (wsDir </> ".zinc" </> "store") wsDb (wsGhc ws)
               case closure of
                 Left err -> pure (Left err)
                 Right () -> buildAll wsDb [] (orderMembers members)
@@ -156,8 +157,8 @@ orderMembers members = map (byName Map.!) (reverse ordered)
 -- its library compiled + registered. (Compiling arbitrary upstream packages
 -- with Setup.hs / Template Haskell / deep closures is a further follow-up;
 -- this handles zinc-native git library deps.)
-buildClosure :: FilePath -> FilePath -> FilePath -> IO (Either String ())
-buildClosure wsDir storeRoot wsDb = do
+buildClosure :: FilePath -> FilePath -> FilePath -> String -> IO (Either String ())
+buildClosure wsDir storeRoot wsDb ghcVersion = do
   let lockFile = wsDir </> "zinc.lock"
   present <- doesFileExist lockFile
   if not present
@@ -190,12 +191,32 @@ buildClosure wsDir storeRoot wsDb = do
       case fetched of
         Left err -> pure (Left ("fetch " ++ lockName l ++ ": " ++ err))
         Right _ -> do
-          msrc <- readFile (dest </> "zinc.toml")
-          case parseMember msrc of
+          comps <- loadDepComponents dest
+          case comps of
             Left err -> pure (Left (lockName l ++ ": " ++ err))
-            Right mem -> case filter ((== Library) . compKind) (pkgComponents mem) of
+            Right (version, components) -> case filter ((== Library) . compKind) components of
               []        -> pure (Right ()) -- no library to build
-              (lib : _) -> buildLib (LibBuild dest (dest </> ".zinc-dist") wsDb (pkgName mem) (pkgVersion mem) lib)
+              (lib : _) -> buildLib (LibBuild dest (dest </> ".zinc-dist") wsDb (lockName l) version lib)
+
+    -- A dependency's components come from its zinc.toml ([build] block) if it
+    -- is zinc-native, else from its .cabal via the Opt-2 reader.
+    loadDepComponents dest = do
+      hasZinc <- doesFileExist (dest </> "zinc.toml")
+      if hasZinc
+        then do
+          src <- readFile (dest </> "zinc.toml")
+          pure $ case parseMember src of
+            Left err  -> Left err
+            Right mem -> Right (pkgVersion mem, pkgComponents mem)
+        else do
+          entries <- listDirectory dest
+          case filter ((== ".cabal") . takeExtension) entries of
+            (cabal : _) -> do
+              src <- readFile (dest </> cabal)
+              pure $ case parseCabalComponentsForGhc ghcVersion src of
+                Left err -> Left err
+                Right cs -> Right ("0", cs)
+            [] -> pure (Left "no zinc.toml or .cabal")
 
 -- | Direct dependencies declared in the manifest but absent from the lockfile
 -- — i.e. names that need (re-)resolving via @zinc add@. Empty means the lock

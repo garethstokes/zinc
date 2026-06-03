@@ -1152,6 +1152,30 @@ main = hspec $ do
       (compOtherModules <$> libFor "9.8.2", compOtherModules <$> libFor "9.6.5")
         `shouldBe` (Just ["NewGhc"], Just [])
 
+  describe "git dependency build from .cabal (end-to-end)" $
+    it "builds a non-zinc-native git dep (only a .cabal) and links a member" $ do
+      let base = "/tmp/zinc-cabal-dep-ws"
+          dep = base ++ "/greet-repo"
+          ws = base ++ "/ws"
+      stale <- doesDirectoryExist base
+      when stale $ removeDirectoryRecursive base
+      -- a plain Hackage-style package: only a .cabal, no zinc.toml
+      writeFileIn (dep ++ "/greet.cabal") (unlines ["cabal-version: 2.4", "name: greet", "version: 1.0", "library", "  hs-source-dirs: src", "  exposed-modules: Greet", "  build-depends: base"])
+      writeFileIn (dep ++ "/src/Greet.hs") "module Greet (hello) where\nhello :: String\nhello = \"hi from cabal dep\"\n"
+      let git args = readProcess "git" ("-C" : dep : args) ""
+      _ <- git ["init", "--quiet"]
+      _ <- git ["config", "user.email", "t@example.com"]
+      _ <- git ["config", "user.name", "Test"]
+      _ <- git ["add", "."]
+      _ <- git ["commit", "--quiet", "-m", "greet"]
+      rev <- trimStr <$> git ["rev-parse", "HEAD"]
+      writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "greet" (Rev rev)] [("greet", dep)]))
+      writeFileIn (ws ++ "/zinc.lock") (renderLock [LockedPackage "greet" dep rev "sha256:x" []])
+      writeFileIn (ws ++ "/packages/app/zinc.toml") (unlines ["[package]", "name = \"app\"", "version = \"1.0\"", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "depends = [\"greet\"]"])
+      writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Greet (hello)\nmain :: IO ()\nmain = putStrLn hello\n"
+      r <- buildAndRun ws []
+      r `shouldBe` Right "hi from cabal dep\n"
+
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do
       let root = "/tmp/zinc-scaffold-test"
