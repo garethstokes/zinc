@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "zinc",
+  "project_id": "35ac34c2-c347-4bfa-a6fb-67e09218b642"
+}
