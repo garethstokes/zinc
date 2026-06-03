@@ -14,18 +14,24 @@ module Zinc.Orchestrate
   ) where
 
 import qualified Data.Map as Map
+import System.Directory (doesDirectoryExist, doesFileExist)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 import System.Process (readProcess, readProcessWithExitCode)
 import Zinc.Build (LibBuild (..), MemberBuild (..), buildLib, buildMember, initPackageDb)
+import Zinc.Git (cloneAt)
+import Zinc.Lock (LockedPackage (..), parseLock)
 import Zinc.Manifest
   ( Component (compDepends, compKind)
   , ComponentKind (Executable, Library, TestSuite)
   , MemberManifest (pkgComponents, pkgName, pkgVersion)
+  , Ref (Latest)
   , WorkspaceManifest (wsMembers)
   , parseMember
   , parseWorkspace
   )
+import Zinc.Resolve (ResolvedDep (..), topoSort)
+import Zinc.Store (storeSrcPath)
 
 -- | Build a workspace: each member's library (so siblings can link) plus every
 -- component whose kind satisfies @keep@, returned as built executable paths.
@@ -43,7 +49,11 @@ buildWorkspace wsDir keep = do
           ready <- initPackageDb wsDb
           case ready of
             Left err -> pure (Left err)
-            Right () -> buildAll wsDb [] (orderMembers members)
+            Right () -> do
+              closure <- buildClosure wsDir (wsDir </> ".zinc" </> "store") wsDb
+              case closure of
+                Left err -> pure (Left err)
+                Right () -> buildAll wsDb [] (orderMembers members)
   where
     loadMembers acc [] = pure (Right (reverse acc))
     loadMembers acc (member : rest) = do
@@ -126,3 +136,50 @@ orderMembers members = map (byName Map.!) (reverse ordered)
       | otherwise =
           let (visited', order') = foldl visit (name : visited, order) (depsOf name)
            in (visited', name : order')
+
+-- | Build the resolved git-dependency closure (from @zinc.lock@) from source
+-- into the workspace package db, in dependency order, so members can link it.
+-- Each locked package is fetched at its exact commit, its zinc.toml read, and
+-- its library compiled + registered. (Compiling arbitrary upstream packages
+-- with Setup.hs / Template Haskell / deep closures is a further follow-up;
+-- this handles zinc-native git library deps.)
+buildClosure :: FilePath -> FilePath -> FilePath -> IO (Either String ())
+buildClosure wsDir storeRoot wsDb = do
+  let lockFile = wsDir </> "zinc.lock"
+  present <- doesFileExist lockFile
+  if not present
+    then pure (Right ())
+    else do
+      locked <- parseLock <$> readFile lockFile
+      case locked of
+        Left err -> pure (Left err)
+        Right [] -> pure (Right ())
+        Right locks -> case topoSort (map toResolved locks) of
+          Left err -> pure (Left err)
+          Right ordered ->
+            let byName = Map.fromList [(lockName l, l) | l <- locks]
+             in buildEach (map ((byName Map.!) . rdName) ordered)
+  where
+    toResolved l = ResolvedDep (lockName l) (lockRepo l) Latest (lockDepends l)
+
+    buildEach [] = pure (Right ())
+    buildEach (l : rest) = do
+      one <- buildOne l
+      case one of
+        Left err -> pure (Left err)
+        Right () -> buildEach rest
+
+    buildOne l = do
+      let dest = storeSrcPath storeRoot (lockName l) (lockRev l)
+      exists <- doesDirectoryExist dest
+      fetched <-
+        if exists then pure (Right (lockRev l)) else cloneAt (lockRepo l) (lockRev l) dest
+      case fetched of
+        Left err -> pure (Left ("fetch " ++ lockName l ++ ": " ++ err))
+        Right _ -> do
+          msrc <- readFile (dest </> "zinc.toml")
+          case parseMember msrc of
+            Left err -> pure (Left (lockName l ++ ": " ++ err))
+            Right mem -> case filter ((== Library) . compKind) (pkgComponents mem) of
+              []        -> pure (Right ()) -- no library to build
+              (lib : _) -> buildLib (LibBuild dest (dest </> ".zinc-dist") wsDb (pkgName mem) (pkgVersion mem) lib)

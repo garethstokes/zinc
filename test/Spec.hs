@@ -1062,6 +1062,31 @@ main = hspec $ do
       r <- runTests dir
       r `shouldBe` Right 1
 
+  describe "git dependency build (end-to-end)" $
+    it "fetches a git dep, builds its library, and links a member against it" $ do
+      let base = "/tmp/zinc-closure-ws"
+          greet = base ++ "/greet-repo"
+          ws = base ++ "/ws"
+      stale <- doesDirectoryExist base
+      when stale $ removeDirectoryRecursive base
+      -- a zinc-native git library dependency
+      writeFileIn (greet ++ "/zinc.toml") (unlines ["[package]", "name = \"greet\"", "version = \"1.0\"", "[build.lib]", "source-dirs = [\"src\"]", "exposed-modules = [\"Greet\"]"])
+      writeFileIn (greet ++ "/src/Greet.hs") "module Greet (hello) where\nhello :: String\nhello = \"hi from greet\"\n"
+      let git args = readProcess "git" ("-C" : greet : args) ""
+      _ <- git ["init", "--quiet"]
+      _ <- git ["config", "user.email", "t@example.com"]
+      _ <- git ["config", "user.name", "Test"]
+      _ <- git ["add", "."]
+      _ <- git ["commit", "--quiet", "-m", "greet"]
+      rev <- trimStr <$> git ["rev-parse", "HEAD"]
+      -- workspace whose member depends on the git dep
+      writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "greet" (Rev rev)] [("greet", greet)]))
+      writeFileIn (ws ++ "/zinc.lock") (renderLock [LockedPackage "greet" greet rev "sha256:x" []])
+      writeFileIn (ws ++ "/packages/app/zinc.toml") (unlines ["[package]", "name = \"app\"", "version = \"1.0\"", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "depends = [\"greet\"]"])
+      writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Greet (hello)\nmain :: IO ()\nmain = putStrLn hello\n"
+      r <- buildAndRun ws []
+      r `shouldBe` Right "hi from greet\n"
+
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do
       let root = "/tmp/zinc-scaffold-test"
