@@ -1,0 +1,32 @@
+cabal-version:      2.4
+name:               zinc
+version:            0.1.0.0
+synopsis:           A git-native, Nix-assisted build tool for Haskell
+build-type:         Simple
+
+common warnings
+  ghc-options:      -Wall
+  default-language: Haskell2010
+
+library
+  import:           warnings
+  hs-source-dirs:   src
+  exposed-modules:  Zinc.CLI
+  build-depends:    base
+                  , optparse-applicative
+
+executable zinc
+  import:           warnings
+  hs-source-dirs:   app
+  main-is:          Main.hs
+  build-depends:    base
+                  , zinc
+
+test-suite spec
+  import:           warnings
+  type:             exitcode-stdio-1.0
+  hs-source-dirs:   test
+  main-is:          Spec.hs
+  build-depends:    base
+                  , zinc
+                  , hspec

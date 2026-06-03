@@ -3,3 +3,11 @@
 .dolt/
 *.db
 .beads-credential-key
+
+# Haskell / zinc build artifacts
+dist-newstyle/
+.zinc/
+*.hi
+*.o
+result
+result-*
