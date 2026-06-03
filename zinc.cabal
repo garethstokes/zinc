@@ -12,6 +12,7 @@ library
   import:           warnings
   hs-source-dirs:   src
   exposed-modules:  Zinc.CLI
+                    Zinc.Cabal
                     Zinc.Env
                     Zinc.Fetch
                     Zinc.Git
@@ -24,6 +25,7 @@ library
                     Zinc.TOML
                     Zinc.Version
   build-depends:    base
+                  , Cabal
                   , SHA
                   , bytestring
                   , containers

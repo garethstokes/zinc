@@ -31,6 +31,7 @@ import Zinc.Manifest
   , parseWorkspace
   )
 import Zinc.Fetch (gitFetchManifest)
+import Zinc.Cabal (parseCabalComponents)
 import Zinc.Env (envCacheKey, provisionEnv)
 import Zinc.Nix (generateFlake)
 import Zinc.Resolve (DepManifest (..), ResolvedDep (..), resolve, topoSort)
@@ -550,6 +551,59 @@ main = hspec $ do
       _ <- provisionEnv evalr root "9.6.5" ["zlib", "pcre"]
       n <- readIORef counter
       n `shouldBe` 2
+
+  describe "parseCabalComponents" $ do
+    let cabal =
+          unlines
+            [ "cabal-version: 2.4"
+            , "name: demo"
+            , "version: 0.1"
+            , "library"
+            , "  hs-source-dirs: src"
+            , "  exposed-modules: Demo Demo.Core"
+            , "  other-modules: Demo.Internal"
+            , "  default-extensions: OverloadedStrings"
+            , "  ghc-options: -Wall"
+            , "  build-depends: base, aeson"
+            , "executable demo-exe"
+            , "  main-is: Main.hs"
+            , "  hs-source-dirs: app"
+            , "  build-depends: base, demo"
+            , "test-suite spec"
+            , "  type: exitcode-stdio-1.0"
+            , "  main-is: Spec.hs"
+            , "  hs-source-dirs: test"
+            , "  build-depends: base, demo, hspec"
+            ]
+        comps = either (const []) id (parseCabalComponents cabal)
+        byName n = find ((== n) . compName) comps
+
+    it "derives the library component with all fields" $
+      byName "lib"
+        `shouldBe` Just
+          Component
+            { compKind = Library
+            , compName = "lib"
+            , compSourceDirs = ["src"]
+            , compExposedModules = ["Demo", "Demo.Core"]
+            , compOtherModules = ["Demo.Internal"]
+            , compMain = Nothing
+            , compExtensions = ["OverloadedStrings"]
+            , compGhcOptions = ["-Wall"]
+            , compDepends = ["base", "aeson"]
+            , compSystemLibs = []
+            }
+
+    it "derives an executable component" $
+      (\c -> (compKind c, compMain c, compSourceDirs c, compDepends c)) <$> byName "demo-exe"
+        `shouldBe` Just (Executable, Just "Main.hs", ["app"], ["base", "demo"])
+
+    it "derives a test-suite component" $
+      (\c -> (compKind c, compMain c, compDepends c)) <$> byName "spec"
+        `shouldBe` Just (TestSuite, Just "Spec.hs", ["base", "demo", "hspec"])
+
+    it "errors on malformed cabal input" $
+      parseCabalComponents "library\n  exposed-modules: =bad=" `shouldSatisfy` isLeft
 
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do
