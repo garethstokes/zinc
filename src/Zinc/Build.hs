@@ -3,7 +3,16 @@
 module Zinc.Build
   ( GhcInvocation (..)
   , ghcMakeArgs
+  , PackageConf (..)
+  , renderConf
+  , archiveArgs
+  , registerPackage
   ) where
+
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist)
+import System.Exit (ExitCode (..))
+import System.FilePath (takeDirectory, (</>))
+import System.Process (readProcessWithExitCode)
 
 -- | Everything needed to compile one component with @ghc --make@.
 data GhcInvocation = GhcInvocation
@@ -31,3 +40,60 @@ ghcMakeArgs gi =
     ++ map ("-X" ++) (giExtensions gi)
     ++ giGhcOptions gi
     ++ giModules gi
+
+-- | A synthesized installed-package description (@.conf@) — the metadata
+-- @ghc-pkg register@ records so later compiles can @-package@ this build.
+data PackageConf = PackageConf
+  { confName           :: String
+  , confVersion        :: String
+  , confId             :: String     -- ^ unit-id
+  , confExposedModules :: [String]
+  , confImportDirs     :: [FilePath]
+  , confLibraryDirs    :: [FilePath]
+  , confHsLibraries    :: [String]
+  , confDepends        :: [String]   -- ^ dependency unit-ids
+  }
+  deriving (Eq, Show)
+
+-- | Render a 'PackageConf' to ghc-pkg's @.conf@ format.
+renderConf :: PackageConf -> String
+renderConf c =
+  unlines
+    [ "name: " ++ confName c
+    , "version: " ++ confVersion c
+    , "id: " ++ confId c
+    , "key: " ++ confId c
+    , "exposed: True"
+    , "exposed-modules: " ++ unwords (confExposedModules c)
+    , "import-dirs: " ++ unwords (confImportDirs c)
+    , "library-dirs: " ++ unwords (confLibraryDirs c)
+    , "hs-libraries: " ++ unwords (confHsLibraries c)
+    , "depends: " ++ unwords (confDepends c)
+    ]
+
+-- | @ar@ arguments to assemble a static library archive from object files.
+archiveArgs :: FilePath -> String -> [FilePath] -> [String]
+archiveArgs libDir unitId objs =
+  ["rcs", libDir </> ("libHS" ++ unitId ++ ".a")] ++ objs
+
+-- | Register a rendered @.conf@ into the given package db (creating it if
+-- needed). Uses @--force@ so a freshly-built package registers even before
+-- ghc-pkg can re-validate every path.
+registerPackage :: FilePath -> String -> IO (Either String ())
+registerPackage db confText = do
+  createDirectoryIfMissing True (takeDirectory db)
+  exists <- doesDirectoryExist db
+  initResult <- if exists then pure (Right ()) else runUnit "ghc-pkg" ["init", db]
+  case initResult of
+    Left err -> pure (Left err)
+    Right () -> do
+      let confFile = takeDirectory db </> "register.conf"
+      writeFile confFile confText
+      runUnit "ghc-pkg" ["--package-db", db, "register", "--force", confFile]
+
+runUnit :: String -> [String] -> IO (Either String ())
+runUnit cmd args = do
+  (code, _out, err) <- readProcessWithExitCode cmd args ""
+  pure $ case code of
+    ExitSuccess   -> Right ()
+    ExitFailure _ -> Left (cmd ++ ": " ++ err)

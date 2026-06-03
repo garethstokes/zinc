@@ -32,7 +32,7 @@ import Zinc.Manifest
   )
 import Zinc.Fetch (gitFetchManifest)
 import Zinc.Add (freezeClosure, lockEntry)
-import Zinc.Build (GhcInvocation (..), ghcMakeArgs)
+import Zinc.Build (GhcInvocation (..), PackageConf (..), archiveArgs, ghcMakeArgs, registerPackage, renderConf)
 import Zinc.Cabal (parseCabalComponents)
 import Zinc.Env (envCacheKey, nixPrintDevEnv, provisionEnv)
 import Zinc.Macros (emitCabalMacros)
@@ -776,6 +776,53 @@ main = hspec $ do
                    , "-O"
                    , "Leaf"
                    ]
+
+  describe "package conf + register" $ do
+    it "archiveArgs builds the ar command" $
+      archiveArgs "/lib" "myapp-0.1.0" ["A.o", "B.o"]
+        `shouldBe` ["rcs", "/lib/libHSmyapp-0.1.0.a", "A.o", "B.o"]
+
+    it "renderConf emits the key fields" $
+      let out =
+            renderConf
+              PackageConf
+                { confName = "myapp"
+                , confVersion = "0.1.0"
+                , confId = "myapp-0.1.0-abc"
+                , confExposedModules = ["Myapp", "Myapp.Core"]
+                , confImportDirs = ["/hi"]
+                , confLibraryDirs = ["/lib"]
+                , confHsLibraries = ["HSmyapp-0.1.0-abc"]
+                , confDepends = []
+                }
+       in all
+            (`isInfixOf` out)
+            [ "name: myapp"
+            , "id: myapp-0.1.0-abc"
+            , "exposed-modules: Myapp Myapp.Core"
+            , "hs-libraries: HSmyapp-0.1.0-abc"
+            ]
+            `shouldBe` True
+
+    it "registers a synthesized conf (accepted by ghc-pkg)" $ do
+      let base = "/tmp/zinc-pkgdb-test"
+          db = base ++ "/db"
+      stale <- doesDirectoryExist base
+      when stale $ removeDirectoryRecursive base
+      let conf =
+            renderConf
+              PackageConf
+                { confName = "demo"
+                , confVersion = "1.0"
+                , confId = "demo-1.0-deadbeef"
+                , confExposedModules = ["Demo"]
+                , confImportDirs = [base ++ "/hi"]
+                , confLibraryDirs = [base ++ "/lib"]
+                , confHsLibraries = ["HSdemo-1.0-deadbeef"]
+                , confDepends = []
+                }
+      r <- registerPackage db conf
+      r `shouldBe` Right ()
 
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do
