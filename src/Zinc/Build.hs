@@ -11,10 +11,13 @@ module Zinc.Build
   , runPreprocessor
   , MemberBuild (..)
   , buildMember
+  , LibBuild (..)
+  , buildLib
+  , initPackageDb
   ) where
 
 import Data.List (nub)
-import System.Directory (createDirectoryIfMissing, doesDirectoryExist)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, listDirectory)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, takeExtension, (-<.>), (</>))
 import System.Process (readProcessWithExitCode)
@@ -87,15 +90,20 @@ archiveArgs libDir unitId objs =
 -- ghc-pkg can re-validate every path.
 registerPackage :: FilePath -> String -> IO (Either String ())
 registerPackage db confText = do
-  createDirectoryIfMissing True (takeDirectory db)
-  exists <- doesDirectoryExist db
-  initResult <- if exists then pure (Right ()) else runUnit "ghc-pkg" ["init", db]
+  initResult <- initPackageDb db
   case initResult of
     Left err -> pure (Left err)
     Right () -> do
       let confFile = takeDirectory db </> "register.conf"
       writeFile confFile confText
       runUnit "ghc-pkg" ["--package-db", db, "register", "--force", confFile]
+
+-- | Create an empty package db (no-op if it already exists).
+initPackageDb :: FilePath -> IO (Either String ())
+initPackageDb db = do
+  createDirectoryIfMissing True (takeDirectory db)
+  exists <- doesDirectoryExist db
+  if exists then pure (Right ()) else runUnit "ghc-pkg" ["init", db]
 
 runUnit :: String -> [String] -> IO (Either String ())
 runUnit cmd args = do
@@ -152,3 +160,62 @@ buildMember mb = do
           ++ ["-outputdir", mbBuildDir mb, mainFile, "-o", exe]
   result <- runUnit "ghc" args
   pure (fmap (const exe) result)
+
+-- | Inputs to build a member's library so siblings can link against it.
+data LibBuild = LibBuild
+  { lbMemberDir :: FilePath
+  , lbDistDir   :: FilePath  -- ^ holds .hi/.o and the archive; also the lib dir
+  , lbPackageDb :: FilePath  -- ^ workspace db to register into / resolve sibling deps
+  , lbName      :: String
+  , lbVersion   :: String
+  , lbComponent :: Component  -- ^ the library component
+  }
+
+-- | Compile a library component, archive it, and register it into the
+-- workspace package db so sibling members can @-package@ it.
+buildLib :: LibBuild -> IO (Either String ())
+buildLib lb = do
+  createDirectoryIfMissing True (lbDistDir lb)
+  let comp = lbComponent lb
+      unitId = lbName lb ++ "-" ++ lbVersion lb
+      srcDirs = if null (compSourceDirs comp) then ["."] else compSourceDirs comp
+      modules = compExposedModules comp ++ compOtherModules comp
+      compileArgs =
+        ["--make", "-hide-all-packages", "-package-db", lbPackageDb lb]
+          ++ concatMap (\p -> ["-package", p]) (nub ("base" : compDepends comp))
+          ++ map (\d -> "-i" ++ (lbMemberDir lb </> d)) srcDirs
+          ++ ["-this-unit-id", unitId, "-outputdir", lbDistDir lb]
+          ++ map ("-X" ++) (compExtensions comp)
+          ++ compGhcOptions comp
+          ++ modules
+  chain (runUnit "ghc" compileArgs) $ \_ -> do
+    objs <- findObjs (lbDistDir lb)
+    chain (runUnit "ar" (archiveArgs (lbDistDir lb) unitId objs)) $ \_ ->
+      registerPackage (lbPackageDb lb) $
+        renderConf
+          PackageConf
+            { confName = lbName lb
+            , confVersion = lbVersion lb
+            , confId = unitId
+            , confExposedModules = compExposedModules comp
+            , confImportDirs = [lbDistDir lb]
+            , confLibraryDirs = [lbDistDir lb]
+            , confHsLibraries = ["HS" ++ unitId]
+            , confDepends = []
+            }
+  where
+    chain act k = act >>= either (pure . Left) k
+
+-- | Recursively list object files under a directory.
+findObjs :: FilePath -> IO [FilePath]
+findObjs root = do
+  exists <- doesDirectoryExist root
+  if not exists then pure [] else go root
+  where
+    go dir = do
+      entries <- listDirectory dir
+      fmap concat $ mapM (classify dir) entries
+    classify dir e = do
+      let p = dir </> e
+      isDir <- doesDirectoryExist p
+      if isDir then go p else pure [p | takeExtension p == ".o"]

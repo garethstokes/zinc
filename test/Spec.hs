@@ -41,7 +41,7 @@ import Zinc.Cabal (parseCabalComponents)
 import Zinc.Env (envCacheKey, nixPrintDevEnv, provisionEnv)
 import Zinc.Macros (emitCabalMacros)
 import Zinc.Nix (generateFlake)
-import Zinc.Orchestrate (runBuild)
+import Zinc.Orchestrate (orderMembers, runBuild)
 import Zinc.Paths (pathsModuleName, synthesizePaths)
 import Zinc.Report (renderResolution)
 import Zinc.SysLibs (toNixpkgs)
@@ -56,6 +56,12 @@ bodyOf p = fmap specBody . find ((== p) . specPath)
 
 trimStr :: String -> String
 trimStr = f . f where f = reverse . dropWhile isSpace
+
+-- | Write a file, creating parent directories first.
+writeFileIn :: FilePath -> String -> IO ()
+writeFileIn path content = do
+  createDirectoryIfMissing True (takeDirectory path)
+  writeFile path content
 
 -- | Write a fresh directory tree from (relative path, contents) pairs.
 writeTree :: FilePath -> [(FilePath, String)] -> IO ()
@@ -1006,6 +1012,32 @@ main = hspec $ do
         Right (exe : _) -> do
           out <- readProcess exe [] ""
           out `shouldBe` "Hello from demo!\n"
+        Right [] -> expectationFailure "no executable built"
+        Left err -> expectationFailure err
+
+  describe "orderMembers" $
+    it "orders a member after the siblings it depends on" $ do
+      let comp deps =
+            Component Library "x" [] [] [] Nothing [] [] deps []
+          core = ("packages/core", MemberManifest "core" "1.0" [comp []])
+          app = ("packages/app", MemberManifest "app" "1.0" [comp ["core"]])
+      map (pkgName . snd) (orderMembers [app, core]) `shouldBe` ["core", "app"]
+
+  describe "runBuild sibling linking (end-to-end)" $
+    it "builds a lib member and an exe member that links it" $ do
+      let d = "/tmp/zinc-sibling-ws"
+      stale <- doesDirectoryExist d
+      when stale $ removeDirectoryRecursive d
+      writeFileIn (d ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/core", "packages/app"] "9.6.5" [] []))
+      writeFileIn (d ++ "/packages/core/zinc.toml") (unlines ["[package]", "name = \"core\"", "version = \"1.0\"", "[build.lib]", "source-dirs = [\"src\"]", "exposed-modules = [\"Core\"]"])
+      writeFileIn (d ++ "/packages/core/src/Core.hs") "module Core (greeting) where\ngreeting :: String\ngreeting = \"hi from core\"\n"
+      writeFileIn (d ++ "/packages/app/zinc.toml") (unlines ["[package]", "name = \"app\"", "version = \"1.0\"", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "depends = [\"core\"]"])
+      writeFileIn (d ++ "/packages/app/app/Main.hs") "module Main where\nimport Core (greeting)\nmain :: IO ()\nmain = putStrLn greeting\n"
+      r <- runBuild d
+      case r of
+        Right (exe : _) -> do
+          out <- readProcess exe [] ""
+          out `shouldBe` "hi from core\n"
         Right [] -> expectationFailure "no executable built"
         Left err -> expectationFailure err
 
