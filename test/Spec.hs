@@ -1199,6 +1199,43 @@ main = hspec $ do
       r <- buildAndRun ws []
       r `shouldBe` Right "greet 1.2\n"
 
+  describe "deep closure + artifact cache (end-to-end)" $
+    it "builds a 2-level git-dep closure, then rebuilds from cache after sources are gone" $ do
+      let base = "/tmp/zinc-deep-ws"
+          repoB = base ++ "/b-repo"
+          repoA = base ++ "/a-repo"
+          ws = base ++ "/ws"
+          gitIn d args = readProcess "git" ("-C" : d : args) ""
+          mkRepo d files = do
+            mapM_ (uncurry writeFileIn) [(d ++ "/" ++ p, c) | (p, c) <- files]
+            _ <- gitIn d ["init", "--quiet"]
+            _ <- gitIn d ["config", "user.email", "t@e"]
+            _ <- gitIn d ["config", "user.name", "T"]
+            _ <- gitIn d ["add", "."]
+            _ <- gitIn d ["commit", "--quiet", "-m", "c"]
+            trimStr <$> gitIn d ["rev-parse", "HEAD"]
+      stale <- doesDirectoryExist base
+      when stale $ removeDirectoryRecursive base
+      revB <- mkRepo repoB
+        [ ("zinc.toml", unlines ["[package]", "name = \"b\"", "version = \"1.0\"", "[build.lib]", "source-dirs = [\"src\"]", "exposed-modules = [\"BMod\"]"])
+        , ("src/BMod.hs", "module BMod (vb) where\nvb :: String\nvb = \"B\"\n")
+        ]
+      revA <- mkRepo repoA
+        [ ("zinc.toml", unlines ["[package]", "name = \"a\"", "version = \"1.0\"", "[build.lib]", "source-dirs = [\"src\"]", "exposed-modules = [\"AMod\"]", "depends = [\"b\"]"])
+        , ("src/AMod.hs", "module AMod (va) where\nimport BMod (vb)\nva :: String\nva = \"A+\" ++ vb\n")
+        ]
+      writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "a" (Rev revA)] [("a", repoA), ("b", repoB)]))
+      writeFileIn (ws ++ "/zinc.lock") (renderLock [LockedPackage "a" repoA revA "sha256:a" ["b"], LockedPackage "b" repoB revB "sha256:b" []])
+      writeFileIn (ws ++ "/packages/app/zinc.toml") (unlines ["[package]", "name = \"app\"", "version = \"1.0\"", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "depends = [\"a\"]"])
+      writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport AMod (va)\nmain :: IO ()\nmain = putStrLn va\n"
+      first <- buildAndRun ws []
+      -- destroy the dependency sources; a correct cache must rebuild without them
+      removeDirectoryRecursive repoA
+      removeDirectoryRecursive repoB
+      removeDirectoryRecursive (ws ++ "/.zinc/store/src")
+      second <- buildAndRun ws []
+      (first, second) `shouldBe` (Right "A+B\n", Right "A+B\n")
+
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do
       let root = "/tmp/zinc-scaffold-test"

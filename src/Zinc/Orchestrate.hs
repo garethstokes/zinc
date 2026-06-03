@@ -17,13 +17,15 @@ module Zinc.Orchestrate
   , runRepl
   ) where
 
+import Control.Monad (when)
 import qualified Data.Map as Map
-import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
+import System.Directory (doesDirectoryExist, doesFileExist, listDirectory, removeDirectoryRecursive)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeExtension, (</>))
 import System.Process (callProcess, readProcess, readProcessWithExitCode)
-import Zinc.Build (LibBuild (..), MemberBuild (..), buildLib, buildMember, initPackageDb, replArgs)
+import Zinc.Build (LibBuild (..), MemberBuild (..), buildLib, buildMember, initPackageDb, registerPackage, replArgs)
 import Zinc.Cabal (parseCabalComponentsForGhc)
+import Zinc.Cache (BuildKey (..), buildCacheKey, storeConfPath, storePkgPath)
 import Zinc.Git (cloneAt)
 import Zinc.Lock (LockedPackage (..), parseLock)
 import Zinc.Manifest
@@ -54,6 +56,10 @@ buildWorkspace wsDir target keep = do
         Left err -> pure (Left err)
         Right members -> do
           let wsDb = wsDir </> ".zinc" </> "pkgdb"
+          -- Rebuild the workspace package db fresh each build so re-registering
+          -- closure/sibling libs (from cache) is conflict-free.
+          dbThere <- doesDirectoryExist wsDb
+          when dbThere $ removeDirectoryRecursive wsDb
           ready <- initPackageDb wsDb
           case ready of
             Left err -> pure (Left err)
@@ -183,20 +189,30 @@ buildClosure wsDir storeRoot wsDb ghcVersion = do
         Left err -> pure (Left err)
         Right () -> buildEach rest
 
+    -- Content-addressed cache key from data available without the source, so a
+    -- cached build is reused without even fetching.
+    cacheKeyOf l = buildCacheKey (BuildKey (lockRev l) ghcVersion (lockDepends l) [])
+
     buildOne l = do
-      let dest = storeSrcPath storeRoot (lockName l) (lockRev l)
-      exists <- doesDirectoryExist dest
-      fetched <-
-        if exists then pure (Right (lockRev l)) else cloneAt (lockRepo l) (lockRev l) dest
-      case fetched of
-        Left err -> pure (Left ("fetch " ++ lockName l ++ ": " ++ err))
-        Right _ -> do
-          comps <- loadDepComponents dest
-          case comps of
-            Left err -> pure (Left (lockName l ++ ": " ++ err))
-            Right (version, components) -> case filter ((== Library) . compKind) components of
-              []        -> pure (Right ()) -- no library to build
-              (lib : _) -> buildLib (LibBuild dest (dest </> ".zinc-dist") wsDb (lockName l) version lib)
+      let key = cacheKeyOf l
+          confPath = storeConfPath storeRoot key
+      cached <- doesFileExist confPath
+      if cached
+        then readFile confPath >>= registerPackage wsDb -- cache hit: re-register, no fetch/compile
+        else do
+          let dest = storeSrcPath storeRoot (lockName l) (lockRev l)
+          exists <- doesDirectoryExist dest
+          fetched <-
+            if exists then pure (Right (lockRev l)) else cloneAt (lockRepo l) (lockRev l) dest
+          case fetched of
+            Left err -> pure (Left ("fetch " ++ lockName l ++ ": " ++ err))
+            Right _ -> do
+              comps <- loadDepComponents dest
+              case comps of
+                Left err -> pure (Left (lockName l ++ ": " ++ err))
+                Right (version, components) -> case filter ((== Library) . compKind) components of
+                  []        -> pure (Right ()) -- no library to build
+                  (lib : _) -> buildLib (LibBuild dest (storePkgPath storeRoot key) wsDb (lockName l) version lib)
 
     -- A dependency's components come from its zinc.toml ([build] block) if it
     -- is zinc-native, else from its .cabal via the Opt-2 reader.

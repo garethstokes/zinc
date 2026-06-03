@@ -25,6 +25,7 @@ import System.Process (readProcessWithExitCode)
 import Zinc.Macros (emitCabalMacros)
 import Zinc.Manifest (Component (..))
 import Zinc.Paths (pathsModuleName, synthesizePaths)
+import Zinc.Resolve (isBootLib)
 
 -- | Everything needed to compile one component with @ghc --make@.
 data GhcInvocation = GhcInvocation
@@ -184,7 +185,9 @@ buildLib lb = do
   let gen = lbDistDir lb </> "zinc-gen"
   createDirectoryIfMissing True gen
   let comp = lbComponent lb
-      unitId = lbName lb ++ "-" ++ lbVersion lb
+      -- One ref per package name (spec §2), so the unit-id is just the name;
+      -- this also lets dependents reference it by name in their conf depends.
+      unitId = lbName lb
       pathsMod = pathsModuleName (lbName lb)
       macrosHeader = gen </> "cabal_macros.h"
   writeFile (gen </> pathsMod <.> "hs") (synthesizePaths (lbName lb) (versionInts (lbVersion lb)))
@@ -203,19 +206,25 @@ buildLib lb = do
           ++ modules
   chain (runUnit "ghc" compileArgs) $ \_ -> do
     objs <- findObjs (lbDistDir lb)
-    chain (runUnit "ar" (archiveArgs (lbDistDir lb) unitId objs)) $ \_ ->
-      registerPackage (lbPackageDb lb) $
-        renderConf
-          PackageConf
-            { confName = lbName lb
-            , confVersion = lbVersion lb
-            , confId = unitId
-            , confExposedModules = compExposedModules comp
-            , confImportDirs = [lbDistDir lb]
-            , confLibraryDirs = [lbDistDir lb]
-            , confHsLibraries = ["HS" ++ unitId]
-            , confDepends = []
-            }
+    chain (runUnit "ar" (archiveArgs (lbDistDir lb) unitId objs)) $ \_ -> do
+      let confText =
+            renderConf
+              PackageConf
+                { confName = lbName lb
+                , confVersion = lbVersion lb
+                , confId = unitId
+                , confExposedModules = compExposedModules comp
+                , confImportDirs = [lbDistDir lb]
+                , confLibraryDirs = [lbDistDir lb]
+                , confHsLibraries = ["HS" ++ unitId]
+                , -- non-boot deps only (boot libs link via the always-present -package base;
+                  -- their registered ids carry versions we don't track here)
+                  confDepends = filter (not . isBootLib) (compDepends comp)
+                }
+      -- Persist the conf alongside the build so the artifact cache can
+      -- re-register it without recompiling.
+      writeFile (lbDistDir lb </> "package.conf") confText
+      registerPackage (lbPackageDb lb) confText
   where
     chain act k = act >>= either (pure . Left) k
 
