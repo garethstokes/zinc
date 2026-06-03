@@ -1,6 +1,8 @@
 module Zinc.Manifest
   ( WorkspaceManifest (..)
   , MemberManifest (..)
+  , Component (..)
+  , ComponentKind (..)
   , Dependency (..)
   , Ref (..)
   , parseWorkspace
@@ -11,7 +13,7 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 import qualified Toml
 import Toml.Value (Value (..))
-import Zinc.TOML (stringArrayField, stringField, subTable, tableField)
+import Zinc.TOML (optStringArray, stringArrayField, stringField, subTable, tableField)
 
 -- | How a dependency is pinned. There is exactly one ref per package name
 -- across a workspace, and bounds are ignored (spec §2).
@@ -39,22 +41,78 @@ data WorkspaceManifest = WorkspaceManifest
   }
   deriving (Eq, Show)
 
--- | A member package's @[package]@ identity. The @[build.*]@ component model
--- is parsed separately (task zinc-th0.3).
-data MemberManifest = MemberManifest
-  { pkgName    :: String
-  , pkgVersion :: String
+-- | A buildable component within a member package (spec §4).
+data ComponentKind = Library | Executable | TestSuite
+  deriving (Eq, Show)
+
+-- | One @[build.*]@ component. Absent fields default to empty.
+data Component = Component
+  { compKind           :: ComponentKind
+  , compName           :: String       -- ^ @"lib"@, or the exe/test name
+  , compSourceDirs     :: [String]
+  , compExposedModules :: [String]     -- ^ library only
+  , compOtherModules   :: [String]
+  , compMain           :: Maybe String -- ^ executable/test entrypoint
+  , compExtensions     :: [String]
+  , compGhcOptions     :: [String]
+  , compDepends        :: [String]
+  , compSystemLibs     :: [String]     -- ^ nixpkgs attr names
   }
   deriving (Eq, Show)
 
--- | Parse a member manifest's @[package]@ identity from TOML source.
+-- | A member package's @[package]@ identity plus its @[build.*]@ components.
+data MemberManifest = MemberManifest
+  { pkgName       :: String
+  , pkgVersion    :: String
+  , pkgComponents :: [Component]
+  }
+  deriving (Eq, Show)
+
+-- | Parse a member manifest (identity + build components) from TOML source.
 parseMember :: String -> Either String MemberManifest
 parseMember src = do
   top     <- Toml.parse src
   pkg     <- tableField "package" top
   name    <- stringField "name" pkg
   version <- stringField "version" pkg
-  pure MemberManifest {pkgName = name, pkgVersion = version}
+  pure
+    MemberManifest
+      { pkgName = name
+      , pkgVersion = version
+      , pkgComponents = parseBuild top
+      }
+
+-- | Parse the @[build]@ table into components: one @lib@, plus each named
+-- @exe.\<name\>@ and @test.\<name\>@.
+parseBuild :: Map String Value -> [Component]
+parseBuild top = lib ++ named Executable "exe" ++ named TestSuite "test"
+  where
+    build = subTable "build" top
+    lib = case Map.lookup "lib" build of
+      Just (Table t) -> [mkComponent Library "lib" t]
+      _              -> []
+    named kind key =
+      [mkComponent kind name t | (name, Table t) <- Map.toList (subTable key build)]
+
+mkComponent :: ComponentKind -> String -> Map String Value -> Component
+mkComponent kind name t =
+  Component
+    { compKind = kind
+    , compName = name
+    , compSourceDirs = strs "source-dirs"
+    , compExposedModules = strs "exposed-modules"
+    , compOtherModules = strs "other-modules"
+    , compMain = str "main"
+    , compExtensions = strs "extensions"
+    , compGhcOptions = strs "ghc-options"
+    , compDepends = strs "depends"
+    , compSystemLibs = strs "system-libs"
+    }
+  where
+    strs k = either (const []) id (optStringArray k t)
+    str k = case Map.lookup k t of
+      Just (String s) -> Just s
+      _               -> Nothing
 
 -- | Parse a workspace-root manifest from TOML source.
 parseWorkspace :: String -> Either String WorkspaceManifest

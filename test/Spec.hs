@@ -18,7 +18,9 @@ import Zinc.CLI (Command (..), parseArgs)
 import Zinc.Git (cloneAt)
 import Zinc.Store (contentHash, storeSrcPath, verifyContent)
 import Zinc.Manifest
-  ( Dependency (..)
+  ( Component (..)
+  , ComponentKind (..)
+  , Dependency (..)
   , MemberManifest (..)
   , Ref (..)
   , WorkspaceManifest (..)
@@ -281,6 +283,63 @@ main = hspec $ do
       ok <- verifyContent d h
       bad <- verifyContent d "sha256:deadbeef"
       (ok, bad) `shouldBe` (True, False)
+
+  describe "parseMember [build.*] components" $ do
+    let sample =
+          unlines
+            [ "[package]"
+            , "name = \"myapp\""
+            , "version = \"0.1.0\""
+            , ""
+            , "[build.lib]"
+            , "source-dirs = [\"src\"]"
+            , "exposed-modules = [\"Myapp\", \"Myapp.Core\"]"
+            , "other-modules = [\"Myapp.Internal\"]"
+            , "extensions = [\"OverloadedStrings\"]"
+            , "ghc-options = [\"-Wall\"]"
+            , "depends = [\"aeson\"]"
+            , "system-libs = [\"zlib\"]"
+            , ""
+            , "[build.exe.myapp]"
+            , "source-dirs = [\"app\"]"
+            , "main = \"Main.hs\""
+            , "depends = [\"myapp\"]"
+            , ""
+            , "[build.test.spec]"
+            , "source-dirs = [\"test\"]"
+            , "main = \"Spec.hs\""
+            , "depends = [\"myapp\", \"hspec\"]"
+            ]
+        comps = either (const []) pkgComponents (parseMember sample)
+        byName n = find ((== n) . compName) comps
+
+    it "parses the library component with all its fields" $
+      byName "lib"
+        `shouldBe` Just
+          Component
+            { compKind = Library
+            , compName = "lib"
+            , compSourceDirs = ["src"]
+            , compExposedModules = ["Myapp", "Myapp.Core"]
+            , compOtherModules = ["Myapp.Internal"]
+            , compMain = Nothing
+            , compExtensions = ["OverloadedStrings"]
+            , compGhcOptions = ["-Wall"]
+            , compDepends = ["aeson"]
+            , compSystemLibs = ["zlib"]
+            }
+
+    it "parses a named executable component" $
+      (\c -> (compKind c, compMain c, compSourceDirs c, compDepends c)) <$> byName "myapp"
+        `shouldBe` Just (Executable, Just "Main.hs", ["app"], ["myapp"])
+
+    it "parses a named test component" $
+      (\c -> (compKind c, compMain c, compDepends c)) <$> byName "spec"
+        `shouldBe` Just (TestSuite, Just "Spec.hs", ["myapp", "hspec"])
+
+    it "yields no components when [build] is absent" $
+      (pkgComponents <$> parseMember "[package]\nname = \"x\"\nversion = \"1\"")
+        `shouldBe` Right []
 
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do
