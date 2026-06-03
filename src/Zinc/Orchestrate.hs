@@ -19,6 +19,8 @@ module Zinc.Orchestrate
   ) where
 
 import Control.Monad (when)
+import Data.Char (isHexDigit)
+import Data.List (stripPrefix)
 import qualified Data.Map as Map
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory, removeDirectoryRecursive)
 import System.Exit (ExitCode (..))
@@ -40,7 +42,7 @@ import Zinc.Manifest
   , parseWorkspace
   )
 import Zinc.Resolve (ResolvedDep (..), topoSort)
-import Zinc.Store (storeRootFor, storeSrcPath)
+import Zinc.Store (storeRootFor, storeSrcPath, verifyContent)
 
 -- | Build a workspace: each member's library (so siblings can link) plus every
 -- component whose kind satisfies @keep@, returned as built executable paths.
@@ -208,12 +210,32 @@ buildClosure wsDir storeRoot wsDb ghcVersion = do
           case fetched of
             Left err -> pure (Left ("fetch " ++ lockName l ++ ": " ++ err))
             Right _ -> do
-              comps <- loadDepComponents dest
-              case comps of
-                Left err -> pure (Left (lockName l ++ ": " ++ err))
-                Right (version, components) -> case filter ((== Library) . compKind) components of
-                  []        -> pure (Right ()) -- no library to build
-                  (lib : _) -> buildLib (LibBuild dest (storePkgPath storeRoot key) wsDb (lockName l) version lib)
+              integrity <- verifyFetched l dest
+              case integrity of
+                Left err -> pure (Left err)
+                Right () -> do
+                  comps <- loadDepComponents dest
+                  case comps of
+                    Left err -> pure (Left (lockName l ++ ": " ++ err))
+                    Right (version, components) -> case filter ((== Library) . compKind) components of
+                      []        -> pure (Right ()) -- no library to build
+                      (lib : _) -> buildLib (LibBuild dest (storePkgPath storeRoot key) wsDb (lockName l) version lib)
+
+    -- Tamper detection (spec §8): a fetched tree's content hash must match the
+    -- lock's recorded sha256. Only enforced for real-shaped hashes so that
+    -- placeholder shas (fixtures, pre-freeze locks) don't block the build.
+    verifyFetched l dest
+      | looksRealSha (lockSha256 l) = do
+          ok <- verifyContent dest (lockSha256 l)
+          pure $
+            if ok
+              then Right ()
+              else Left (lockName l ++ ": content hash mismatch (lock expects " ++ lockSha256 l ++ ")")
+      | otherwise = pure (Right ())
+
+    looksRealSha s = case stripPrefix "sha256:" s of
+      Just h  -> length h == 64 && all isHexDigit h
+      _       -> False
 
     -- A dependency's components come from its zinc.toml ([build] block) if it
     -- is zinc-native, else from its .cabal via the Opt-2 reader.

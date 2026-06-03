@@ -1176,6 +1176,31 @@ main = hspec $ do
       r <- buildAndRun ws []
       r `shouldBe` Right "hi from cabal dep\n"
 
+  describe "content-hash verification on build (spec §8)" $
+    it "rejects a fetched dep whose content hash does not match the lock" $ do
+      let base = "/tmp/zinc-tamper-ws"
+          dep = base ++ "/greet-repo"
+          ws = base ++ "/ws"
+      stale <- doesDirectoryExist base
+      when stale $ removeDirectoryRecursive base
+      writeFileIn (dep ++ "/zinc.toml") (unlines ["[package]", "name = \"greet\"", "version = \"1.0\"", "[build.lib]", "source-dirs = [\"src\"]", "exposed-modules = [\"Greet\"]"])
+      writeFileIn (dep ++ "/src/Greet.hs") "module Greet (hello) where\nhello :: String\nhello = \"hi\"\n"
+      let git args = readProcess "git" ("-C" : dep : args) ""
+      _ <- git ["init", "--quiet"]
+      _ <- git ["config", "user.email", "t@example.com"]
+      _ <- git ["config", "user.name", "Test"]
+      _ <- git ["add", "."]
+      _ <- git ["commit", "--quiet", "-m", "greet"]
+      rev <- trimStr <$> git ["rev-parse", "HEAD"]
+      -- a real-shaped sha256 that deliberately does NOT match the source tree
+      let wrongSha = "sha256:" ++ replicate 64 '0'
+      writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "greet" (Rev rev)] [("greet", dep)]))
+      writeFileIn (ws ++ "/zinc.lock") (renderLock [LockedPackage "greet" dep rev wrongSha []])
+      writeFileIn (ws ++ "/packages/app/zinc.toml") (unlines ["[package]", "name = \"app\"", "version = \"1.0\"", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "depends = [\"greet\"]"])
+      writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Greet (hello)\nmain :: IO ()\nmain = putStrLn hello\n"
+      r <- buildAndRun ws []
+      r `shouldSatisfy` either (isInfixOf "content hash mismatch") (const False)
+
   describe "dependency build with Paths_ (end-to-end)" $
     it "synthesizes Paths_<pkg> so a dep importing it builds + links" $ do
       let base = "/tmp/zinc-paths-dep-ws"
