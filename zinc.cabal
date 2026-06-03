@@ -15,6 +15,7 @@ library
                     Zinc.Build
                     Zinc.CLI
                     Zinc.Cabal
+                    Zinc.Cache
                     Zinc.Env
                     Zinc.Fetch
                     Zinc.Git

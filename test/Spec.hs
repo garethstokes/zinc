@@ -33,6 +33,7 @@ import Zinc.Manifest
 import Zinc.Fetch (gitFetchManifest)
 import Zinc.Add (freezeClosure, lockEntry)
 import Zinc.Build (GhcInvocation (..), PackageConf (..), archiveArgs, ghcMakeArgs, preprocessorFor, registerPackage, renderConf, runPreprocessor)
+import Zinc.Cache (BuildKey (..), buildCacheKey, storePkgPath)
 import Zinc.Cabal (parseCabalComponents)
 import Zinc.Env (envCacheKey, nixPrintDevEnv, provisionEnv)
 import Zinc.Macros (emitCabalMacros)
@@ -842,6 +843,25 @@ main = hspec $ do
       r <- runPreprocessor (dir ++ "/Foo.hsc")
       produced <- doesFileExist (dir ++ "/Foo.hs")
       (r, produced) `shouldBe` (Right (), True)
+
+  describe "build cache key" $ do
+    let key deps opts = buildCacheKey (BuildKey "abc" "9.6.5" deps opts)
+        k1 = key ["base-4", "aeson-2"] ["-O2"]
+
+    it "is deterministic" $
+      key ["base-4", "aeson-2"] ["-O2"] `shouldBe` k1
+
+    it "is order-independent for deps and options" $
+      key ["aeson-2", "base-4"] ["-O2"] `shouldBe` k1
+
+    it "changes with the resolved rev" $
+      (buildCacheKey (BuildKey "xyz" "9.6.5" ["base-4", "aeson-2"] ["-O2"]) == k1) `shouldBe` False
+
+    it "changes with the ghc version" $
+      (buildCacheKey (BuildKey "abc" "9.8.2" ["base-4", "aeson-2"] ["-O2"]) == k1) `shouldBe` False
+
+    it "lays out the package store path" $
+      storePkgPath "/store" "deadbeef" `shouldBe` "/store/pkg/deadbeef"
 
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do
