@@ -7,6 +7,7 @@
 -- 'finalizePD' against default flags + the current platform + a GHC compiler.
 module Zinc.Cabal
   ( parseCabalComponents
+  , parseCabalComponentsForGhc
   ) where
 
 import qualified Data.ByteString.Char8 as BS
@@ -50,10 +51,15 @@ import Distribution.Version (mkVersion)
 import Zinc.Manifest (Component (..), ComponentKind (..))
 import Zinc.SysLibs (toNixpkgs)
 
--- | Derive zinc 'Component's from @.cabal@ source: the library (named @"lib"@),
--- each executable, and each test-suite, with conditionals resolved.
+-- | Derive zinc 'Component's from @.cabal@ source, resolving conditionals
+-- against a recent default GHC. See 'parseCabalComponentsForGhc'.
 parseCabalComponents :: String -> Either String [Component]
-parseCabalComponents src =
+parseCabalComponents = parseCabalComponentsForGhc "9.6.5"
+
+-- | Like 'parseCabalComponents', but resolve @impl(ghc ...)@ conditionals
+-- against the given GHC version (e.g. the workspace's @ghc@).
+parseCabalComponentsForGhc :: String -> String -> Either String [Component]
+parseCabalComponentsForGhc ghcVersion src =
   case snd (runParseResult (parseGenericPackageDescription (BS.pack src))) of
     Left err -> Left ("cabal parse error: " ++ show err)
     Right gpd ->
@@ -62,9 +68,15 @@ parseCabalComponents src =
         Right (pd, _flags) ->
           Right (libraryComponent pd ++ executableComponents pd ++ testComponents pd)
   where
-    -- A recent GHC for resolving impl(ghc ...) conditions. (Threading the
-    -- workspace's exact GHC version is a future refinement.)
-    ghc = unknownCompilerInfo (CompilerId GHC (mkVersion [9, 6, 5])) NoAbiTag
+    ghc = unknownCompilerInfo (CompilerId GHC (mkVersion (versionInts ghcVersion))) NoAbiTag
+
+-- | Parse a dotted version string into integer components (e.g. @"9.6.5"@).
+versionInts :: String -> [Int]
+versionInts = map read . splitDots
+  where
+    splitDots s = case break (== '.') s of
+      (a, [])    -> [a]
+      (a, _ : r) -> a : splitDots r
 
 libraryComponent :: PackageDescription -> [Component]
 libraryComponent pd = maybe [] (\l -> [fromLibrary l]) (library pd)

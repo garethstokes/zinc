@@ -37,7 +37,7 @@ import Zinc.Fetch (gitFetchManifest)
 import Zinc.Add (freezeClosure, lockEntry, runAdd)
 import Zinc.Build (GhcInvocation (..), MemberBuild (..), PackageConf (..), archiveArgs, buildMember, ghcMakeArgs, preprocessorFor, registerPackage, renderConf, replArgs, runPreprocessor)
 import Zinc.Cache (BuildKey (..), buildCacheKey, cacheHit, storeConfPath, storePkgPath, writeCachedConf)
-import Zinc.Cabal (parseCabalComponents)
+import Zinc.Cabal (parseCabalComponents, parseCabalComponentsForGhc)
 import Zinc.Env (envCacheKey, nixPrintDevEnv, provisionEnv)
 import Zinc.Macros (emitCabalMacros)
 import Zinc.Nix (generateFlake)
@@ -1134,6 +1134,23 @@ main = hspec $ do
       one <- runBuildMember d (Just "a")
       allB <- runBuildMember d Nothing
       (length <$> one, length <$> allB) `shouldBe` (Right 1, Right 2)
+
+  describe "parseCabalComponentsForGhc" $
+    it "resolves impl(ghc) conditionals using the supplied version" $ do
+      let c =
+            unlines
+              [ "cabal-version: 2.4"
+              , "name: c"
+              , "version: 1"
+              , "library"
+              , "  build-depends: base"
+              , "  exposed-modules: M"
+              , "  if impl(ghc >= 9.8)"
+              , "    other-modules: NewGhc"
+              ]
+          libFor v = either (const Nothing) (find ((== "lib") . compName)) (parseCabalComponentsForGhc v c)
+      (compOtherModules <$> libFor "9.8.2", compOtherModules <$> libFor "9.6.5")
+        `shouldBe` (Just ["NewGhc"], Just [])
 
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do
