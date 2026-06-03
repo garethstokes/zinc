@@ -5,7 +5,7 @@ import Data.List (intercalate)
 import System.Environment (getArgs)
 import Zinc.Add (addInWorkspace)
 import Zinc.CLI (Command (..), parseArgs)
-import Zinc.Orchestrate (buildAndRun, checkLockDrift, runBuild, runTests)
+import Zinc.Orchestrate (buildAndRun, checkLockDrift, runBuild, runRepl, runTests)
 import Zinc.Scaffold (materialize, scaffoldNew)
 
 -- | Thin executable shim. Parsing/dispatch logic lives in (and is tested via)
@@ -39,4 +39,6 @@ dispatch (Test _) =
   runTests "." >>= \r -> case r of
     Left e  -> putStrLn ("zinc test: " ++ e)
     Right n -> putStrLn (show n ++ " test suite(s) passed")
+dispatch (Repl _) =
+  runRepl "." >>= either (\e -> putStrLn ("zinc repl: " ++ e)) (const (pure ()))
 dispatch cmd = putStrLn ("zinc: not yet implemented: " ++ show cmd)

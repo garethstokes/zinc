@@ -11,6 +11,7 @@ module Zinc.Build
   , runPreprocessor
   , MemberBuild (..)
   , buildMember
+  , replArgs
   , LibBuild (..)
   , buildLib
   , initPackageDb
@@ -219,3 +220,21 @@ findObjs root = do
       let p = dir </> e
       isDir <- doesDirectoryExist p
       if isDir then go p else pure [p | takeExtension p == ".o"]
+
+-- | ghci argument list to load a component for @zinc repl@: the package db,
+-- isolation flags + exposed deps, source roots, and the targets to load (the
+-- main file for an executable, or the exposed modules for a library).
+replArgs :: Maybe FilePath -> FilePath -> Component -> [String]
+replArgs packageDb memberDir comp =
+  maybe [] (\db -> ["-package-db", db]) packageDb
+    ++ ["-hide-all-packages"]
+    ++ concatMap (\p -> ["-package", p]) (nub ("base" : compDepends comp))
+    ++ map (\d -> "-i" ++ (memberDir </> d)) srcDirs
+    ++ map ("-X" ++) (compExtensions comp)
+    ++ compGhcOptions comp
+    ++ targets
+  where
+    srcDirs = if null (compSourceDirs comp) then ["."] else compSourceDirs comp
+    targets = case compMain comp of
+      Just m  -> [memberDir </> head srcDirs </> m]
+      Nothing -> compExposedModules comp

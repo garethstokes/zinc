@@ -35,7 +35,7 @@ import Zinc.Manifest
   )
 import Zinc.Fetch (gitFetchManifest)
 import Zinc.Add (freezeClosure, lockEntry, runAdd)
-import Zinc.Build (GhcInvocation (..), MemberBuild (..), PackageConf (..), archiveArgs, buildMember, ghcMakeArgs, preprocessorFor, registerPackage, renderConf, runPreprocessor)
+import Zinc.Build (GhcInvocation (..), MemberBuild (..), PackageConf (..), archiveArgs, buildMember, ghcMakeArgs, preprocessorFor, registerPackage, renderConf, replArgs, runPreprocessor)
 import Zinc.Cache (BuildKey (..), buildCacheKey, cacheHit, storeConfPath, storePkgPath, writeCachedConf)
 import Zinc.Cabal (parseCabalComponents)
 import Zinc.Env (envCacheKey, nixPrintDevEnv, provisionEnv)
@@ -1096,6 +1096,25 @@ main = hspec $ do
 
     it "reports no drift when every dep is locked" $
       lockDrift ws [lk "aeson", lk "hspec"] `shouldBe` []
+
+  describe "replArgs" $ do
+    let exeComp =
+          Component Executable "app" ["app"] [] [] (Just "Main.hs") [] [] [] []
+
+    it "builds ghci args loading the member's main" $
+      replArgs (Just "/db") "/m" exeComp
+        `shouldBe` ["-package-db", "/db", "-hide-all-packages", "-package", "base", "-i/m/app", "/m/app/Main.hs"]
+
+    it "loads a scaffolded member in ghci (ghci -e main)" $ do
+      let dir = "/tmp/zinc-repl-test"
+      stale <- doesDirectoryExist dir
+      when stale $ removeDirectoryRecursive dir
+      createDirectoryIfMissing True dir
+      materialize dir (scaffoldNew "demo")
+      let memberDir = dir ++ "/packages/demo"
+          comp = Component Executable "demo" ["app"] [] [] (Just "Main.hs") [] [] [] []
+      out <- readProcess "ghci" (replArgs Nothing memberDir comp ++ ["-e", "main"]) ""
+      out `shouldBe` "Hello from demo!\n"
 
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do

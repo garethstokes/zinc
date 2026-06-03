@@ -13,14 +13,15 @@ module Zinc.Orchestrate
   , orderMembers
   , lockDrift
   , checkLockDrift
+  , runRepl
   ) where
 
 import qualified Data.Map as Map
 import System.Directory (doesDirectoryExist, doesFileExist)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
-import System.Process (readProcess, readProcessWithExitCode)
-import Zinc.Build (LibBuild (..), MemberBuild (..), buildLib, buildMember, initPackageDb)
+import System.Process (callProcess, readProcess, readProcessWithExitCode)
+import Zinc.Build (LibBuild (..), MemberBuild (..), buildLib, buildMember, initPackageDb, replArgs)
 import Zinc.Git (cloneAt)
 import Zinc.Lock (LockedPackage (..), parseLock)
 import Zinc.Manifest
@@ -208,3 +209,27 @@ checkLockDrift wsDir = do
       pure $ case (ws, lk) of
         (Right w, Right ls) -> lockDrift w ls
         _                   -> []
+
+-- | @zinc repl@: build the workspace (so deps are registered), then launch an
+-- interactive ghci loading the first member's first component.
+runRepl :: FilePath -> IO (Either String ())
+runRepl wsDir = do
+  built <- runBuild wsDir
+  case built of
+    Left err -> pure (Left err)
+    Right _ -> do
+      wsSrc <- readFile (wsDir </> "zinc.toml")
+      case parseWorkspace wsSrc of
+        Left err -> pure (Left err)
+        Right ws -> case wsMembers ws of
+          [] -> pure (Left "no members to load")
+          (member : _) -> do
+            let dir = wsDir </> member
+            msrc <- readFile (dir </> "zinc.toml")
+            case parseMember msrc of
+              Left err -> pure (Left err)
+              Right mem -> case pkgComponents mem of
+                [] -> pure (Left (member ++ ": no components to load"))
+                (comp : _) -> do
+                  callProcess "ghci" (replArgs (Just (wsDir </> ".zinc" </> "pkgdb")) dir comp)
+                  pure (Right ())
