@@ -34,6 +34,7 @@ import Zinc.Fetch (gitFetchManifest)
 import Zinc.Cabal (parseCabalComponents)
 import Zinc.Env (envCacheKey, provisionEnv)
 import Zinc.Nix (generateFlake)
+import Zinc.Paths (pathsModuleName, synthesizePaths)
 import Zinc.Resolve (DepManifest (..), ResolvedDep (..), resolve, topoSort)
 import Zinc.Version (newestTag)
 import Zinc.Lock (LockedPackage (..), parseLock, renderLock)
@@ -604,6 +605,19 @@ main = hspec $ do
 
     it "errors on malformed cabal input" $
       parseCabalComponents "library\n  exposed-modules: =bad=" `shouldSatisfy` isLeft
+
+  describe "synthesizePaths" $ do
+    let src = synthesizePaths "my-pkg" [0, 1, 0]
+
+    it "munges dashes to underscores in the module name" $
+      pathsModuleName "my-pkg" `shouldBe` "Paths_my_pkg"
+
+    it "declares the Paths_ module and exports the common API" $
+      all (`isInfixOf` src) ["module Paths_my_pkg", "version", "getDataFileName"]
+        `shouldBe` True
+
+    it "encodes the version via makeVersion" $
+      ("makeVersion [0,1,0]" `isInfixOf` src) `shouldBe` True
 
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do

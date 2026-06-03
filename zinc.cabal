@@ -19,6 +19,7 @@ library
                     Zinc.Lock
                     Zinc.Manifest
                     Zinc.Nix
+                    Zinc.Paths
                     Zinc.Resolve
                     Zinc.Scaffold
                     Zinc.Store
