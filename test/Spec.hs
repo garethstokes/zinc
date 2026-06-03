@@ -41,7 +41,7 @@ import Zinc.Cabal (parseCabalComponents)
 import Zinc.Env (envCacheKey, nixPrintDevEnv, provisionEnv)
 import Zinc.Macros (emitCabalMacros)
 import Zinc.Nix (generateFlake)
-import Zinc.Orchestrate (buildAndRun, orderMembers, runBuild, runTests)
+import Zinc.Orchestrate (buildAndRun, lockDrift, orderMembers, runBuild, runTests)
 import Zinc.Paths (pathsModuleName, synthesizePaths)
 import Zinc.Report (renderResolution)
 import Zinc.SysLibs (toNixpkgs)
@@ -1086,6 +1086,16 @@ main = hspec $ do
       writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Greet (hello)\nmain :: IO ()\nmain = putStrLn hello\n"
       r <- buildAndRun ws []
       r `shouldBe` Right "hi from greet\n"
+
+  describe "lockDrift" $ do
+    let ws = WorkspaceManifest [] "9.6.5" [Dependency "aeson" (Tag "v2"), Dependency "hspec" Latest] []
+        lk n = LockedPackage n "r" "rev" "sha" []
+
+    it "reports manifest deps missing from the lock" $
+      lockDrift ws [lk "aeson"] `shouldBe` ["hspec"]
+
+    it "reports no drift when every dep is locked" $
+      lockDrift ws [lk "aeson", lk "hspec"] `shouldBe` []
 
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do

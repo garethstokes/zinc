@@ -11,6 +11,8 @@ module Zinc.Orchestrate
   , buildAndRun
   , runTests
   , orderMembers
+  , lockDrift
+  , checkLockDrift
   ) where
 
 import qualified Data.Map as Map
@@ -24,9 +26,10 @@ import Zinc.Lock (LockedPackage (..), parseLock)
 import Zinc.Manifest
   ( Component (compDepends, compKind)
   , ComponentKind (Executable, Library, TestSuite)
+  , Dependency (depName)
   , MemberManifest (pkgComponents, pkgName, pkgVersion)
   , Ref (Latest)
-  , WorkspaceManifest (wsMembers)
+  , WorkspaceManifest (wsDependencies, wsMembers)
   , parseMember
   , parseWorkspace
   )
@@ -183,3 +186,25 @@ buildClosure wsDir storeRoot wsDb = do
             Right mem -> case filter ((== Library) . compKind) (pkgComponents mem) of
               []        -> pure (Right ()) -- no library to build
               (lib : _) -> buildLib (LibBuild dest (dest </> ".zinc-dist") wsDb (pkgName mem) (pkgVersion mem) lib)
+
+-- | Direct dependencies declared in the manifest but absent from the lockfile
+-- — i.e. names that need (re-)resolving via @zinc add@. Empty means the lock
+-- covers every direct dependency.
+lockDrift :: WorkspaceManifest -> [LockedPackage] -> [String]
+lockDrift ws locks =
+  [depName d | d <- wsDependencies ws, depName d `notElem` map lockName locks]
+
+-- | Read a workspace's manifest + lock and report drifted direct deps (names
+-- in zinc.toml not covered by zinc.lock). Empty if files are missing/unparsable.
+checkLockDrift :: FilePath -> IO [String]
+checkLockDrift wsDir = do
+  hasWs <- doesFileExist (wsDir </> "zinc.toml")
+  hasLock <- doesFileExist (wsDir </> "zinc.lock")
+  if not (hasWs && hasLock)
+    then pure []
+    else do
+      ws <- parseWorkspace <$> readFile (wsDir </> "zinc.toml")
+      lk <- parseLock <$> readFile (wsDir </> "zinc.lock")
+      pure $ case (ws, lk) of
+        (Right w, Right ls) -> lockDrift w ls
+        _                   -> []
