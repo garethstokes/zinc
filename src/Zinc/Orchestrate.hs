@@ -40,7 +40,7 @@ import Zinc.Manifest
   , parseWorkspace
   )
 import Zinc.Resolve (ResolvedDep (..), topoSort)
-import Zinc.Store (storeSrcPath)
+import Zinc.Store (storeRootFor, storeSrcPath)
 
 -- | Build a workspace: each member's library (so siblings can link) plus every
 -- component whose kind satisfies @keep@, returned as built executable paths.
@@ -65,7 +65,7 @@ buildWorkspace wsDir target keep = do
           case ready of
             Left err -> pure (Left err)
             Right () -> do
-              closure <- buildClosure wsDir (wsDir </> ".zinc" </> "store") wsDb (wsGhc ws)
+              closure <- buildClosure wsDir (storeRootFor wsDir) wsDb (wsGhc ws)
               case closure of
                 Left err -> pure (Left err)
                 Right () -> buildAll wsDb [] (orderMembers members)

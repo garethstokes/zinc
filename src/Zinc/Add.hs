@@ -12,7 +12,7 @@ module Zinc.Add
 
 import Control.Monad (when)
 import Data.List (find)
-import System.Directory (doesDirectoryExist, doesFileExist, getHomeDirectory, removeDirectoryRecursive)
+import System.Directory (doesDirectoryExist, doesFileExist, removeDirectoryRecursive)
 import System.FilePath (takeDirectory, (</>))
 import Zinc.Fetch (gitFetchManifest, resolveRef)
 import Zinc.Git (cloneAt)
@@ -27,7 +27,7 @@ import Zinc.Manifest
   )
 import Zinc.Report (renderResolution)
 import Zinc.Resolve (ResolvedDep (..), isBootLib, resolve)
-import Zinc.Store (contentHash)
+import Zinc.Store (contentHash, storeRootFor)
 
 -- | Build a lock entry from a resolved dep and its resolved commit + hash.
 lockEntry :: ResolvedDep -> String -> String -> LockedPackage
@@ -95,7 +95,6 @@ addInWorkspace name = do
   if not present
     then pure (Left "no zinc.toml in the current directory")
     else do
-      home <- getHomeDirectory
       src <- readFile wsFile
       case parseWorkspace src of
         Left err -> pure (Left err)
@@ -104,7 +103,7 @@ addInWorkspace name = do
             pure (Left ("no repo known for '" ++ name ++ "' — add it to [registry] (Hackage discovery: zinc-5la)"))
           Just repo ->
             let ref = maybe Latest depRef (find ((== name) . depName) (wsDependencies ws))
-             in runAdd wsFile (home </> ".zinc" </> "store") name ref repo
+             in runAdd wsFile (storeRootFor (takeDirectory wsFile)) name ref repo
 
 -- | Re-resolve the workspace's dependencies (bumping Latest refs) and rewrite
 -- the lockfile. Like 'runAdd' but without adding a new dependency.
@@ -132,6 +131,4 @@ updateInWorkspace = do
   present <- doesFileExist wsFile
   if not present
     then pure (Left "no zinc.toml in the current directory")
-    else do
-      home <- getHomeDirectory
-      runUpdate wsFile (home </> ".zinc" </> "store")
+    else runUpdate wsFile (storeRootFor (takeDirectory wsFile))

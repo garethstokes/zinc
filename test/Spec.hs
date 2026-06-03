@@ -19,7 +19,7 @@ import Test.Hspec
 import Zinc.CLI (Command (..), parseArgs)
 import Zinc.Git (cloneAt, listTags)
 import Zinc.Hackage (hackageCabalUrl, sourceRepoOf)
-import Zinc.Store (contentHash, storeSrcPath, verifyContent)
+import Zinc.Store (contentHash, storeRootFor, storeSrcPath, verifyContent)
 import Zinc.Manifest
   ( Component (..)
   , ComponentKind (..)
@@ -1314,6 +1314,10 @@ main = hspec $ do
       writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Greet (hello)\nmain :: IO ()\nmain = putStrLn hello\n"
       r <- buildAndRun ws []
       r `shouldBe` Right "modern\n"
+
+  describe "storeRootFor" $
+    it "places the store under the workspace (shared by add/build)" $
+      storeRootFor "/proj" `shouldBe` "/proj/.zinc/store"
 
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do
