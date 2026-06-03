@@ -3,7 +3,7 @@
 -- is identified by a deterministic content hash so a dependency builds once
 -- per machine and tampering is detectable.
 module Zinc.Store
-  ( storeRootFor
+  ( resolveStoreRoot
   , storeSrcPath
   , contentHash
   , verifyContent
@@ -14,13 +14,20 @@ import qualified Data.ByteString.Lazy.Char8 as BL8
 import Data.Digest.Pure.SHA (sha256, showDigest)
 import Data.List (sort)
 import Control.Monad (forM)
-import System.Directory (doesDirectoryExist, listDirectory)
+import System.Directory (doesDirectoryExist, getHomeDirectory, listDirectory)
+import System.Environment (lookupEnv)
 import System.FilePath ((</>))
 
--- | The store root for a workspace — shared by @add@, @update@, and @build@
--- so a fetched/built dependency is cached once and reused across commands.
-storeRootFor :: FilePath -> FilePath
-storeRootFor wsDir = wsDir </> ".zinc" </> "store"
+-- | Resolve the store root, shared by @add@, @update@, and @build@ so a
+-- fetched/built dependency is cached once per machine and reused across
+-- commands and projects (spec §8). Honours the @ZINC_STORE@ environment
+-- variable when set; otherwise defaults to @~\/.zinc\/store@.
+resolveStoreRoot :: IO FilePath
+resolveStoreRoot = do
+  override <- lookupEnv "ZINC_STORE"
+  case override of
+    Just dir | not (null dir) -> pure dir
+    _ -> (\home -> home </> ".zinc" </> "store") <$> getHomeDirectory
 
 -- | Canonical store location for a package's source at a resolved revision.
 storeSrcPath :: FilePath -> String -> String -> FilePath

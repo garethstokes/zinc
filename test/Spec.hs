@@ -11,15 +11,17 @@ import System.Directory
   ( createDirectoryIfMissing
   , doesDirectoryExist
   , doesFileExist
+  , getHomeDirectory
   , removeDirectoryRecursive
   )
+import System.Environment (setEnv, unsetEnv)
 import System.FilePath (takeDirectory, (</>))
 import System.Process (readProcess)
 import Test.Hspec
 import Zinc.CLI (Command (..), parseArgs)
 import Zinc.Git (cloneAt, listTags)
 import Zinc.Hackage (hackageCabalUrl, sourceRepoOf)
-import Zinc.Store (contentHash, storeRootFor, storeSrcPath, verifyContent)
+import Zinc.Store (contentHash, resolveStoreRoot, storeSrcPath, verifyContent)
 import Zinc.Manifest
   ( Component (..)
   , ComponentKind (..)
@@ -155,8 +157,19 @@ setupAddFixture = do
     (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "leaf" (Tag "v1")] [("leaf", leaf)]))
   pure (wsFile, baseD ++ "/store", leaf)
 
+-- | A throwaway store shared by the build end-to-end tests, kept out of the
+-- real @~\/.zinc@ via the @ZINC_STORE@ override.
+testStoreDir :: FilePath
+testStoreDir = "/tmp/zinc-test-store"
+
 main :: IO ()
 main = hspec $ do
+  -- Isolate every build end-to-end test from the real ~/.zinc by pointing the
+  -- shared store at a throwaway dir (exercises the ZINC_STORE override).
+  runIO $ do
+    stale <- doesDirectoryExist testStoreDir
+    when stale $ removeDirectoryRecursive testStoreDir
+    setEnv "ZINC_STORE" testStoreDir
   describe "parseArgs" $ do
     it "parses the `build` subcommand" $
       parseArgs ["build"] `shouldBe` Right (Build Nothing)
@@ -1257,7 +1270,7 @@ main = hspec $ do
       -- destroy the dependency sources; a correct cache must rebuild without them
       removeDirectoryRecursive repoA
       removeDirectoryRecursive repoB
-      removeDirectoryRecursive (ws ++ "/.zinc/store/src")
+      removeDirectoryRecursive (testStoreDir ++ "/src")
       second <- buildAndRun ws []
       (first, second) `shouldBe` (Right "A+B\n", Right "A+B\n")
 
@@ -1340,9 +1353,19 @@ main = hspec $ do
       r <- buildAndRun ws []
       r `shouldBe` Right "modern\n"
 
-  describe "storeRootFor" $
-    it "places the store under the workspace (shared by add/build)" $
-      storeRootFor "/proj" `shouldBe` "/proj/.zinc/store"
+  describe "resolveStoreRoot" $ do
+    it "honours the ZINC_STORE override when set" $ do
+      setEnv "ZINC_STORE" "/tmp/zinc-custom-store"
+      r <- resolveStoreRoot
+      setEnv "ZINC_STORE" testStoreDir -- restore isolation for any later tests
+      r `shouldBe` "/tmp/zinc-custom-store"
+
+    it "falls back to ~/.zinc/store when ZINC_STORE is unset" $ do
+      unsetEnv "ZINC_STORE"
+      home <- getHomeDirectory
+      r <- resolveStoreRoot
+      setEnv "ZINC_STORE" testStoreDir -- restore isolation for any later tests
+      r `shouldBe` home </> ".zinc" </> "store"
 
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do

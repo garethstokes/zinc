@@ -27,7 +27,7 @@ import Zinc.Manifest
   )
 import Zinc.Report (renderResolution)
 import Zinc.Resolve (ResolvedDep (..), isBootLib, resolve)
-import Zinc.Store (contentHash, storeRootFor)
+import Zinc.Store (contentHash, resolveStoreRoot)
 
 -- | Build a lock entry from a resolved dep and its resolved commit + hash.
 lockEntry :: ResolvedDep -> String -> String -> LockedPackage
@@ -101,9 +101,10 @@ addInWorkspace name = do
         Right ws -> case lookup name (wsRegistry ws) of
           Nothing ->
             pure (Left ("no repo known for '" ++ name ++ "' — add it to [registry] (Hackage discovery: zinc-5la)"))
-          Just repo ->
+          Just repo -> do
             let ref = maybe Latest depRef (find ((== name) . depName) (wsDependencies ws))
-             in runAdd wsFile (storeRootFor (takeDirectory wsFile)) name ref repo
+            storeRoot <- resolveStoreRoot
+            runAdd wsFile storeRoot name ref repo
 
 -- | Re-resolve the workspace's dependencies (bumping Latest refs) and rewrite
 -- the lockfile. Like 'runAdd' but without adding a new dependency.
@@ -131,4 +132,6 @@ updateInWorkspace = do
   present <- doesFileExist wsFile
   if not present
     then pure (Left "no zinc.toml in the current directory")
-    else runUpdate wsFile (storeRootFor (takeDirectory wsFile))
+    else do
+      storeRoot <- resolveStoreRoot
+      runUpdate wsFile storeRoot
