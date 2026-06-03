@@ -9,12 +9,16 @@ module Zinc.Build
   , registerPackage
   , preprocessorFor
   , runPreprocessor
+  , MemberBuild (..)
+  , buildMember
   ) where
 
+import Data.List (nub)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, takeExtension, (-<.>), (</>))
 import System.Process (readProcessWithExitCode)
+import Zinc.Manifest (Component (..))
 
 -- | Everything needed to compile one component with @ghc --make@.
 data GhcInvocation = GhcInvocation
@@ -115,3 +119,36 @@ runPreprocessor :: FilePath -> IO (Either String ())
 runPreprocessor file = case preprocessorFor file of
   Nothing            -> pure (Right ())
   Just (prog, args)  -> runUnit prog args
+
+-- | Inputs to build one workspace member (spec §7): the member's source dir,
+-- a build output dir (kept stable so ghc's recompilation avoidance gives a
+-- fast inner loop), an optional project package-db for deps/siblings, and the
+-- component to build.
+data MemberBuild = MemberBuild
+  { mbMemberDir :: FilePath
+  , mbBuildDir  :: FilePath
+  , mbPackageDb :: Maybe FilePath
+  , mbComponent :: Component
+  }
+
+-- | Compile + link a member executable with @ghc --make@, returning the
+-- executable path. Isolation via @-hide-all-packages@ + explicit @-package@
+-- (base is always available).
+buildMember :: MemberBuild -> IO (Either String FilePath)
+buildMember mb = do
+  createDirectoryIfMissing True (mbBuildDir mb)
+  let comp = mbComponent mb
+      srcDirs = if null (compSourceDirs comp) then ["."] else compSourceDirs comp
+      exe = mbBuildDir mb </> compName comp
+      mainFile = mbMemberDir mb </> head srcDirs </> maybe "Main.hs" id (compMain comp)
+      args =
+        ["--make"]
+          ++ maybe [] (\db -> ["-package-db", db]) (mbPackageDb mb)
+          ++ ["-hide-all-packages"]
+          ++ concatMap (\p -> ["-package", p]) (nub ("base" : compDepends comp))
+          ++ map (\d -> "-i" ++ (mbMemberDir mb </> d)) srcDirs
+          ++ map ("-X" ++) (compExtensions comp)
+          ++ compGhcOptions comp
+          ++ ["-outputdir", mbBuildDir mb, mainFile, "-o", exe]
+  result <- runUnit "ghc" args
+  pure (fmap (const exe) result)

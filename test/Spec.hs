@@ -35,7 +35,7 @@ import Zinc.Manifest
   )
 import Zinc.Fetch (gitFetchManifest)
 import Zinc.Add (freezeClosure, lockEntry, runAdd)
-import Zinc.Build (GhcInvocation (..), PackageConf (..), archiveArgs, ghcMakeArgs, preprocessorFor, registerPackage, renderConf, runPreprocessor)
+import Zinc.Build (GhcInvocation (..), MemberBuild (..), PackageConf (..), archiveArgs, buildMember, ghcMakeArgs, preprocessorFor, registerPackage, renderConf, runPreprocessor)
 import Zinc.Cache (BuildKey (..), buildCacheKey, cacheHit, storeConfPath, storePkgPath, writeCachedConf)
 import Zinc.Cabal (parseCabalComponents)
 import Zinc.Env (envCacheKey, nixPrintDevEnv, provisionEnv)
@@ -965,6 +965,33 @@ main = hspec $ do
 
     it "builds the Hackage .cabal URL" $
       hackageCabalUrl "aeson" `shouldBe` "https://hackage.haskell.org/package/aeson/aeson.cabal"
+
+  describe "buildMember (real compile)" $
+    it "compiles and links a hello-world member, which runs" $ do
+      let dir = "/tmp/zinc-member-build"
+      stale <- doesDirectoryExist dir
+      when stale $ removeDirectoryRecursive dir
+      createDirectoryIfMissing True (dir ++ "/app")
+      writeFile (dir ++ "/app/Main.hs") "module Main where\nmain :: IO ()\nmain = putStrLn \"hello from zinc\"\n"
+      let comp =
+            Component
+              { compKind = Executable
+              , compName = "demo"
+              , compSourceDirs = ["app"]
+              , compExposedModules = []
+              , compOtherModules = []
+              , compMain = Just "Main.hs"
+              , compExtensions = []
+              , compGhcOptions = []
+              , compDepends = []
+              , compSystemLibs = []
+              }
+      r <- buildMember (MemberBuild dir (dir ++ "/build") Nothing comp)
+      case r of
+        Right exe -> do
+          out <- readProcess exe [] ""
+          out `shouldBe` "hello from zinc\n"
+        Left err -> expectationFailure err
 
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do
