@@ -15,6 +15,7 @@ library
                     Zinc.Git
                     Zinc.Lock
                     Zinc.Manifest
+                    Zinc.Resolve
                     Zinc.Scaffold
                     Zinc.Store
                     Zinc.TOML

@@ -3,7 +3,8 @@ module Main (main) where
 import Control.Monad (forM_, when)
 import Data.Char (isSpace)
 import Data.Either (isLeft)
-import Data.List (find, isInfixOf)
+import Data.Functor.Identity (runIdentity)
+import Data.List (find, isInfixOf, sort)
 import Data.Maybe (isJust)
 import System.Directory
   ( createDirectoryIfMissing
@@ -27,6 +28,7 @@ import Zinc.Manifest
   , parseMember
   , parseWorkspace
   )
+import Zinc.Resolve (DepManifest (..), ResolvedDep (..), resolve)
 import Zinc.Lock (LockedPackage (..), parseLock, renderLock)
 import Zinc.Scaffold (FileSpec (..), materialize, scaffoldNew)
 
@@ -340,6 +342,60 @@ main = hspec $ do
     it "yields no components when [build] is absent" $
       (pkgComponents <$> parseMember "[package]\nname = \"x\"\nversion = \"1\"")
         `shouldBe` Right []
+
+  describe "resolve (graph walk)" $ do
+    let dep n r = Dependency n r
+        boot = (`elem` ["base", "text", "bytestring", "containers"])
+        fetchFrom fix n _ _ = pure (maybe (Left ("missing: " ++ n)) Right (lookup n fix))
+        run fix rootDeps rootReg =
+          runIdentity (resolve boot (fetchFrom fix) rootDeps rootReg)
+        findRD n r = either (const Nothing) (find ((== n) . rdName)) r
+
+        fixture =
+          [ ("aeson", DepManifest [dep "scientific" Latest, dep "base" Latest] [("scientific", "r/sci")])
+          , ("scientific", DepManifest [dep "integer-logarithms" Latest] [("integer-logarithms", "r/il")])
+          , ("integer-logarithms", DepManifest [dep "base" Latest] [])
+          ]
+        rootDeps = [dep "aeson" (Tag "v2.2.3.0")]
+        rootReg = [("aeson", "r/aeson")]
+        result = run fixture rootDeps rootReg
+
+    it "resolves the full transitive closure (non-boot)" $
+      (sort . map rdName <$> result)
+        `shouldBe` Right ["aeson", "integer-logarithms", "scientific"]
+
+    it "carries each node's repo and ref" $
+      (\d -> (rdRepo d, rdRef d)) <$> findRD "aeson" result
+        `shouldBe` Just ("r/aeson", Tag "v2.2.3.0")
+
+    it "records non-boot direct deps and drops boot libs" $ do
+      (rdDepends <$> findRD "aeson" result) `shouldBe` Just ["scientific"]
+      (rdDepends <$> findRD "integer-logarithms" result) `shouldBe` Just []
+
+    it "lets a root pin win over a transitive pin for the same name" $ do
+      let fix =
+            [ ("aeson", DepManifest [dep "scientific" Latest] [("scientific", "r/sci")])
+            , ("scientific", DepManifest [] [])
+            ]
+          rds = [dep "aeson" (Tag "v2"), dep "scientific" (Tag "root-pin")]
+          reg = [("aeson", "r/aeson"), ("scientific", "r/sci")]
+          r = run fix rds reg
+      (rdRef <$> findRD "scientific" r) `shouldBe` Just (Tag "root-pin")
+
+    it "errors when a dependency has no repo in any registry" $ do
+      let fix =
+            [ ("aeson", DepManifest [dep "scientific" Latest] []) -- no repo for scientific
+            ]
+          r = run fix [dep "aeson" (Tag "v2")] [("aeson", "r/aeson")]
+      r `shouldSatisfy` isLeft
+
+    it "terminates on dependency cycles" $ do
+      let fix =
+            [ ("a", DepManifest [dep "b" Latest] [("b", "r/b")])
+            , ("b", DepManifest [dep "a" Latest] [("a", "r/a")])
+            ]
+          r = run fix [dep "a" Latest] [("a", "r/a")]
+      (sort . map rdName <$> r) `shouldBe` Right ["a", "b"]
 
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do
