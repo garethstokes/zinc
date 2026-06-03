@@ -11,6 +11,7 @@ module Zinc.Resolve
   , ResolvedDep (..)
   , resolve
   , topoSort
+  , isBootLib
   ) where
 
 import Control.Monad (foldM)
@@ -99,3 +100,17 @@ topoSort nodes = do
       | otherwise = do
           (done', order') <- foldM (visit (Set.insert name path)) acc (depsOf name)
           pure (Set.insert name done', name : order')
+
+-- | The GHC boot libraries that ship with the compiler and are never fetched
+-- (spec §2). The production 'resolve' uses this as its @isBoot@ predicate.
+-- (Deriving this from @ghc-pkg list@ in the Nix env is a future refinement.)
+isBootLib :: String -> Bool
+isBootLib = (`elem` bootLibs)
+  where
+    bootLibs =
+      [ "base", "ghc-prim", "ghc-bignum", "integer-gmp", "template-haskell"
+      , "array", "binary", "bytestring", "containers", "deepseq", "directory"
+      , "exceptions", "filepath", "ghc-boot", "ghc-boot-th", "ghc-heap", "ghci"
+      , "mtl", "parsec", "pretty", "process", "stm", "text", "time"
+      , "transformers", "unix", "Cabal", "Cabal-syntax", "rts"
+      ]

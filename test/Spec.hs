@@ -26,12 +26,14 @@ import Zinc.Manifest
   , MemberManifest (..)
   , Ref (..)
   , WorkspaceManifest (..)
+  , addDep
   , parseDependencies
   , parseMember
   , parseWorkspace
+  , renderWorkspace
   )
 import Zinc.Fetch (gitFetchManifest)
-import Zinc.Add (freezeClosure, lockEntry)
+import Zinc.Add (freezeClosure, lockEntry, runAdd)
 import Zinc.Build (GhcInvocation (..), PackageConf (..), archiveArgs, ghcMakeArgs, preprocessorFor, registerPackage, renderConf, runPreprocessor)
 import Zinc.Cache (BuildKey (..), buildCacheKey, cacheHit, storeConfPath, storePkgPath, writeCachedConf)
 import Zinc.Cabal (parseCabalComponents)
@@ -41,7 +43,7 @@ import Zinc.Nix (generateFlake)
 import Zinc.Paths (pathsModuleName, synthesizePaths)
 import Zinc.Report (renderResolution)
 import Zinc.SysLibs (toNixpkgs)
-import Zinc.Resolve (DepManifest (..), ResolvedDep (..), resolve, topoSort)
+import Zinc.Resolve (DepManifest (..), ResolvedDep (..), isBootLib, resolve, topoSort)
 import Zinc.Version (newestTag)
 import Zinc.Lock (LockedPackage (..), parseLock, renderLock)
 import Zinc.Scaffold (FileSpec (..), materialize, scaffoldNew)
@@ -119,6 +121,31 @@ setupDepRepo = do
   _ <- git ["tag", "v1"]
   _ <- git ["tag", "v2"]
   pure repo
+
+-- | Build a workspace + a local zinc-native leaf dep repo for end-to-end
+-- `zinc add`. Returns (workspace zinc.toml path, store root, leaf repo path).
+setupAddFixture :: IO (FilePath, FilePath, FilePath)
+setupAddFixture = do
+  let baseD = "/tmp/zinc-add-fixture"
+  stale <- doesDirectoryExist baseD
+  when stale $ removeDirectoryRecursive baseD
+  let leaf = baseD ++ "/leaf"
+  createDirectoryIfMissing True leaf
+  let g d args = readProcess "git" ("-C" : d : args) ""
+  _ <- g leaf ["init", "--quiet"]
+  _ <- g leaf ["config", "user.email", "t@example.com"]
+  _ <- g leaf ["config", "user.name", "Test"]
+  writeFile (leaf ++ "/zinc.toml") "[package]\nname = \"leaf\"\nversion = \"1.0\"\n"
+  _ <- g leaf ["add", "."]
+  _ <- g leaf ["commit", "--quiet", "-m", "c1"]
+  _ <- g leaf ["tag", "v1"]
+  let wsDir = baseD ++ "/ws"
+      wsFile = wsDir ++ "/zinc.toml"
+  createDirectoryIfMissing True wsDir
+  writeFile
+    wsFile
+    (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "leaf" (Tag "v1")] [("leaf", leaf)]))
+  pure (wsFile, baseD ++ "/store", leaf)
 
 main :: IO ()
 main = hspec $ do
@@ -874,6 +901,47 @@ main = hspec $ do
       hit <- cacheHit root key
       conf <- readFile (storeConfPath root key)
       (miss, hit, conf) `shouldBe` (False, True, "name: demo\n")
+
+  describe "workspace write-back" $ do
+    let ws =
+          WorkspaceManifest
+            { wsMembers = ["packages/a", "packages/b"]
+            , wsGhc = "9.6.5"
+            , wsDependencies = [Dependency "aeson" (Tag "v2"), Dependency "hspec" Latest]
+            , wsRegistry = [("aeson", "r/aeson"), ("hspec", "r/hspec")]
+            }
+
+    it "renderWorkspace round-trips through parseWorkspace" $
+      parseWorkspace (renderWorkspace ws) `shouldBe` Right ws
+
+    it "addDep inserts a new dependency + registry entry (sorted)" $
+      let w = addDep (WorkspaceManifest ["packages/a"] "9.6.5" [] []) "aeson" (Tag "v2") "r/aeson"
+       in (wsDependencies w, wsRegistry w)
+            `shouldBe` ([Dependency "aeson" (Tag "v2")], [("aeson", "r/aeson")])
+
+    it "addDep replaces an existing dependency in place" $
+      let w0 = addDep (WorkspaceManifest [] "9.6.5" [] []) "aeson" (Tag "v2") "r/aeson"
+          w1 = addDep w0 "aeson" Latest "r/aeson2"
+       in (wsDependencies w1, wsRegistry w1)
+            `shouldBe` ([Dependency "aeson" Latest], [("aeson", "r/aeson2")])
+
+  describe "isBootLib" $ do
+    it "recognises GHC boot libraries" $
+      all isBootLib ["base", "text", "bytestring", "containers"] `shouldBe` True
+
+    it "does not flag ordinary packages" $
+      any isBootLib ["aeson", "scientific", "hspec"] `shouldBe` False
+
+  describe "runAdd (end-to-end)" $ do
+    (wsFile, store, leafRepo) <- runIO setupAddFixture
+
+    it "resolves, freezes, and writes the lock + manifest" $ do
+      r <- runAdd wsFile store "leaf" (Tag "v1") leafRepo
+      lockText <- readFile (takeDirectory wsFile </> "zinc.lock")
+      case r of
+        Right summary ->
+          (("leaf" `isInfixOf` summary), ("leaf" `isInfixOf` lockText)) `shouldBe` (True, True)
+        Left err -> expectationFailure err
 
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do

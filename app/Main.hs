@@ -1,6 +1,7 @@
 module Main (main) where
 
 import System.Environment (getArgs)
+import Zinc.Add (addInWorkspace)
 import Zinc.CLI (Command (..), parseArgs)
 import Zinc.Scaffold (materialize, scaffoldNew)
 
@@ -18,4 +19,6 @@ dispatch :: Command -> IO ()
 dispatch (New name) = do
   materialize "." (scaffoldNew name)
   putStrLn ("Created workspace member at ./packages/" ++ name)
+dispatch (Add name) =
+  addInWorkspace name >>= either (\e -> putStrLn ("zinc add: " ++ e)) putStr
 dispatch cmd = putStrLn ("zinc: not yet implemented: " ++ show cmd)

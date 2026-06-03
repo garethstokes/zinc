@@ -8,8 +8,11 @@ module Zinc.Manifest
   , parseWorkspace
   , parseMember
   , parseDependencies
+  , renderWorkspace
+  , addDep
   ) where
 
+import Data.List (intercalate, sortOn)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import qualified Toml
@@ -155,3 +158,38 @@ parseRegistry = foldr keep [] . Map.toList
   where
     keep (name, String url) acc = (name, url) : acc
     keep _                  acc = acc
+
+-- | Render a workspace-root manifest back to TOML. The root holds only
+-- @[workspace]@/@[dependencies]@/@[registry]@ (members live in their own
+-- files), so this round-trips with 'parseWorkspace'.
+renderWorkspace :: WorkspaceManifest -> String
+renderWorkspace w =
+  unlines $
+    [ "[workspace]"
+    , "members = [" ++ intercalate ", " (map quote (wsMembers w)) ++ "]"
+    , "ghc = " ++ quote (wsGhc w)
+    , ""
+    , "[dependencies]"
+    ]
+      ++ map depLine (wsDependencies w)
+      ++ ["", "[registry]"]
+      ++ map regLine (wsRegistry w)
+  where
+    quote s = "\"" ++ s ++ "\""
+    depLine (Dependency n r) = n ++ " = " ++ refToml r
+    refToml (Tag t)    = "{ tag = " ++ quote t ++ " }"
+    refToml (Branch b) = "{ branch = " ++ quote b ++ " }"
+    refToml (Rev v)    = "{ rev = " ++ quote v ++ " }"
+    refToml Latest     = quote "*"
+    regLine (n, url) = n ++ " = " ++ quote url
+
+-- | Add (or replace) a direct dependency and its registry repo, keeping both
+-- lists sorted by name for stable output.
+addDep :: WorkspaceManifest -> String -> Ref -> String -> WorkspaceManifest
+addDep w name ref repo =
+  w
+    { wsDependencies =
+        sortOn depName (Dependency name ref : filter ((/= name) . depName) (wsDependencies w))
+    , wsRegistry =
+        sortOn fst ((name, repo) : filter ((/= name) . fst) (wsRegistry w))
+    }
