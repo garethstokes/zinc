@@ -19,6 +19,7 @@ library
                     Zinc.Env
                     Zinc.Fetch
                     Zinc.Git
+                    Zinc.Hackage
                     Zinc.Lock
                     Zinc.Macros
                     Zinc.Manifest

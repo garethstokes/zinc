@@ -18,6 +18,7 @@ import System.Process (readProcess)
 import Test.Hspec
 import Zinc.CLI (Command (..), parseArgs)
 import Zinc.Git (cloneAt, listTags)
+import Zinc.Hackage (hackageCabalUrl, sourceRepoOf)
 import Zinc.Store (contentHash, storeSrcPath, verifyContent)
 import Zinc.Manifest
   ( Component (..)
@@ -942,6 +943,28 @@ main = hspec $ do
         Right summary ->
           (("leaf" `isInfixOf` summary), ("leaf" `isInfixOf` lockText)) `shouldBe` (True, True)
         Left err -> expectationFailure err
+
+  describe "Hackage repo discovery" $ do
+    it "extracts the source-repository head location from a .cabal" $
+      sourceRepoOf
+        ( unlines
+            [ "cabal-version: 2.4"
+            , "name: demo"
+            , "version: 0.1"
+            , "source-repository head"
+            , "  type: git"
+            , "  location: https://github.com/x/demo.git"
+            , "library"
+            , "  build-depends: base"
+            ]
+        )
+        `shouldBe` Just "https://github.com/x/demo.git"
+
+    it "returns Nothing when there is no source-repository" $
+      sourceRepoOf "cabal-version: 2.4\nname: demo\nversion: 0.1\n" `shouldBe` Nothing
+
+    it "builds the Hackage .cabal URL" $
+      hackageCabalUrl "aeson" `shouldBe` "https://hackage.haskell.org/package/aeson/aeson.cabal"
 
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do
