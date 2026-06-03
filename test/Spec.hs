@@ -33,7 +33,7 @@ import Zinc.Manifest
 import Zinc.Fetch (gitFetchManifest)
 import Zinc.Add (freezeClosure, lockEntry)
 import Zinc.Build (GhcInvocation (..), PackageConf (..), archiveArgs, ghcMakeArgs, preprocessorFor, registerPackage, renderConf, runPreprocessor)
-import Zinc.Cache (BuildKey (..), buildCacheKey, storePkgPath)
+import Zinc.Cache (BuildKey (..), buildCacheKey, cacheHit, storeConfPath, storePkgPath, writeCachedConf)
 import Zinc.Cabal (parseCabalComponents)
 import Zinc.Env (envCacheKey, nixPrintDevEnv, provisionEnv)
 import Zinc.Macros (emitCabalMacros)
@@ -862,6 +862,18 @@ main = hspec $ do
 
     it "lays out the package store path" $
       storePkgPath "/store" "deadbeef" `shouldBe` "/store/pkg/deadbeef"
+
+  describe "artifact cache hit/miss" $ do
+    it "misses when absent, hits after caching, and stores the conf" $ do
+      let root = "/tmp/zinc-cache-test"
+          key = "abc123"
+      stale <- doesDirectoryExist root
+      when stale $ removeDirectoryRecursive root
+      miss <- cacheHit root key
+      writeCachedConf root key "name: demo\n"
+      hit <- cacheHit root key
+      conf <- readFile (storeConfPath root key)
+      (miss, hit, conf) `shouldBe` (False, True, "name: demo\n")
 
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do
