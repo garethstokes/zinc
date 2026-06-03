@@ -21,6 +21,7 @@ library
                     Zinc.Manifest
                     Zinc.Nix
                     Zinc.Paths
+                    Zinc.Report
                     Zinc.Resolve
                     Zinc.Scaffold
                     Zinc.Store

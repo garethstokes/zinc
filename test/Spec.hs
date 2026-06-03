@@ -36,6 +36,7 @@ import Zinc.Env (envCacheKey, provisionEnv)
 import Zinc.Macros (emitCabalMacros)
 import Zinc.Nix (generateFlake)
 import Zinc.Paths (pathsModuleName, synthesizePaths)
+import Zinc.Report (renderResolution)
 import Zinc.Resolve (DepManifest (..), ResolvedDep (..), resolve, topoSort)
 import Zinc.Version (newestTag)
 import Zinc.Lock (LockedPackage (..), parseLock, renderLock)
@@ -642,6 +643,25 @@ main = hspec $ do
 
     it "pads short versions with zeros" $
       ("(minor) <= 0" `isInfixOf` h) `shouldBe` True
+
+  describe "renderResolution" $ do
+    let rds =
+          [ ResolvedDep "aeson" "https://github.com/haskell/aeson" (Tag "v2.2.3.0") ["scientific"]
+          , ResolvedDep "scientific" "https://github.com/basvandijk/scientific" Latest []
+          ]
+        out = renderResolution rds
+
+    it "lists each package with its ref and repo" $
+      all
+        (`isInfixOf` out)
+        ["aeson", "v2.2.3.0", "scientific", "*", "https://github.com/haskell/aeson"]
+        `shouldBe` True
+
+    it "includes a header row" $
+      all (`isInfixOf` out) ["package", "ref", "repo"] `shouldBe` True
+
+    it "reports an empty closure" $
+      renderResolution [] `shouldBe` "(no dependencies)\n"
 
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do
