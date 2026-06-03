@@ -595,7 +595,7 @@ main = hspec $ do
             , compMain = Nothing
             , compExtensions = ["OverloadedStrings"]
             , compGhcOptions = ["-Wall"]
-            , compDepends = ["base", "aeson"]
+            , compDepends = ["aeson", "base"] -- finalizePD normalizes build-depends order
             , compSystemLibs = ["zlib"]
             }
 
@@ -609,6 +609,23 @@ main = hspec $ do
 
     it "errors on malformed cabal input" $
       parseCabalComponents "library\n  exposed-modules: =bad=" `shouldSatisfy` isLeft
+
+    it "resolves flag conditionals (fast defaults True -> -O2)" $
+      let c =
+            unlines
+              [ "cabal-version: 2.4"
+              , "name: c"
+              , "version: 1"
+              , "flag fast"
+              , "  default: True"
+              , "library"
+              , "  build-depends: base"
+              , "  exposed-modules: M"
+              , "  if flag(fast)"
+              , "    ghc-options: -O2"
+              ]
+          libc = either (const Nothing) (find ((== "lib") . compName)) (parseCabalComponents c)
+       in (compGhcOptions <$> libc) `shouldBe` Just ["-O2"]
 
   describe "synthesizePaths" $ do
     let src = synthesizePaths "my-pkg" [0, 1, 0]

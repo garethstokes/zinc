@@ -2,6 +2,9 @@
 -- @Cabal@ library (as a parser only — never its builder) and derive the same
 -- 'Component' model zinc-native @[build]@ blocks produce. This lets zinc build
 -- arbitrary upstream packages pulled from git without zinc-ifying them.
+--
+-- Conditionals (@if flag(...)/os(...)/impl(ghc ...)@) are resolved with
+-- 'finalizePD' against default flags + the current platform + a GHC compiler.
 module Zinc.Cabal
   ( parseCabalComponents
   ) where
@@ -9,17 +12,19 @@ module Zinc.Cabal
 import qualified Data.ByteString.Char8 as BS
 import Data.List (nub)
 import Data.Maybe (mapMaybe)
-import Distribution.Compiler (CompilerFlavor (GHC))
+import Distribution.Compiler
+  ( AbiTag (NoAbiTag)
+  , CompilerFlavor (GHC)
+  , CompilerId (CompilerId)
+  , unknownCompilerInfo
+  )
 import Distribution.PackageDescription
   ( BuildInfo
-  , Executable (buildInfo, modulePath)
-  , GenericPackageDescription
+  , Executable (buildInfo, exeName, modulePath)
   , Library
-  , TestSuite (testBuildInfo, testInterface)
+  , PackageDescription (executables, library, testSuites)
+  , TestSuite (testBuildInfo, testInterface, testName)
   , TestSuiteInterface (TestSuiteExeV10)
-  , condExecutables
-  , condLibrary
-  , condTestSuites
   , defaultExtensions
   , exposedModules
   , extraLibs
@@ -30,46 +35,52 @@ import Distribution.PackageDescription
   , pkgconfigDepends
   , targetBuildDepends
   )
+import Distribution.PackageDescription.Configuration (finalizePD)
 import Distribution.PackageDescription.Parsec (parseGenericPackageDescription, runParseResult)
 import Distribution.Pretty (prettyShow)
-import Distribution.Types.CondTree (condTreeData)
+import Distribution.System (buildPlatform)
+import Distribution.Types.ComponentRequestedSpec (ComponentRequestedSpec (ComponentRequestedSpec))
 import Distribution.Types.Dependency (depPkgName)
 import Distribution.Types.PackageName (unPackageName)
-import Distribution.Types.PkgconfigDependency (PkgconfigDependency (..))
+import Distribution.Types.PkgconfigDependency (PkgconfigDependency (PkgconfigDependency))
 import Distribution.Types.PkgconfigName (unPkgconfigName)
 import Distribution.Types.UnqualComponentName (unUnqualComponentName)
 import Distribution.Utils.Path (getSymbolicPath)
+import Distribution.Version (mkVersion)
 import Zinc.Manifest (Component (..), ComponentKind (..))
 import Zinc.SysLibs (toNixpkgs)
 
 -- | Derive zinc 'Component's from @.cabal@ source: the library (named @"lib"@),
--- each executable, and each test-suite.
+-- each executable, and each test-suite, with conditionals resolved.
 parseCabalComponents :: String -> Either String [Component]
 parseCabalComponents src =
   case snd (runParseResult (parseGenericPackageDescription (BS.pack src))) of
     Left err -> Left ("cabal parse error: " ++ show err)
-    Right gpd -> Right (libraryComponent gpd ++ executableComponents gpd ++ testComponents gpd)
+    Right gpd ->
+      case finalizePD mempty (ComponentRequestedSpec True True) (const True) buildPlatform ghc [] gpd of
+        Left missing -> Left ("cabal finalize error: unsatisfied " ++ show (map prettyShow missing))
+        Right (pd, _flags) ->
+          Right (libraryComponent pd ++ executableComponents pd ++ testComponents pd)
+  where
+    -- A recent GHC for resolving impl(ghc ...) conditions. (Threading the
+    -- workspace's exact GHC version is a future refinement.)
+    ghc = unknownCompilerInfo (CompilerId GHC (mkVersion [9, 6, 5])) NoAbiTag
 
-libraryComponent :: GenericPackageDescription -> [Component]
-libraryComponent gpd =
-  case condLibrary gpd of
-    Nothing -> []
-    Just ct -> [fromLibrary (condTreeData ct)]
+libraryComponent :: PackageDescription -> [Component]
+libraryComponent pd = maybe [] (\l -> [fromLibrary l]) (library pd)
 
-executableComponents :: GenericPackageDescription -> [Component]
-executableComponents gpd =
-  [ (fromBuildInfo Executable (unUnqualComponentName n) (buildInfo exe))
+executableComponents :: PackageDescription -> [Component]
+executableComponents pd =
+  [ (fromBuildInfo Executable (unUnqualComponentName (exeName exe)) (buildInfo exe))
       { compMain = Just (modulePath exe) }
-  | (n, ct) <- condExecutables gpd
-  , let exe = condTreeData ct
+  | exe <- executables pd
   ]
 
-testComponents :: GenericPackageDescription -> [Component]
-testComponents gpd =
-  [ (fromBuildInfo TestSuite (unUnqualComponentName n) (testBuildInfo ts))
+testComponents :: PackageDescription -> [Component]
+testComponents pd =
+  [ (fromBuildInfo TestSuite (unUnqualComponentName (testName ts)) (testBuildInfo ts))
       { compMain = testMain ts }
-  | (n, ct) <- condTestSuites gpd
-  , let ts = condTreeData ct
+  | ts <- testSuites pd
   ]
 
 testMain :: TestSuite -> Maybe String
