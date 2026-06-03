@@ -1271,6 +1271,20 @@ main = hspec $ do
         Right _ -> ("leaf" `isInfixOf` lockText) `shouldBe` True
         Left err -> expectationFailure err
 
+  describe "full workspace lifecycle (integration, rung 1)" $
+    it "scaffolds, builds, runs, then cleans a synthetic workspace" $ do
+      let d = "/tmp/zinc-lifecycle"
+      stale <- doesDirectoryExist d
+      when stale $ removeDirectoryRecursive d
+      createDirectoryIfMissing True d
+      materialize d (scaffoldNew "demo") -- new
+      built <- runBuild d -- build
+      ran <- buildAndRun d [] -- run
+      runClean d -- clean
+      artifactsGone <- not <$> doesDirectoryExist (d ++ "/packages/demo/.zinc")
+      (fmap length built, ran, artifactsGone)
+        `shouldBe` (Right 1, Right "Hello from demo!\n", True)
+
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do
       let root = "/tmp/zinc-scaffold-test"
