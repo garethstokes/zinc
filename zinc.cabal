@@ -16,6 +16,7 @@ library
                     Zinc.Git
                     Zinc.Lock
                     Zinc.Manifest
+                    Zinc.Nix
                     Zinc.Resolve
                     Zinc.Scaffold
                     Zinc.Store

@@ -30,6 +30,7 @@ import Zinc.Manifest
   , parseWorkspace
   )
 import Zinc.Fetch (gitFetchManifest)
+import Zinc.Nix (generateFlake)
 import Zinc.Resolve (DepManifest (..), ResolvedDep (..), resolve, topoSort)
 import Zinc.Lock (LockedPackage (..), parseLock, renderLock)
 import Zinc.Scaffold (FileSpec (..), materialize, scaffoldNew)
@@ -479,6 +480,24 @@ main = hspec $ do
     it "errors on a Latest ref (not yet implemented)" $ do
       r <- gitFetchManifest "/tmp/zinc-fetch-store" "dep" repo Latest
       r `shouldSatisfy` isLeft
+
+  describe "generateFlake" $ do
+    let flake = generateFlake "9.6.5" ["zlib", "pcre"]
+
+    it "selects the pinned GHC compiler with dots stripped" $
+      ("haskell.compiler.ghc965" `isInfixOf` flake) `shouldBe` True
+
+    it "includes each system library as a nixpkgs attr" $
+      all (`isInfixOf` flake) ["pkgs.zlib", "pkgs.pcre"] `shouldBe` True
+
+    it "includes the alex/happy preprocessors" $
+      all (`isInfixOf` flake) ["alex", "happy"] `shouldBe` True
+
+    it "pins nixpkgs and exposes a devShell" $
+      all (`isInfixOf` flake) ["nixpkgs.url", "devShells"] `shouldBe` True
+
+    it "works with no system libraries" $
+      ("haskell.compiler.ghc965" `isInfixOf` generateFlake "9.6.5" []) `shouldBe` True
 
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do
