@@ -15,9 +15,11 @@ module Zinc.Build
   , LibBuild (..)
   , buildLib
   , initPackageDb
+  , installedVersions
   ) where
 
-import Data.List (nub)
+import Data.List (intercalate, nub)
+import Data.Maybe (fromMaybe)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, listDirectory)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, takeExtension, (-<.>), (<.>), (</>))
@@ -191,8 +193,10 @@ buildLib lb = do
       pathsMod = pathsModuleName (lbName lb)
       macrosHeader = gen </> "cabal_macros.h"
   writeFile (gen </> pathsMod <.> "hs") (synthesizePaths (lbName lb) (versionInts (lbVersion lb)))
+  installed <- installedVersions
+  let depVersion d = fromMaybe [0] (lookup d installed)
   writeFile macrosHeader $
-    emitCabalMacros ((lbName lb, versionInts (lbVersion lb)) : [(d, [0]) | d <- compDepends comp])
+    emitCabalMacros ((lbName lb, versionInts (lbVersion lb)) : [(d, depVersion d) | d <- compDepends comp])
   let srcDirs = if null (compSourceDirs comp) then ["."] else compSourceDirs comp
       modules = compExposedModules comp ++ compOtherModules comp ++ [pathsMod]
       compileArgs =
@@ -270,3 +274,18 @@ versionInts = map readInt . splitDots
     readInt x = case reads x of
       [(n, "")] -> n
       _         -> 0
+
+-- | Versions of packages currently visible to ghc-pkg (boot libs + already
+-- registered deps), for emitting correct MIN_VERSION_* CPP macros.
+installedVersions :: IO [(String, [Int])]
+installedVersions = do
+  (_, out, _) <- readProcessWithExitCode "ghc-pkg" ["list", "--simple-output"] ""
+  pure [(name, versionInts ver) | pid <- words out, Just (name, ver) <- [splitNameVer pid]]
+  where
+    splitNameVer pid = case reverse (splitOnDash pid) of
+      (v : rest@(_ : _)) | isVersion v -> Just (intercalate "-" (reverse rest), v)
+      _                                -> Nothing
+    isVersion v = not (null v) && all (`elem` ("0123456789." :: String)) v
+    splitOnDash s = case break (== '-') s of
+      (a, [])    -> [a]
+      (a, _ : r) -> a : splitOnDash r

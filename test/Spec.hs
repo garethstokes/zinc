@@ -35,7 +35,7 @@ import Zinc.Manifest
   )
 import Zinc.Fetch (gitFetchManifest)
 import Zinc.Add (freezeClosure, lockEntry, runAdd, runUpdate)
-import Zinc.Build (GhcInvocation (..), MemberBuild (..), PackageConf (..), archiveArgs, buildMember, ghcMakeArgs, preprocessorFor, registerPackage, renderConf, replArgs, runPreprocessor)
+import Zinc.Build (GhcInvocation (..), MemberBuild (..), PackageConf (..), archiveArgs, buildMember, ghcMakeArgs, installedVersions, preprocessorFor, registerPackage, renderConf, replArgs, runPreprocessor)
 import Zinc.Cache (BuildKey (..), buildCacheKey, cacheHit, storeConfPath, storePkgPath, writeCachedConf)
 import Zinc.Cabal (cabalBuildType, parseCabalComponents, parseCabalComponentsForGhc)
 import Zinc.Env (envCacheKey, nixPrintDevEnv, provisionEnv)
@@ -1284,6 +1284,36 @@ main = hspec $ do
       artifactsGone <- not <$> doesDirectoryExist (d ++ "/packages/demo/.zinc")
       (fmap length built, ran, artifactsGone)
         `shouldBe` (Right 1, Right "Hello from demo!\n", True)
+
+  describe "installedVersions" $
+    it "reports the real version of a boot library (base)" $ do
+      vs <- installedVersions
+      case lookup "base" vs of
+        Just (major : _) -> (major >= 4) `shouldBe` True
+        _                -> expectationFailure "base not found in ghc-pkg"
+
+  describe "real cabal_macros versions (end-to-end)" $
+    it "a dep guarded on MIN_VERSION_base compiles the modern branch" $ do
+      let base = "/tmp/zinc-macro-ver-ws"
+          dep = base ++ "/greet-repo"
+          ws = base ++ "/ws"
+      stale <- doesDirectoryExist base
+      when stale $ removeDirectoryRecursive base
+      writeFileIn (dep ++ "/zinc.toml") (unlines ["[package]", "name = \"greet\"", "version = \"1.0\"", "[build.lib]", "source-dirs = [\"src\"]", "exposed-modules = [\"Greet\"]"])
+      writeFileIn (dep ++ "/src/Greet.hs") "{-# LANGUAGE CPP #-}\nmodule Greet (hello) where\nhello :: String\n#if MIN_VERSION_base(4,0,0)\nhello = \"modern\"\n#else\nhello = \"old\"\n#endif\n"
+      let git args = readProcess "git" ("-C" : dep : args) ""
+      _ <- git ["init", "--quiet"]
+      _ <- git ["config", "user.email", "t@e"]
+      _ <- git ["config", "user.name", "T"]
+      _ <- git ["add", "."]
+      _ <- git ["commit", "--quiet", "-m", "c"]
+      rev <- trimStr <$> git ["rev-parse", "HEAD"]
+      writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "greet" (Rev rev)] [("greet", dep)]))
+      writeFileIn (ws ++ "/zinc.lock") (renderLock [LockedPackage "greet" dep rev "sha256:x" []])
+      writeFileIn (ws ++ "/packages/app/zinc.toml") (unlines ["[package]", "name = \"app\"", "version = \"1.0\"", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "depends = [\"greet\"]"])
+      writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Greet (hello)\nmain :: IO ()\nmain = putStrLn hello\n"
+      r <- buildAndRun ws []
+      r `shouldBe` Right "modern\n"
 
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do
