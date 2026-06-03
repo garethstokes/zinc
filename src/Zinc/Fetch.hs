@@ -4,6 +4,7 @@
 -- "Zinc.Resolve".'Zinc.Resolve.resolve' takes as a parameter.
 module Zinc.Fetch
   ( gitFetchManifest
+  , resolveRef
   ) where
 
 import Control.Monad (when)

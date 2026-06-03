@@ -11,7 +11,8 @@ common warnings
 library
   import:           warnings
   hs-source-dirs:   src
-  exposed-modules:  Zinc.CLI
+  exposed-modules:  Zinc.Add
+                    Zinc.CLI
                     Zinc.Cabal
                     Zinc.Env
                     Zinc.Fetch

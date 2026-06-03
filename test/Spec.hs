@@ -31,6 +31,7 @@ import Zinc.Manifest
   , parseWorkspace
   )
 import Zinc.Fetch (gitFetchManifest)
+import Zinc.Add (freezeClosure, lockEntry)
 import Zinc.Cabal (parseCabalComponents)
 import Zinc.Env (envCacheKey, provisionEnv)
 import Zinc.Macros (emitCabalMacros)
@@ -692,6 +693,29 @@ main = hspec $ do
 
     it "falls back to identity for unknown libs" $
       toNixpkgs "ncurses" `shouldBe` Just "ncurses"
+
+  describe "freeze engine" $ do
+    repo <- runIO setupDepRepo
+
+    it "lockEntry maps a resolved dep + rev + sha to a LockedPackage" $
+      lockEntry (ResolvedDep "aeson" "r/aeson" (Tag "v2") ["scientific"]) "abc123" "sha256:xyz"
+        `shouldBe` LockedPackage
+          { lockName = "aeson"
+          , lockRepo = "r/aeson"
+          , lockRev = "abc123"
+          , lockSha256 = "sha256:xyz"
+          , lockDepends = ["scientific"]
+          }
+
+    it "freezeClosure clones each dep and records its commit + content hash" $ do
+      let rd = ResolvedDep "dep" repo (Tag "v1") ["aeson"]
+      r <- freezeClosure "/tmp/zinc-freeze-store" [rd]
+      case r of
+        Right [lp] -> do
+          (lockName lp, lockRepo lp, lockDepends lp) `shouldBe` ("dep", repo, ["aeson"])
+          length (lockRev lp) `shouldBe` 40 -- git sha1 hex
+          take 7 (lockSha256 lp) `shouldBe` "sha256:"
+        other -> expectationFailure ("unexpected freeze result: " ++ show other)
 
   describe "materialize" $
     it "writes every FileSpec under the given root, creating parent dirs" $ do
