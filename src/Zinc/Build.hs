@@ -19,7 +19,7 @@ module Zinc.Build
   , installedVersions
   ) where
 
-import Data.List (intercalate, nub)
+import Data.List (find, intercalate, isPrefixOf, nub)
 import Data.Maybe (fromMaybe, isJust)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, listDirectory)
 import System.Exit (ExitCode (..))
@@ -103,7 +103,13 @@ registerPackage db confText = do
     Left err -> pure (Left err)
     Right () -> do
       let confFile = takeDirectory db </> "register.conf"
+          pkgId = maybe "" (drop 4) (find ("id: " `isPrefixOf`) (lines confText))
       writeFile confFile confText
+      -- Unregister any prior copy first so re-registration over a persisted db
+      -- (inner-loop incrementality) is a clean overwrite: ghc-pkg register
+      -- --force is unreliable at replacing a package that has dependencies.
+      -- Ignore failure (the package may not be registered yet).
+      _ <- readProcessWithExitCode "ghc-pkg" ["--package-db", db, "unregister", "--force", pkgId] ""
       runUnit "ghc-pkg" ["--package-db", db, "register", "--force", confFile]
 
 -- | Create an empty package db (no-op if it already exists).

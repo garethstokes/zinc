@@ -26,10 +26,10 @@ import Control.Exception (SomeException, finally, try)
 import Control.Monad (when)
 import Data.Bifunctor (first)
 import Data.Char (isHexDigit)
-import Data.List (stripPrefix)
+import Data.List (isInfixOf, stripPrefix)
 import qualified Data.Map as Map
 import Data.Maybe (catMaybes, fromMaybe)
-import System.Directory (doesDirectoryExist, doesFileExist, listDirectory, removeDirectoryRecursive)
+import System.Directory (doesDirectoryExist, doesFileExist, listDirectory, makeAbsolute, removeDirectoryRecursive)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeExtension, (</>))
 import System.Process (callProcess, readProcess, readProcessWithExitCode)
@@ -63,11 +63,9 @@ buildWorkspace wsDir target keep = runResult $ do
   ws <- liftEither (parseWorkspace wsSrc)
   members <- traverse loadMember (wsMembers ws)
   let wsDb = wsDir </> ".zinc" </> "pkgdb"
-  -- Rebuild the workspace package db fresh each build so re-registering
-  -- closure/sibling libs (from cache) is conflict-free.
-  liftIO $ do
-    dbThere <- doesDirectoryExist wsDb
-    when dbThere $ removeDirectoryRecursive wsDb
+  -- Keep the package db across builds (inner-loop incrementality): registration
+  -- is idempotent (ghc-pkg register --force) and the closure builder skips deps
+  -- already registered at their current key-addressed pkg dir.
   orFail (initPackageDb wsDb)
   storeRoot <- liftIO resolveStoreRoot
   orFail (buildClosure wsDir storeRoot wsDb (wsGhc ws) (parseBuildOptions wsSrc))
@@ -84,7 +82,12 @@ buildWorkspace wsDir target keep = runResult $ do
     buildMemberAll wsDb (dir, mem) = do
       case filter ((== Library) . compKind) (pkgComponents mem) of
         []        -> pure ()
-        (lib : _) -> orFail (buildLib (LibBuild dir (dir </> ".zinc" </> "lib") wsDb (pkgName mem) (pkgVersion mem) lib))
+        (lib : _) -> do
+          -- Absolute lib dir so the registered library-dirs is absolute: ghc-pkg
+          -- rejects relative paths, and (with the db now persisted) a relative
+          -- entry can't be cleanly re-registered across builds.
+          libDir <- liftIO (makeAbsolute (dir </> ".zinc" </> "lib"))
+          orFail (buildLib (LibBuild dir libDir wsDb (pkgName mem) (pkgVersion mem) lib))
       traverse (\comp -> orFail (buildMember (MemberBuild dir (dir </> ".zinc" </> "build") (Just wsDb) comp))) (wanted mem)
 
     wanted mem
@@ -161,6 +164,15 @@ parMapBounded n f xs = do
         putMVar mv (either (\e -> Left (show (e :: SomeException))) id r)
       pure mv
 
+-- | Is @unitId@ already registered in @db@ with @pkgDir@ among its
+-- library-dirs? Used to skip re-registering a closure dep whose current
+-- key-addressed build is already in the (persisted) package db. A changed rev
+-- yields a different pkg dir, so this correctly re-registers across rev bumps.
+isRegistered :: FilePath -> String -> FilePath -> IO Bool
+isRegistered db unitId pkgDir = do
+  (code, out, _) <- readProcessWithExitCode "ghc-pkg" ["--package-db", db, "field", unitId, "library-dirs"] ""
+  pure (code == ExitSuccess && pkgDir `isInfixOf` out)
+
 -- | Build the resolved git-dependency closure (from @zinc.lock@) from source
 -- into the workspace package db, in dependency order, so members can link it.
 -- Each locked package is fetched at its exact commit, its zinc.toml read, and
@@ -186,12 +198,17 @@ buildClosure wsDir storeRoot wsDb ghcVersion buildOpts = runResult $ do
     -- registered first. Concurrency is bounded by the capability count, so the
     -- non-threaded test harness stays correct-but-serial while the -threaded
     -- zinc binary actually overlaps the compiles.
-    -- Compile a level's nodes concurrently, then register their confs serially.
+    -- Compile a level's nodes concurrently, then register their confs serially,
+    -- skipping deps already registered at their current key-addressed pkg dir.
     buildLevel level = do
       n <- liftIO getNumCapabilities
       produced <- liftIO (parMapBounded n produceOne level)
-      confs <- liftEither (sequence produced)
-      mapM_ (orFail . registerPackage wsDb) (catMaybes confs)
+      regs <- liftEither (sequence produced)
+      mapM_ registerNeeded (catMaybes regs)
+
+    registerNeeded (unitId, pkgOut, conf) = do
+      done <- liftIO (isRegistered wsDb unitId pkgOut)
+      when (not done) (orFail (registerPackage wsDb conf))
 
     -- Content-addressed cache key from data available without the source, so a
     -- cached build is reused without even fetching. Includes the dep's
@@ -207,9 +224,12 @@ buildClosure wsDir storeRoot wsDb ghcVersion buildOpts = runResult $ do
     produceOne l = runResult $ do
       let key = cacheKeyOf l
           confPath = storeConfPath storeRoot key
+          pkgOut = storePkgPath storeRoot key
       cached <- liftIO (doesFileExist confPath)
       if cached
-        then Just <$> liftIO (readFile confPath) -- cache hit: reuse conf, no fetch/compile
+        then do
+          conf <- liftIO (readFile confPath) -- cache hit: reuse conf, no fetch/compile
+          pure (Just (lockName l, pkgOut, conf))
         else do
           let dest = storeSrcPath storeRoot (lockName l) (lockRev l)
           exists <- liftIO (doesDirectoryExist dest)
@@ -227,7 +247,8 @@ buildClosure wsDir storeRoot wsDb ghcVersion buildOpts = runResult $ do
               -- Apply any per-dependency build overrides (extra ghc flags,
               -- e.g. -XSafe) from the workspace [build-options].
               let lib' = lib {compGhcOptions = compGhcOptions lib ++ overrideFor l}
-              Just <$> orFail (buildLibArtifacts (LibBuild pkgDir (storePkgPath storeRoot key) wsDb (lockName l) version lib'))
+              conf <- orFail (buildLibArtifacts (LibBuild pkgDir pkgOut wsDb (lockName l) version lib'))
+              pure (Just (lockName l, pkgOut, conf))
 
     -- Tamper detection (spec §8): a fetched tree's content hash must match the
     -- lock's recorded sha256. Only enforced for real-shaped hashes so that
