@@ -11,9 +11,11 @@ module Zinc.Add
   ) where
 
 import Control.Monad (when)
+import Data.Bifunctor (first)
 import Data.List (find)
 import System.Directory (doesDirectoryExist, doesFileExist, removeDirectoryRecursive)
 import System.FilePath (takeDirectory, (</>))
+import Zinc.Except (Result, failWith, liftEither, liftIO, orFail, runResult)
 import Zinc.Fetch (gitFetchManifest, resolveRef)
 import Zinc.Git (cloneAt)
 import Zinc.Lock (LockedPackage (..), renderLock)
@@ -44,94 +46,72 @@ lockEntry dep rev sha =
 -- commit + content hash, and produce the lockfile entries. Short-circuits on
 -- the first failure.
 freezeClosure :: FilePath -> [ResolvedDep] -> IO (Either String [LockedPackage])
-freezeClosure storeRoot = go []
+freezeClosure storeRoot = runResult . traverse freezeOne
   where
-    go acc [] = pure (Right (reverse acc))
-    go acc (dep : rest) = do
-      resolved <- resolveRef (rdRepo dep) (rdRef dep)
-      case resolved of
-        Left err -> pure (Left (rdName dep ++ ": " ++ err))
-        Right refStr -> do
-          let dest = storeRoot </> "checkout" </> rdName dep
-          stale <- doesDirectoryExist dest
-          when stale (removeDirectoryRecursive dest)
-          cloned <- cloneAt (rdRepo dep) refStr dest
-          case cloned of
-            Left err -> pure (Left ("freeze " ++ rdName dep ++ ": " ++ err))
-            Right rev -> do
-              sha <- contentHash dest
-              go (lockEntry dep rev sha : acc) rest
+    freezeOne :: ResolvedDep -> Result LockedPackage
+    freezeOne dep = do
+      refStr <- orFail (first ((rdName dep ++ ": ") ++) <$> resolveRef (rdRepo dep) (rdRef dep))
+      let dest = storeRoot </> "checkout" </> rdName dep
+      liftIO $ do
+        stale <- doesDirectoryExist dest
+        when stale (removeDirectoryRecursive dest)
+      rev <- orFail (first (("freeze " ++ rdName dep ++ ": ") ++) <$> cloneAt (rdRepo dep) refStr dest)
+      sha <- liftIO (contentHash dest)
+      pure (lockEntry dep rev sha)
 
--- | Add (or refresh) a dependency: update the workspace model, resolve the
--- full closure (real git fetch), freeze it, and write @zinc.lock@ +
--- @zinc.toml@. Returns the resolution table for display. (Interactive y/N
--- confirmation is layered on by the CLI.)
+-- | Resolve a workspace's dependency closure (real git fetch), freeze it, and
+-- write @zinc.lock@; returns the resolution table for display. Shared by
+-- 'runAdd' and 'runUpdate'.
+freezeWorkspace :: FilePath -> FilePath -> WorkspaceManifest -> Result String
+freezeWorkspace wsFile storeRoot ws = do
+  closure <- orFail (resolve isBootLib (gitFetchManifest storeRoot (wsGhc ws)) (wsDependencies ws) (wsRegistry ws))
+  locks <- orFail (freezeClosure storeRoot closure)
+  liftIO $ writeFile (takeDirectory wsFile </> "zinc.lock") (renderLock locks)
+  pure (renderResolution closure)
+
+-- | Add (or refresh) a dependency: update the workspace model, freeze the
+-- closure, and write @zinc.lock@ + @zinc.toml@. Returns the resolution table.
+-- (Interactive y/N confirmation is layered on by the CLI.)
 runAdd :: FilePath -> FilePath -> String -> Ref -> String -> IO (Either String String)
-runAdd wsFile storeRoot name ref repo = do
-  src <- readFile wsFile
-  case parseWorkspace src of
-    Left err -> pure (Left err)
-    Right ws -> do
-      let ws' = addDep ws name ref repo
-      resolved <- resolve isBootLib (gitFetchManifest storeRoot (wsGhc ws')) (wsDependencies ws') (wsRegistry ws')
-      case resolved of
-        Left err -> pure (Left err)
-        Right closure -> do
-          frozen <- freezeClosure storeRoot closure
-          case frozen of
-            Left err -> pure (Left err)
-            Right locks -> do
-              writeFile (takeDirectory wsFile </> "zinc.lock") (renderLock locks)
-              writeFile wsFile (renderWorkspace ws')
-              pure (Right (renderResolution closure))
+runAdd wsFile storeRoot name ref repo = runResult $ do
+  src <- liftIO (readFile wsFile)
+  ws <- liftEither (parseWorkspace src)
+  let ws' = addDep ws name ref repo
+  res <- freezeWorkspace wsFile storeRoot ws'
+  liftIO $ writeFile wsFile (renderWorkspace ws')
+  pure res
 
 -- | CLI entry: @zinc add \<name\>@ in the current workspace. Resolves the repo
 -- from the workspace @[registry]@ (Hackage discovery for unknown packages is
--- tracked separately) and stores builds under @~/.zinc/store@.
+-- tracked separately) and stores builds under @~\/.zinc\/store@.
 addInWorkspace :: String -> IO (Either String String)
-addInWorkspace name = do
+addInWorkspace name = runResult $ do
   let wsFile = "zinc.toml"
-  present <- doesFileExist wsFile
-  if not present
-    then pure (Left "no zinc.toml in the current directory")
-    else do
-      src <- readFile wsFile
-      case parseWorkspace src of
-        Left err -> pure (Left err)
-        Right ws -> case lookup name (wsRegistry ws) of
-          Nothing ->
-            pure (Left ("no repo known for '" ++ name ++ "' — add it to [registry] (Hackage discovery: zinc-5la)"))
-          Just repo -> do
-            let ref = maybe Latest depRef (find ((== name) . depName) (wsDependencies ws))
-            storeRoot <- resolveStoreRoot
-            runAdd wsFile storeRoot name ref repo
+  present <- liftIO (doesFileExist wsFile)
+  when (not present) $ failWith "no zinc.toml in the current directory"
+  src <- liftIO (readFile wsFile)
+  ws <- liftEither (parseWorkspace src)
+  case lookup name (wsRegistry ws) of
+    Nothing ->
+      failWith ("no repo known for '" ++ name ++ "' — add it to [registry] (Hackage discovery: zinc-5la)")
+    Just repo -> do
+      let ref = maybe Latest depRef (find ((== name) . depName) (wsDependencies ws))
+      storeRoot <- liftIO resolveStoreRoot
+      orFail (runAdd wsFile storeRoot name ref repo)
 
 -- | Re-resolve the workspace's dependencies (bumping Latest refs) and rewrite
 -- the lockfile. Like 'runAdd' but without adding a new dependency.
 runUpdate :: FilePath -> FilePath -> IO (Either String String)
-runUpdate wsFile storeRoot = do
-  src <- readFile wsFile
-  case parseWorkspace src of
-    Left err -> pure (Left err)
-    Right ws -> do
-      resolved <- resolve isBootLib (gitFetchManifest storeRoot (wsGhc ws)) (wsDependencies ws) (wsRegistry ws)
-      case resolved of
-        Left err -> pure (Left err)
-        Right closure -> do
-          frozen <- freezeClosure storeRoot closure
-          case frozen of
-            Left err -> pure (Left err)
-            Right locks -> do
-              writeFile (takeDirectory wsFile </> "zinc.lock") (renderLock locks)
-              pure (Right (renderResolution closure))
+runUpdate wsFile storeRoot = runResult $ do
+  src <- liftIO (readFile wsFile)
+  ws <- liftEither (parseWorkspace src)
+  freezeWorkspace wsFile storeRoot ws
 
 -- | CLI entry: @zinc update@ in the current workspace.
 updateInWorkspace :: IO (Either String String)
-updateInWorkspace = do
+updateInWorkspace = runResult $ do
   let wsFile = "zinc.toml"
-  present <- doesFileExist wsFile
-  if not present
-    then pure (Left "no zinc.toml in the current directory")
-    else do
-      storeRoot <- resolveStoreRoot
-      runUpdate wsFile storeRoot
+  present <- liftIO (doesFileExist wsFile)
+  when (not present) $ failWith "no zinc.toml in the current directory"
+  storeRoot <- liftIO resolveStoreRoot
+  orFail (runUpdate wsFile storeRoot)
