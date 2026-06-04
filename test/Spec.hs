@@ -40,7 +40,7 @@ import Zinc.GC (GCRoot (..), gcStore, runGc)
 import Zinc.Add (freezeClosure, lockEntry, runAdd, runUpdate)
 import Zinc.Build (GhcInvocation (..), MemberBuild (..), PackageConf (..), archiveArgs, buildMember, ghcMakeArgs, installedVersions, preprocessorFor, registerPackage, renderConf, replArgs, runPreprocessor)
 import Zinc.Cache (BuildKey (..), buildCacheKey, cacheHit, storeConfPath, storePkgPath, writeCachedConf)
-import Zinc.Cabal (cabalBuildType, parseCabalComponents, parseCabalComponentsForGhc)
+import Zinc.Cabal (cabalBuildType, cabalVersion, parseCabalComponents, parseCabalComponentsForGhc)
 import Zinc.Env (envCacheKey, nixPrintDevEnv, provisionEnv)
 import Zinc.Macros (emitCabalMacros)
 import Zinc.Nix (generateFlake)
@@ -1561,6 +1561,11 @@ main = hspec $ do
     it "reads a Custom build-type" $
       cabalBuildType (unlines ["cabal-version: 2.4", "name: d", "version: 1", "build-type: Custom", "custom-setup", "  setup-depends: base, Cabal", "library", "  build-depends: base"])
         `shouldBe` Right "Custom"
+
+  describe "cabalVersion" $
+    it "reads the declared package version" $
+      cabalVersion (unlines ["cabal-version: 2.4", "name: colour", "version: 2.3.6", "library", "  build-depends: base"])
+        `shouldBe` Right "2.3.6"
 
   describe "runClean" $
     it "removes build artifacts but keeps the store" $ do

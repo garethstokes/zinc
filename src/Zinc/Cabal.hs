@@ -9,6 +9,7 @@ module Zinc.Cabal
   ( parseCabalComponents
   , parseCabalComponentsForGhc
   , cabalBuildType
+  , cabalVersion
   ) where
 
 import qualified Data.ByteString.Char8 as BS
@@ -24,7 +25,7 @@ import Distribution.PackageDescription
   ( BuildInfo
   , Executable (buildInfo, exeName, modulePath)
   , Library
-  , PackageDescription (executables, library, testSuites)
+  , PackageDescription (executables, library, package, testSuites)
   , TestSuite (testBuildInfo, testInterface, testName)
   , TestSuiteInterface (TestSuiteExeV10)
   , buildType
@@ -46,6 +47,7 @@ import Distribution.Pretty (prettyShow)
 import Distribution.System (buildPlatform)
 import Distribution.Types.ComponentRequestedSpec (ComponentRequestedSpec (ComponentRequestedSpec))
 import Distribution.Types.Dependency (depPkgName)
+import Distribution.Types.PackageId (pkgVersion)
 import Distribution.Types.PackageName (unPackageName)
 import Distribution.Types.PkgconfigDependency (PkgconfigDependency (PkgconfigDependency))
 import Distribution.Types.PkgconfigName (unPkgconfigName)
@@ -136,3 +138,13 @@ cabalBuildType src =
   case snd (runParseResult (parseGenericPackageDescription (BS.pack src))) of
     Left err  -> Left ("cabal parse error: " ++ show err)
     Right gpd -> Right (prettyShow (buildType (packageDescription gpd)))
+
+-- | The declared @version@ of a @.cabal@ (e.g. @"2.3.6"@). Used so a fetched
+-- dependency registers with its real version — keeping zinc's synthesized
+-- @cabal_macros.h@ in step with GHC's own @VERSION_<pkg>@/@MIN_VERSION_<pkg>@
+-- macros (a mismatch is a CPP redefinition error).
+cabalVersion :: String -> Either String String
+cabalVersion src =
+  case snd (runParseResult (parseGenericPackageDescription (BS.pack src))) of
+    Left err  -> Left ("cabal parse error: " ++ show err)
+    Right gpd -> Right (prettyShow (pkgVersion (package (packageDescription gpd))))
