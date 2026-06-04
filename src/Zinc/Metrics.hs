@@ -31,13 +31,15 @@ data MetricsRecord = MetricsRecord
   , mrGhcVersion  :: String     -- ^ workspace GHC version
   , mrTimestamp   :: String     -- ^ ISO-8601 wall-clock time (supplied by caller)
   , mrTiming      :: Timing
+  , mrPackages    :: [(String, Int)] -- ^ per-dependency build time (name -> ms), for the slowest-deps rollup
   }
   deriving (Eq, Show)
 
--- | The record as JSON.
+-- | The record as JSON. @packages@ is omitted when empty so records with no
+-- per-dependency data stay compact.
 metricsRecordJson :: MetricsRecord -> Json
 metricsRecordJson r =
-  JObject
+  JObject $
     [ ("timestamp", JString (mrTimestamp r))
     , ("command", JString (mrCommand r))
     , ("argsSummary", JString (mrArgsSummary r))
@@ -45,6 +47,9 @@ metricsRecordJson r =
     , ("ghcVersion", JString (mrGhcVersion r))
     , ("timing", timingJson (mrTiming r))
     ]
+      ++ [("packages", JArray [pkgJson n ms | (n, ms) <- mrPackages r]) | not (null (mrPackages r))]
+  where
+    pkgJson n ms = JObject [("name", JString n), ("timeMs", JInt ms)]
 
 -- | The record as a single newline-terminated JSONL line.
 metricsLine :: MetricsRecord -> String
@@ -66,14 +71,14 @@ appendMetrics wsDir r = do
 -- manifest, a fingerprint of the lockfile) and append a metrics line. Best
 -- effort — a metrics write failure must never fail the build, so all
 -- exceptions are swallowed.
-recordBuild :: FilePath -> String -> Maybe String -> Timing -> IO ()
-recordBuild wsDir command target timing = handle ignore $ do
+recordBuild :: FilePath -> String -> Maybe String -> Timing -> [(String, Int)] -> IO ()
+recordBuild wsDir command target timing packages = handle ignore $ do
   ts <- iso8601Show <$> getCurrentTime
   wsSrc <- readFile (wsDir </> "zinc.toml")
   let ghc = either (const "?") wsGhc (parseWorkspace wsSrc)
   hasLock <- doesFileExist (wsDir </> "zinc.lock")
   lockHash <- if hasLock then hashString <$> readFile (wsDir </> "zinc.lock") else pure "none"
-  appendMetrics wsDir (MetricsRecord command (maybe "" id target) lockHash ghc ts timing)
+  appendMetrics wsDir (MetricsRecord command (maybe "" id target) lockHash ghc ts timing packages)
   where
     ignore :: SomeException -> IO ()
     ignore _ = pure ()

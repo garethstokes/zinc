@@ -20,18 +20,21 @@ module Zinc.Perf
   , runPerf
   ) where
 
-import Data.List (sort)
+import Data.List (sortBy, sort)
+import qualified Data.Map as Map
 import Data.Maybe (mapMaybe)
+import Data.Ord (Down (Down), comparing)
 import System.Directory (doesFileExist)
 import Zinc.Json (Json (..), parseJson)
 import Zinc.Metrics (metricsPath)
 
 -- | The slice of a metrics record the analyzer needs (one build invocation).
 data PerfRecord = PerfRecord
-  { perfCommand :: String
-  , perfTotalMs :: Int
-  , perfHits    :: Int
-  , perfMisses  :: Int
+  { perfCommand  :: String
+  , perfTotalMs  :: Int
+  , perfHits     :: Int
+  , perfMisses   :: Int
+  , perfPackages :: [(String, Int)] -- ^ per-dependency build time (name -> ms)
   }
   deriving (Eq, Show)
 
@@ -61,8 +64,18 @@ data PerfSummary = PerfSummary
   , sumCacheHits  :: Int
   , sumCacheMiss  :: Int
   , sumRegression :: Maybe Regression
+  , sumSlowest    :: [(String, Int, Int)] -- ^ (dependency, cumulative ms, build count), slowest first
   }
   deriving (Eq, Show)
+
+-- | The slowest dependencies across all recorded builds, ranked by cumulative
+-- compile time (perf spec §3.2). Returns up to the top N as
+-- @(name, cumulativeMs, builds)@.
+slowestDeps :: [PerfRecord] -> [(String, Int, Int)]
+slowestDeps recs =
+  let byName = Map.fromListWith (\(t1, c1) (t2, c2) -> (t1 + t2, c1 + c2)) [(n, (ms, 1 :: Int)) | r <- recs, (n, ms) <- perfPackages r]
+      ranked = sortBy (comparing (Down . (\(_, (t, _)) -> t))) (Map.toList byName)
+   in [(n, t, c) | (n, (t, c)) <- take 5 ranked]
 
 -- | Flag a regression when the latest run is at least this many times the
 -- baseline median (perf spec §3.2: "build 2× slower than baseline").
@@ -93,7 +106,11 @@ decodeRecord j = do
   cache <- jLookup "cache" timing
   hits <- jLookup "hits" cache >>= jInt
   misses <- jLookup "misses" cache >>= jInt
-  pure (PerfRecord cmd total hits misses)
+  -- packages is optional (older records / non-build commands omit it).
+  let pkgs = case jLookup "packages" j of
+        Just (JArray xs) -> [(n, ms) | p <- xs, Just n <- [jLookup "name" p >>= jStr], Just ms <- [jLookup "timeMs" p >>= jInt]]
+        _ -> []
+  pure (PerfRecord cmd total hits misses pkgs)
 
 -- | Nearest-rank percentile (1..100) of a list of samples.
 percentile :: Int -> [Int] -> Int
@@ -113,6 +130,7 @@ summarize recs =
     , sumCacheHits = sum (map perfHits recs)
     , sumCacheMiss = sum (map perfMisses recs)
     , sumRegression = regressionOf recs
+    , sumSlowest = slowestDeps recs
     }
   where
     statsFor cmd =
@@ -153,6 +171,7 @@ perfSummaryJson s =
           ]
       )
     , ("regression", maybe JNull regressionJson (sumRegression s))
+    , ("slowestDeps", JArray [JObject [("name", JString n), ("cumulativeMs", JInt t), ("builds", JInt c)] | (n, t, c) <- sumSlowest s])
     ]
   where
     commandJson c =
@@ -174,11 +193,14 @@ perfSummaryJson s =
 renderPerf :: PerfSummary -> String
 renderPerf s
   | sumRecords s == 0 = "No build metrics yet (run a build; history lands in .zinc/metrics.jsonl).\n"
-  | otherwise = unlines (header : map cmdLine (sumCommands s) ++ cacheLine : regLines)
+  | otherwise = unlines (header : map cmdLine (sumCommands s) ++ cacheLine : regLines ++ slowLines)
   where
     header = show (sumRecords s) ++ " build(s) recorded:"
     cmdLine c = "  " ++ csCommand c ++ ": " ++ show (csCount c) ++ " run(s), p50 " ++ show (csP50Ms c) ++ "ms, p95 " ++ show (csP95Ms c) ++ "ms"
     cacheLine = "  cache: " ++ show (hitRatePct s) ++ "% hit-rate (" ++ show (sumCacheHits s) ++ " hits, " ++ show (sumCacheMiss s) ++ " misses)"
+    slowLines = case sumSlowest s of
+      [] -> []
+      ds -> "  slowest deps (cumulative):" : ["    " ++ n ++ ": " ++ show t ++ "ms over " ++ show c ++ " build(s)" | (n, t, c) <- ds]
     regLines = case sumRegression s of
       Nothing -> []
       Just r

@@ -18,7 +18,7 @@ import Zinc.Metrics (recordBuild)
 import Zinc.Orchestrate (checkLockDrift, resolveRunTarget, runBuildReport, runClean, runRepl, runTests, runWarm)
 import Zinc.Perf (perfSummaryJson, renderPerf, runPerf)
 import Zinc.Prime (runOnboard, runPrime)
-import Zinc.Report (PackageReport, PackageStatus (Built, Cached), boExes, buildDataJson, packageReportJson, prStatus, timingJson)
+import Zinc.Report (PackageReport, PackageStatus (Built, Cached), boExes, boPackages, buildDataJson, packageReportJson, prName, prStatus, prTimeMs, timingJson)
 import Zinc.Scaffold (materialize, scaffoldNew)
 
 -- | Thin executable shim. Parsing/dispatch logic lives in (and is tested via)
@@ -79,7 +79,7 @@ dispatch (Build target json) = do
           exitWith (exitCodeFor e)
       | otherwise -> failCmd "zinc build" e
     Right (outcome, timing) -> do
-      recordBuild "." "build" target timing
+      recordBuild "." "build" target timing [(prName p, ms) | p <- boPackages outcome, Just ms <- [prTimeMs p]]
       if json
         then putStrLn (renderJson (envelope "build" True (Just (buildDataJson outcome)) (Just (timingJson timing)) []))
         else do

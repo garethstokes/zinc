@@ -453,7 +453,7 @@ main = hspec $ do
 
     it "decodes a metrics record's analyzer-relevant fields" $ do
       let j = either (error "parse") id (parseJson "{\"command\":\"build\",\"timing\":{\"totalMs\":42,\"cache\":{\"hits\":3,\"misses\":1}}}")
-      decodeRecord j `shouldBe` Just (PerfRecord "build" 42 3 1)
+      decodeRecord j `shouldBe` Just (PerfRecord "build" 42 3 1 [])
 
     it "computes nearest-rank percentiles" $ do
       percentile 50 [100, 110, 300] `shouldBe` 110
@@ -461,7 +461,7 @@ main = hspec $ do
       percentile 50 ([] :: [Int]) `shouldBe` 0
 
     it "summarizes latency, cache, and a regression vs the prior median" $ do
-      let s = summarize [PerfRecord "build" 100 1 0, PerfRecord "build" 110 2 1, PerfRecord "build" 300 0 1]
+      let s = summarize [PerfRecord "build" 100 1 0 [], PerfRecord "build" 110 2 1 [], PerfRecord "build" 300 0 1 []]
       sumRecords s `shouldBe` 3
       (sumCacheHits s, sumCacheMiss s) `shouldBe` (3, 2)
       map (\c -> (csCommand c, csCount c, csP50Ms c, csP95Ms c)) (sumCommands s) `shouldBe` [("build", 3, 110, 300)]
@@ -472,16 +472,27 @@ main = hspec $ do
 
     it "emits a JSON summary" $
       renderJson (perfSummaryJson (summarize []))
-        `shouldBe` "{\"records\":0,\"commands\":[],\"cache\":{\"hits\":0,\"misses\":0,\"hitRatePct\":0},\"regression\":null}"
+        `shouldBe` "{\"records\":0,\"commands\":[],\"cache\":{\"hits\":0,\"misses\":0,\"hitRatePct\":0},\"regression\":null,\"slowestDeps\":[]}"
+
+    it "ranks slowest dependencies by cumulative build time across records (nti)" $ do
+      let recs =
+            [ PerfRecord "build" 100 0 1 [("alpha", 900), ("beta", 100)]
+            , PerfRecord "build" 50 1 0 [("alpha", 0), ("beta", 100)]
+            ]
+      sumSlowest (summarize recs) `shouldBe` [("alpha", 900, 2), ("beta", 200, 2)]
 
   describe "metrics persistence (hbv.2)" $ do
-    it "renders a metrics record as one JSON line" $
-      metricsLine (MetricsRecord "build" "" "sha256:abc" "9.6.5" "2026-06-04T00:00:00Z" (Timing 7 [("closure", 4)] (CacheStats 1 0 0 1)))
+    it "renders a metrics record as one JSON line (packages omitted when empty)" $
+      metricsLine (MetricsRecord "build" "" "sha256:abc" "9.6.5" "2026-06-04T00:00:00Z" (Timing 7 [("closure", 4)] (CacheStats 1 0 0 1)) [])
         `shouldBe` "{\"timestamp\":\"2026-06-04T00:00:00Z\",\"command\":\"build\",\"argsSummary\":\"\",\"lockHash\":\"sha256:abc\",\"ghcVersion\":\"9.6.5\",\"timing\":{\"totalMs\":7,\"phases\":{\"closure\":4},\"cache\":{\"hits\":1,\"misses\":0,\"pkgsBuilt\":0,\"pkgsCached\":1}}}\n"
+
+    it "includes per-package timing in the record when present (nti)" $
+      metricsLine (MetricsRecord "build" "" "h" "9.6.5" "t" (Timing 5 [] (CacheStats 0 1 1 0)) [("alpha", 900)])
+        `shouldBe` "{\"timestamp\":\"t\",\"command\":\"build\",\"argsSummary\":\"\",\"lockHash\":\"h\",\"ghcVersion\":\"9.6.5\",\"timing\":{\"totalMs\":5,\"phases\":{},\"cache\":{\"hits\":0,\"misses\":1,\"pkgsBuilt\":1,\"pkgsCached\":0}},\"packages\":[{\"name\":\"alpha\",\"timeMs\":900}]}\n"
 
     it "appends (never rewrites) records to .zinc/metrics.jsonl" $ do
       let d = "/tmp/zinc-metrics-test"
-          rec n = MetricsRecord "build" n "h" "9.6.5" "t" (Timing 1 [] (CacheStats 0 0 0 0))
+          rec n = MetricsRecord "build" n "h" "9.6.5" "t" (Timing 1 [] (CacheStats 0 0 0 0)) []
       stale <- doesDirectoryExist d
       when stale $ removeDirectoryRecursive d
       createDirectoryIfMissing True d
