@@ -48,7 +48,7 @@ import Zinc.Orchestrate (buildAndRun, lockDrift, orderMembers, runBuild, runBuil
 import Zinc.Paths (pathsModuleName, synthesizePaths)
 import Zinc.Report (renderResolution)
 import Zinc.SysLibs (toNixpkgs)
-import Zinc.Resolve (DepManifest (..), ResolvedDep (..), isBootLib, resolve, topoSort)
+import Zinc.Resolve (DepManifest (..), ResolvedDep (..), isBootLib, resolve, topoLevels, topoSort)
 import Zinc.Version (newestTag)
 import Zinc.Lock (LockedPackage (..), parseLock, renderLock)
 import Zinc.Scaffold (FileSpec (..), materialize, scaffoldNew)
@@ -513,6 +513,31 @@ main = hspec $ do
 
     it "handles an empty closure" $
       topoSort [] `shouldBe` Right []
+
+  describe "topoLevels" $ do
+    let rd n ds = ResolvedDep n ("r/" ++ n) Latest ds
+
+    it "puts each node a level after all its in-closure deps (linear chain)" $
+      (map (map rdName) <$> topoLevels [rd "aeson" ["scientific"], rd "scientific" ["il"], rd "il" []])
+        `shouldBe` Right [["il"], ["scientific"], ["aeson"]]
+
+    it "groups mutually-independent siblings into one level" $
+      (map (map rdName) <$> topoLevels [rd "a" ["b", "c"], rd "b" ["d"], rd "c" ["d"], rd "d" []])
+        `shouldBe` Right [["d"], ["b", "c"], ["a"]]
+
+    it "puts every root dep at level 0 when there are no edges" $
+      (map (map rdName) <$> topoLevels [rd "x" [], rd "y" [], rd "z" []])
+        `shouldBe` Right [["x", "y", "z"]]
+
+    it "rejects a dependency cycle" $
+      topoLevels [rd "a" ["b"], rd "b" ["a"]] `shouldSatisfy` isLeft
+
+    it "flattening the levels yields a valid topo order" $
+      (concatMap (map rdName) <$> topoLevels [rd "a" ["b", "c"], rd "b" ["d"], rd "c" ["d"], rd "d" []])
+        `shouldBe` (map rdName <$> topoSort [rd "a" ["b", "c"], rd "b" ["d"], rd "c" ["d"], rd "d" []])
+
+    it "handles an empty closure" $
+      topoLevels [] `shouldBe` Right []
 
   describe "parseDependencies" $ do
     it "reads [dependencies] and [registry] without requiring [workspace]" $

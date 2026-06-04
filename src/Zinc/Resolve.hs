@@ -11,6 +11,7 @@ module Zinc.Resolve
   , ResolvedDep (..)
   , resolve
   , topoSort
+  , topoLevels
   , isBootLib
   ) where
 
@@ -100,6 +101,29 @@ topoSort nodes = do
       | otherwise = do
           (done', order') <- foldM (visit (Set.insert name path)) acc (depsOf name)
           pure (Set.insert name done', name : order')
+
+-- | Group a resolved closure into dependency /levels/ for parallel building:
+-- level 0 has the nodes with no in-closure dependencies, and each later level
+-- holds nodes whose every in-closure dependency sits in an earlier level.
+-- Nodes within a level are mutually independent, so they can be compiled
+-- concurrently; flattening the levels yields a valid 'topoSort' order. Fails on
+-- a cycle (no node ever becomes ready). Input order is preserved within levels.
+topoLevels :: [ResolvedDep] -> Either String [[ResolvedDep]]
+topoLevels nodes = go Set.empty (map rdName nodes) []
+  where
+    byName = Map.fromList [(rdName n, n) | n <- nodes]
+    depsOf name = maybe [] (filter (`Map.member` byName) . rdDepends) (Map.lookup name byName)
+
+    go _ [] acc = Right (reverse acc)
+    go done remaining acc =
+      let ready = [name | name <- remaining, all (`Set.member` done) (depsOf name)]
+       in if null ready
+            then Left ("dependency cycle among: " ++ unwords remaining)
+            else
+              go
+                (foldr Set.insert done ready)
+                (filter (`notElem` ready) remaining)
+                (map (byName Map.!) ready : acc)
 
 -- | The GHC boot libraries that ship with the compiler and are never fetched
 -- (spec §2). The production 'resolve' uses this as its @isBoot@ predicate.
