@@ -133,14 +133,20 @@ shared dependencies, and the registry; each member declares its components.
 members = ["packages/myapp", "packages/mylib"]
 ghc = "9.8.2"                      # Nix pins exactly this compiler
 
+# Vertical: one entry per dependency (see 2026-06-04-zinc-config-vertical-and-fmt).
 [dependencies]                     # shared across the workspace; one ref per name
-aeson = { tag = "v2.2.3.0" }
+aeson = "v2.2.3.0"                 # shorthand; repo resolved + frozen into zinc.lock by `zinc add`
 hspec = "*"                        # "*" = latest release tag, frozen in lock
 
-[registry]                         # repos for DIRECT deps; transitives self-describe
-aeson = "https://github.com/haskell/aeson"
-hspec = "https://github.com/hspec/hspec"
+[dependencies.colour]              # full block: a repo override + ghc flags
+repo        = "https://github.com/garethstokes/color.git"
+ghc-options = ["-XSafe"]
 ```
+
+`[registry]` and `[build-options]` are folded into the per-dependency blocks
+(`repo` and `ghc-options`); the repo is optional in the manifest because `zinc
+add` freezes it into `zinc.lock` (see the config spec). `build` never infers a
+repo.
 
 **Member package (`packages/myapp/zinc.toml`):**
 ```toml
