@@ -20,7 +20,7 @@ module Zinc.Build
   ) where
 
 import Data.List (intercalate, nub)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, listDirectory)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, takeExtension, (-<.>), (<.>), (</>))
@@ -224,27 +224,30 @@ buildLibArtifacts lb = do
           ++ map ("-X" ++) (compExtensions comp)
           ++ compGhcOptions comp
           ++ modules
-  chain (runUnit "ghc" compileArgs) $ \_ -> do
-    objs <- findObjs (lbDistDir lb)
-    chain (runUnit "ar" (archiveArgs (lbDistDir lb) unitId objs)) $ \_ -> do
-      let confText =
-            renderConf
-              PackageConf
-                { confName = lbName lb
-                , confVersion = lbVersion lb
-                , confId = unitId
-                , confExposedModules = compExposedModules comp
-                , confImportDirs = [lbDistDir lb]
-                , confLibraryDirs = [lbDistDir lb]
-                , confHsLibraries = ["HS" ++ unitId]
-                , -- Direct deps as installed unit-ids so dependents link them:
-                  -- zinc deps by bare name, non-base boot libs by real id.
-                  confDepends = [depConfId d | d <- nub (compDepends comp), d /= "base"]
-                }
-      -- Persist the conf alongside the build so the artifact cache can
-      -- re-register it without recompiling.
-      writeFile (lbDistDir lb </> "package.conf") confText
-      pure (Right confText)
+  -- Generate sources from any .x/.y/.hsc the dep ships (e.g. toml-parser's
+  -- alex/happy lexer+parser) so ghc --make finds the resulting .hs modules.
+  chain (runPreprocessorsIn (map (lbMemberDir lb </>) srcDirs)) $ \_ ->
+    chain (runUnit "ghc" compileArgs) $ \_ -> do
+      objs <- findObjs (lbDistDir lb)
+      chain (runUnit "ar" (archiveArgs (lbDistDir lb) unitId objs)) $ \_ -> do
+        let confText =
+              renderConf
+                PackageConf
+                  { confName = lbName lb
+                  , confVersion = lbVersion lb
+                  , confId = unitId
+                  , confExposedModules = compExposedModules comp
+                  , confImportDirs = [lbDistDir lb]
+                  , confLibraryDirs = [lbDistDir lb]
+                  , confHsLibraries = ["HS" ++ unitId]
+                  , -- Direct deps as installed unit-ids so dependents link them:
+                    -- zinc deps by bare name, non-base boot libs by real id.
+                    confDepends = [depConfId d | d <- nub (compDepends comp), d /= "base"]
+                  }
+        -- Persist the conf alongside the build so the artifact cache can
+        -- re-register it without recompiling.
+        writeFile (lbDistDir lb </> "package.conf") confText
+        pure (Right confText)
   where
     chain act k = act >>= either (pure . Left) k
 
@@ -261,6 +264,31 @@ findObjs root = do
       let p = dir </> e
       isDir <- doesDirectoryExist p
       if isDir then go p else pure [p | takeExtension p == ".o"]
+
+-- | Recursively list files under a directory that need a preprocessor
+-- (.x/.y/.hsc), as absolute paths.
+preprocessableUnder :: FilePath -> IO [FilePath]
+preprocessableUnder root = do
+  exists <- doesDirectoryExist root
+  if not exists then pure [] else go root
+  where
+    go dir = do
+      entries <- listDirectory dir
+      fmap concat $ mapM (classify dir) entries
+    classify dir e = do
+      let p = dir </> e
+      isDir <- doesDirectoryExist p
+      if isDir then go p else pure [p | isJust (preprocessorFor p)]
+
+-- | Run alex/happy/hsc2hs over every preprocessable source under the given
+-- directories so .x/.y/.hsc become .hs before compilation. First failure wins.
+runPreprocessorsIn :: [FilePath] -> IO (Either String ())
+runPreprocessorsIn dirs = do
+  files <- concat <$> mapM preprocessableUnder dirs
+  go files
+  where
+    go [] = pure (Right ())
+    go (f : fs) = runPreprocessor f >>= either (pure . Left) (const (go fs))
 
 -- | ghci argument list to load a component for @zinc repl@: the package db,
 -- isolation flags + exposed deps, source roots, and the targets to load (the

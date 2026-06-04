@@ -1256,6 +1256,43 @@ main = hspec $ do
       r <- buildAndRun ws []
       r `shouldBe` Right "10\n"
 
+  describe "closure builder runs alex preprocessor (end-to-end)" $
+    it "builds a git dep whose library ships an alex .x lexer" $ do
+      let base = "/tmp/zinc-alex-ws"
+          dep = base ++ "/lexdep-repo"
+          ws = base ++ "/ws"
+          alexSrc =
+            unlines
+              [ "{"
+              , "module Lexer (firstWord) where"
+              , "}"
+              , "%wrapper \"basic\""
+              , "tokens :-"
+              , "  $white+ ;"
+              , "  [A-Za-z]+ { \\s -> s }"
+              , "{"
+              , "firstWord :: String"
+              , "firstWord = head (alexScanTokens \"hello world\")"
+              , "}"
+              ]
+      stale <- doesDirectoryExist base
+      when stale $ removeDirectoryRecursive base
+      writeFileIn (dep ++ "/zinc.toml") (unlines ["[package]", "name = \"lexdep\"", "version = \"1.0\"", "[build.lib]", "source-dirs = [\"src\"]", "exposed-modules = [\"Lexer\"]", "depends = [\"array\"]"])
+      writeFileIn (dep ++ "/src/Lexer.x") alexSrc
+      let git args = readProcess "git" ("-C" : dep : args) ""
+      _ <- git ["init", "--quiet"]
+      _ <- git ["config", "user.email", "t@example.com"]
+      _ <- git ["config", "user.name", "Test"]
+      _ <- git ["add", "."]
+      _ <- git ["commit", "--quiet", "-m", "lexdep"]
+      rev <- trimStr <$> git ["rev-parse", "HEAD"]
+      writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "lexdep" (Rev rev)] [("lexdep", dep)]))
+      writeFileIn (ws ++ "/zinc.lock") (renderLock [LockedPackage "lexdep" dep rev "sha256:x" []])
+      writeFileIn (ws ++ "/packages/app/zinc.toml") (unlines ["[package]", "name = \"app\"", "version = \"1.0\"", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "depends = [\"lexdep\"]"])
+      writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Lexer (firstWord)\nmain :: IO ()\nmain = putStrLn firstWord\n"
+      r <- buildAndRun ws []
+      r `shouldBe` Right "hello\n"
+
   -- Test ladder rung 2 (spec §12): a REAL Hackage leaf pulled from git and
   -- built via the Opt-2 .cabal reader. Network-gated so the default suite
   -- stays hermetic; run with ZINC_NET_TESTS=1 (the capability is also covered

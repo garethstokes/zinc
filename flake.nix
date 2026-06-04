@@ -25,6 +25,10 @@
               ghc
               pkgs.cabal-install   # convenience only; the test loop uses ghc/runghc directly
               pkgs.git
+              # Source preprocessors zinc runs for dependencies that ship .x/.y
+              # (e.g. toml-parser's alex/happy lexer+parser). hsc2hs ships with GHC.
+              pkgs.haskellPackages.alex
+              pkgs.haskellPackages.happy
             ];
           };
         });
