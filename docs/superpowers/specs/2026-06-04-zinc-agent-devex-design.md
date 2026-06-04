@@ -41,16 +41,43 @@ The four requested themes are not peers; they stack on a single foundation.
 
 ### 3.1 The diagnostic core (foundation)
 
-A structured-output + diagnostics core that every command emits through:
+A structured-output + diagnostics core that every command emits through.
 
+**Typed errors (decided 2026-06-04 — the internal half).** The `ExceptT String IO`
+left by the `8dj` refactor still builds error *messages* at the throw site. Replace
+the `String` error with a sum type:
+
+```haskell
+data ZincError = RefNotFound {repo, ref} | CloneFailed {repo, detail}
+               | ContentHashMismatch {name, expected, got} | DepNoGitRepo {name}
+               | BuildTypeCustom {name} | GhcCompile {package, detail}
+               | AmbiguousTarget {candidates} | ManifestParse {file, detail}
+               | NixAbsent | …
+```
+
+Pipelines are `ExceptT ZincError IO`; throw sites construct a **value**
+(`throwE (DepNoGitRepo "colour")`), never a message. Compiler-checked
+exhaustiveness means a new error kind can't be silently unhandled. This is §1.1
+principle 2 made literal — errors are explicit structured state, not strings.
+
+**The bridge.** A single boundary renderer
+`toDiagnostic :: ZincError -> Diagnostic` is the *only* place messages/codes are
+produced. It is called at the CLI/Main boundary and drives every output:
+
+```
+ZincError ──toDiagnostic──► Diagnostic ──► human text (zinc-unv) | JSON | exit code | nextAction
+```
+
+- **`Diagnostic` (output shape):** `{ code, severity, title, detail, location?, package?, nextAction? }`.
+  The **code** is derived from the `ZincError` constructor.
 - **JSON envelope** on every command: `{ zinc, command, ok, data, diagnostics }`.
-- **`Diagnostic` type:** `{ code, severity, title, detail, location?, package?, nextAction? }`.
-  `nextAction` carries the fix (theme #2 is a *field*, not a separate system):
-  e.g. `code = ZINC_DEP_NO_GIT_REPO`, `nextAction = "zinc registry set colour <url>"`.
 - **Stable error-code taxonomy** — `ZINC_REF_NOT_FOUND`, `ZINC_SAFE_HASKELL`,
-  `ZINC_DEP_NO_GIT_REPO`, `ZINC_NIX_ABSENT`, … — so agents pattern-match and act.
-- **Exit codes** mapped to error categories, so agents can branch without
-  parsing.
+  `ZINC_DEP_NO_GIT_REPO`, `ZINC_NIX_ABSENT`, … — one per `ZincError` constructor.
+- **Exit codes** mapped to error categories, so agents branch without parsing.
+
+This **subsumes the old "migrate errors to taxonomy" task (`rdy.3`)**: that
+migration is now (a) replacing `String` with `ZincError` across the modules, and
+(b) writing the one exhaustive `toDiagnostic` — not hunting string sites.
 
 **Unification with the human diagnostics epic (`zinc-unv`).** The conflict table,
 the "colour has no git repo" message, etc. are *renderings* of `Diagnostic`
