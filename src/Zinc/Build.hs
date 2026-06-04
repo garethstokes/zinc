@@ -25,6 +25,7 @@ import System.Directory (createDirectoryIfMissing, doesDirectoryExist, listDirec
 import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, takeExtension, (-<.>), (<.>), (</>))
 import System.Process (readProcessWithExitCode)
+import Zinc.Except (liftIO, orFail, runResult)
 import Zinc.Macros (emitCabalMacros)
 import Zinc.Manifest (Component (..))
 import Zinc.Paths (pathsModuleName, synthesizePaths)
@@ -193,7 +194,9 @@ data LibBuild = LibBuild
 -- | Compile a library component, archive it, and register it into the
 -- workspace package db so sibling members can @-package@ it.
 buildLib :: LibBuild -> IO (Either String ())
-buildLib lb = buildLibArtifacts lb >>= either (pure . Left) (registerPackage (lbPackageDb lb))
+buildLib lb = runResult $ do
+  conf <- orFail (buildLibArtifacts lb)
+  orFail (registerPackage (lbPackageDb lb) conf)
 
 -- | Compile and archive a library and persist its @package.conf@ into the
 -- store, returning the conf text — but /without/ registering it into the
@@ -201,20 +204,20 @@ buildLib lb = buildLibArtifacts lb >>= either (pure . Left) (registerPackage (lb
 -- be compiled concurrently and then registered serially (ghc-pkg register on a
 -- shared db is not concurrency-safe).
 buildLibArtifacts :: LibBuild -> IO (Either String String)
-buildLibArtifacts lb = do
-  createDirectoryIfMissing True (lbDistDir lb)
+buildLibArtifacts lb = runResult $ do
+  liftIO $ createDirectoryIfMissing True (lbDistDir lb)
   -- Synthesize the Cabal-autogen files (Paths_<pkg>, cabal_macros.h) into a
   -- generated-source dir so the package's own modules can import/use them.
   let gen = lbDistDir lb </> "zinc-gen"
-  createDirectoryIfMissing True gen
+  liftIO $ createDirectoryIfMissing True gen
   let comp = lbComponent lb
       -- One ref per package name (spec §2), so the unit-id is just the name;
       -- this also lets dependents reference it by name in their conf depends.
       unitId = lbName lb
       pathsMod = pathsModuleName (lbName lb)
       macrosHeader = gen </> "cabal_macros.h"
-  writeFile (gen </> pathsMod <.> "hs") (synthesizePaths (lbName lb) (versionInts (lbVersion lb)))
-  installed <- installedVersions
+  liftIO $ writeFile (gen </> pathsMod <.> "hs") (synthesizePaths (lbName lb) (versionInts (lbVersion lb)))
+  installed <- liftIO installedVersions
   let depVersion d = fromMaybe [0] (lookup d installed)
       -- A direct dep's id for the conf's @depends@ (drives a dependent's
       -- linking): zinc-built deps by bare name (their unit-id); non-base boot
@@ -223,7 +226,7 @@ buildLibArtifacts lb = do
       depConfId d
         | isBootLib d = d ++ "-" ++ intercalate "." (map show (depVersion d))
         | otherwise = d
-  writeFile macrosHeader $
+  liftIO $ writeFile macrosHeader $
     emitCabalMacros ((lbName lb, versionInts (lbVersion lb)) : [(d, depVersion d) | d <- compDepends comp])
   let srcDirs = if null (compSourceDirs comp) then ["."] else compSourceDirs comp
       -- nub so a package that already lists Paths_<pkg> in its (other-)modules
@@ -242,31 +245,30 @@ buildLibArtifacts lb = do
           ++ compGhcOptions comp
           ++ modules
   -- Generate sources from any .x/.y/.hsc the dep ships (e.g. toml-parser's
-  -- alex/happy lexer+parser) so ghc --make finds the resulting .hs modules.
-  chain (runPreprocessorsIn (map (lbMemberDir lb </>) srcDirs)) $ \_ ->
-    chain (runUnit "ghc" compileArgs) $ \_ -> do
-      objs <- findObjs (lbDistDir lb)
-      chain (runUnit "ar" (archiveArgs (lbDistDir lb) unitId objs)) $ \_ -> do
-        let confText =
-              renderConf
-                PackageConf
-                  { confName = lbName lb
-                  , confVersion = lbVersion lb
-                  , confId = unitId
-                  , confExposedModules = compExposedModules comp
-                  , confImportDirs = [lbDistDir lb]
-                  , confLibraryDirs = [lbDistDir lb]
-                  , confHsLibraries = ["HS" ++ unitId]
-                  , -- Direct deps as installed unit-ids so dependents link them:
-                    -- zinc deps by bare name, non-base boot libs by real id.
-                    confDepends = [depConfId d | d <- nub (compDepends comp), d /= "base"]
-                  }
-        -- Persist the conf alongside the build so the artifact cache can
-        -- re-register it without recompiling.
-        writeFile (lbDistDir lb </> "package.conf") confText
-        pure (Right confText)
-  where
-    chain act k = act >>= either (pure . Left) k
+  -- alex/happy lexer+parser) so ghc --make finds the resulting .hs modules,
+  -- then compile and archive. orFail short-circuits on the first failure.
+  orFail (runPreprocessorsIn (map (lbMemberDir lb </>) srcDirs))
+  orFail (runUnit "ghc" compileArgs)
+  objs <- liftIO (findObjs (lbDistDir lb))
+  orFail (runUnit "ar" (archiveArgs (lbDistDir lb) unitId objs))
+  let confText =
+        renderConf
+          PackageConf
+            { confName = lbName lb
+            , confVersion = lbVersion lb
+            , confId = unitId
+            , confExposedModules = compExposedModules comp
+            , confImportDirs = [lbDistDir lb]
+            , confLibraryDirs = [lbDistDir lb]
+            , confHsLibraries = ["HS" ++ unitId]
+            , -- Direct deps as installed unit-ids so dependents link them:
+              -- zinc deps by bare name, non-base boot libs by real id.
+              confDepends = [depConfId d | d <- nub (compDepends comp), d /= "base"]
+            }
+  -- Persist the conf alongside the build so the artifact cache can
+  -- re-register it without recompiling.
+  liftIO $ writeFile (lbDistDir lb </> "package.conf") confText
+  pure confText
 
 -- | Recursively list object files under a directory.
 findObjs :: FilePath -> IO [FilePath]
