@@ -2,7 +2,7 @@ module Main (main) where
 
 import Control.Monad (forM_, when)
 import Data.Char (isSpace)
-import Data.Either (isLeft)
+import Data.Either (isLeft, isRight)
 import Data.Functor.Identity (runIdentity)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.List (find, isInfixOf, sort)
@@ -1432,6 +1432,39 @@ main = hspec $ do
           writeFileIn (ws ++ "/zinc.lock") (renderLock [LockedPackage "prettyprinter" ppSpec pRev "sha256:x" [], LockedPackage "toml-parser" tomlDep tRev "sha256:x" ["prettyprinter"]])
           writeFileIn (ws ++ "/packages/app/zinc.toml") (unlines ["[package]", "name = \"app\"", "version = \"1.0\"", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "depends = [\"toml-parser\"]"])
           writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Toml (parse)\nmain :: IO ()\nmain = putStrLn (either (const \"err\") (const \"parsed-ok\") (parse \"x = 1\\n\"))\n"
+          r <- buildAndRun ws []
+          r `shouldBe` Right "parsed-ok\n"
+
+  -- The full self-host pipeline on real packages: resolve a real upstream's
+  -- closure from its .cabal + the workspace registry, freeze it (real content
+  -- hashes), then build/run — zinc generating its own lock, not a hand-authored
+  -- one. Network-gated.
+  describe "self-host rehearsal: resolve+freeze+build a real closure (network)" $
+    it "runUpdate auto-generates toml-parser's lock, which then builds and runs" $ do
+      net <- lookupEnv "ZINC_NET_TESTS"
+      case net of
+        Nothing -> pendingWith "network test; set ZINC_NET_TESTS=1 to run"
+        Just _ -> do
+          let base = "/tmp/zinc-rehearsal"
+              tomlDep = base ++ "/toml-parser"
+              ppDep = base ++ "/prettyprinter"
+              ws = base ++ "/ws"
+              store = base ++ "/store"
+          stale <- doesDirectoryExist base
+          when stale $ removeDirectoryRecursive base
+          createDirectoryIfMissing True base
+          _ <- readProcess "git" ["clone", "--depth", "1", "https://github.com/glguy/toml-parser.git", tomlDep] ""
+          _ <- readProcess "git" ["clone", "--depth", "1", "https://github.com/quchen/prettyprinter.git", ppDep] ""
+          tRev <- trimStr <$> readProcess "git" ["-C", tomlDep, "rev-parse", "HEAD"] ""
+          pRev <- trimStr <$> readProcess "git" ["-C", ppDep, "rev-parse", "HEAD"] ""
+          writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "toml-parser" (Rev tRev), Dependency "prettyprinter" (Rev pRev)] [("toml-parser", tomlDep), ("prettyprinter", ppDep ++ "#prettyprinter")]))
+          writeFileIn (ws ++ "/packages/app/zinc.toml") (unlines ["[package]", "name = \"app\"", "version = \"1.0\"", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "depends = [\"toml-parser\"]"])
+          writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Toml (parse)\nmain :: IO ()\nmain = putStrLn (either (const \"err\") (const \"parsed-ok\") (parse \"x = 1\\n\"))\n"
+          -- zinc resolves the real closure (.cabal + registry) and freezes a lock
+          upd <- runUpdate (ws ++ "/zinc.toml") store
+          upd `shouldSatisfy` isRight
+          lockSrc <- readFile (ws ++ "/zinc.lock")
+          (isInfixOf "toml-parser" lockSrc && isInfixOf "prettyprinter" lockSrc) `shouldBe` True
           r <- buildAndRun ws []
           r `shouldBe` Right "parsed-ok\n"
 
