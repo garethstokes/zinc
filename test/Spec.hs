@@ -20,7 +20,7 @@ import System.Process (readProcess)
 import Test.Hspec
 import System.Exit (ExitCode (..))
 import Zinc.CLI (Command (..), parseArgs)
-import Zinc.Diagnostic (Diagnostic (..), ZincError (..), diagnosticJson, envelope, errorCode, exitCodeFor, toDiagnostic)
+import Zinc.Diagnostic (Diagnostic (..), ZincError (..), diagnosticJson, envelope, errorCode, exitCodeFor, renderError, toDiagnostic)
 import Zinc.Json (Json (..), renderJson)
 import Zinc.Git (cloneAt, listTags, splitRepoSubdir)
 import Zinc.Hackage (hackageCabalUrl, sourceRepoOf)
@@ -489,7 +489,7 @@ main = hspec $ do
   describe "resolve (graph walk)" $ do
     let dep n r = Dependency n r
         boot = (`elem` ["base", "text", "bytestring", "containers"])
-        fetchFrom fix n _ _ = pure (maybe (Left ("missing: " ++ n)) Right (lookup n fix))
+        fetchFrom fix n _ _ = pure (maybe (Left (OtherError ("missing: " ++ n))) Right (lookup n fix))
         run fix deps reg =
           runIdentity (resolve boot (fetchFrom fix) deps reg)
         findRD n r = either (const Nothing) (find ((== n) . rdName)) r
@@ -602,8 +602,8 @@ main = hspec $ do
       r `shouldBe` map Right [1 .. 5 :: Int]
 
     it "surfaces a task's Left without dropping the others" $ do
-      r <- parMapBounded 3 (\x -> pure (if even x then Left ("bad " ++ show x) else Right x)) [1 .. 4 :: Int]
-      r `shouldBe` [Right 1, Left "bad 2", Right 3, Left "bad 4"]
+      r <- parMapBounded 3 (\x -> pure (if even x then Left (OtherError ("bad " ++ show x)) else Right x)) [1 .. 4 :: Int]
+      r `shouldBe` [Right 1, Left (OtherError "bad 2"), Right 3, Left (OtherError "bad 4")]
 
   describe "parseDependencies" $ do
     it "reads [dependencies] and [registry] without requiring [workspace]" $
@@ -1080,7 +1080,7 @@ main = hspec $ do
       case r of
         Right summary ->
           (("leaf" `isInfixOf` summary), ("leaf" `isInfixOf` lockText)) `shouldBe` (True, True)
-        Left err -> expectationFailure err
+        Left err -> expectationFailure (renderError err)
 
   describe "Hackage repo discovery" $ do
     it "extracts the source-repository head location from a .cabal" $
@@ -1145,7 +1145,7 @@ main = hspec $ do
           out <- readProcess exe [] ""
           out `shouldBe` "Hello from demo!\n"
         Right [] -> expectationFailure "no executable built"
-        Left err -> expectationFailure err
+        Left err -> expectationFailure (renderError err)
 
   describe "orderMembers" $
     it "orders a member after the siblings it depends on" $ do
@@ -1171,7 +1171,7 @@ main = hspec $ do
           out <- readProcess exe [] ""
           out `shouldBe` "hi from core\n"
         Right [] -> expectationFailure "no executable built"
-        Left err -> expectationFailure err
+        Left err -> expectationFailure (renderError err)
 
   describe "buildAndRun (zinc run)" $
     it "builds and runs the member executable" $ do
@@ -1562,7 +1562,7 @@ main = hspec $ do
       writeFileIn (ws ++ "/packages/app/zinc.toml") (unlines ["[package]", "name = \"app\"", "version = \"1.0\"", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "depends = [\"greet\"]"])
       writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Greet (hello)\nmain :: IO ()\nmain = putStrLn hello\n"
       r <- buildAndRun ws []
-      r `shouldSatisfy` either (isInfixOf "content hash mismatch") (const False)
+      r `shouldSatisfy` either ((== "ZINC_CONTENT_HASH_MISMATCH") . errorCode) (const False)
 
   describe "dependency build with Paths_ (end-to-end)" $ do
     it "synthesizes Paths_<pkg> so a dep importing it builds + links" $ do
@@ -1726,7 +1726,7 @@ main = hspec $ do
       lockText <- readFile (takeDirectory wsFile </> "zinc.lock")
       case r of
         Right _ -> ("leaf" `isInfixOf` lockText) `shouldBe` True
-        Left err -> expectationFailure err
+        Left err -> expectationFailure (renderError err)
 
   describe "full workspace lifecycle (integration, rung 1)" $
     it "scaffolds, builds, runs, then cleans a synthetic workspace" $ do

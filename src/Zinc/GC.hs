@@ -14,7 +14,8 @@ module Zinc.GC
 import Control.Monad (when)
 import Data.List (sort)
 import qualified Data.Set as Set
-import Zinc.Except (failWith, liftEither, liftIO, runResult)
+import Zinc.Diagnostic (ZincError (NoZincToml))
+import Zinc.Except (failWithError, liftEither, liftIO, runResult)
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory, removeDirectoryRecursive)
 import System.FilePath ((</>))
 import Zinc.Cache (BuildKey (..), buildCacheKey)
@@ -63,10 +64,10 @@ gcStore root roots = do
 
 -- | CLI entry: GC the shared store, treating the workspace at @wsDir@ as the
 -- sole live root (its @zinc.lock@ closure built with its @[workspace] ghc@).
-runGc :: FilePath -> IO (Either String ([FilePath], [FilePath]))
+runGc :: FilePath -> IO (Either ZincError ([FilePath], [FilePath]))
 runGc wsDir = runResult $ do
   hasWs <- liftIO (doesFileExist (wsDir </> "zinc.toml"))
-  when (not hasWs) $ failWith "no zinc.toml in the current directory"
+  when (not hasWs) $ failWithError (NoZincToml ".")
   wsSrc <- liftIO (readFile (wsDir </> "zinc.toml"))
   ws <- liftEither (parseWorkspace wsSrc)
   hasLock <- liftIO (doesFileExist (wsDir </> "zinc.lock"))

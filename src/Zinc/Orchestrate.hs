@@ -49,15 +49,16 @@ import Zinc.Manifest
   , parseWorkspace
   , parseBuildOptions
   )
-import Zinc.Except (failWith, liftEither, liftIO, orFail, runResult)
+import Zinc.Diagnostic (ZincError (ContentHashMismatch, OtherError))
+import Zinc.Except (failWith, liftEither, liftEitherE, liftIO, orFail, orFailE, runResult)
 import Zinc.Resolve (ResolvedDep (..), topoLevels)
-import Zinc.Store (resolveStoreRoot, storeSrcPath, verifyContent)
+import Zinc.Store (contentHash, resolveStoreRoot, storeSrcPath)
 
 -- | Build a workspace: each member's library (so siblings can link) plus every
 -- component whose kind satisfies @keep@, returned as built executable paths.
 -- @target@ (when 'Just') restricts which member's @keep@-components are built;
 -- libraries are always built so dependencies remain available.
-buildWorkspace :: FilePath -> Maybe String -> (ComponentKind -> Bool) -> IO (Either String [FilePath])
+buildWorkspace :: FilePath -> Maybe String -> (ComponentKind -> Bool) -> IO (Either ZincError [FilePath])
 buildWorkspace wsDir target keep = runResult $ do
   wsSrc <- liftIO $ readFile (wsDir </> "zinc.toml")
   ws <- liftEither (parseWorkspace wsSrc)
@@ -68,7 +69,7 @@ buildWorkspace wsDir target keep = runResult $ do
   -- already registered at their current key-addressed pkg dir.
   orFail (initPackageDb wsDb)
   storeRoot <- liftIO resolveStoreRoot
-  orFail (buildClosure wsDir storeRoot wsDb (wsGhc ws) (parseBuildOptions wsSrc))
+  orFailE (buildClosure wsDir storeRoot wsDb (wsGhc ws) (parseBuildOptions wsSrc))
   concat <$> traverse (buildMemberAll wsDb) (orderMembers members)
   where
     loadMember member = do
@@ -87,7 +88,7 @@ buildWorkspace wsDir target keep = runResult $ do
           -- rejects relative paths, and (with the db now persisted) a relative
           -- entry can't be cleanly re-registered across builds.
           libDir <- liftIO (makeAbsolute (dir </> ".zinc" </> "lib"))
-          orFail (buildLib (LibBuild dir libDir wsDb (pkgName mem) (pkgVersion mem) lib))
+          orFailE (buildLib (LibBuild dir libDir wsDb (pkgName mem) (pkgVersion mem) lib))
       traverse (\comp -> orFail (buildMember (MemberBuild dir (dir </> ".zinc" </> "build") (Just wsDb) comp))) (wanted mem)
 
     wanted mem
@@ -95,27 +96,27 @@ buildWorkspace wsDir target keep = runResult $ do
       | otherwise = []
 
 -- | @zinc build@: build every member's executables (libraries first).
-runBuild :: FilePath -> IO (Either String [FilePath])
+runBuild :: FilePath -> IO (Either ZincError [FilePath])
 runBuild wsDir = buildWorkspace wsDir Nothing (== Executable)
 
 -- | @zinc build \<member\>@: build only the named member's executables.
-runBuildMember :: FilePath -> Maybe String -> IO (Either String [FilePath])
+runBuildMember :: FilePath -> Maybe String -> IO (Either ZincError [FilePath])
 runBuildMember wsDir target = buildWorkspace wsDir target (== Executable)
 
 -- | @zinc run@: build, then run the first executable with the given args,
 -- returning its stdout.
-buildAndRun :: FilePath -> [String] -> IO (Either String String)
+buildAndRun :: FilePath -> [String] -> IO (Either ZincError String)
 buildAndRun wsDir args = runResult $ do
-  built <- orFail (runBuild wsDir)
+  built <- orFailE (runBuild wsDir)
   case built of
     []        -> failWith "no executable to run"
     (exe : _) -> liftIO (readProcess exe args "")
 
 -- | @zinc test@: build and run all test-suite components, returning how many
 -- passed. Fails on the first non-zero exit.
-runTests :: FilePath -> IO (Either String Int)
+runTests :: FilePath -> IO (Either ZincError Int)
 runTests wsDir = runResult $ do
-  exes <- orFail (buildWorkspace wsDir Nothing (== TestSuite))
+  exes <- orFailE (buildWorkspace wsDir Nothing (== TestSuite))
   mapM_ runOne exes
   pure (length exes)
   where
@@ -150,7 +151,7 @@ orderMembers members = map (byName Map.!) (reverse ordered)
 -- @Left@ rather than killing the batch. Under the non-threaded RTS this is
 -- effectively serial (capabilities = 1), which keeps behaviour identical to a
 -- sequential build; the -threaded zinc binary gets real overlap.
-parMapBounded :: Int -> (a -> IO (Either String b)) -> [a] -> IO [Either String b]
+parMapBounded :: Int -> (a -> IO (Either ZincError b)) -> [a] -> IO [Either ZincError b]
 parMapBounded n f xs = do
   sem <- newQSem (max 1 n)
   mvars <- mapM (spawn sem) xs
@@ -161,7 +162,7 @@ parMapBounded n f xs = do
       _ <- forkIO $ do
         waitQSem sem
         r <- try (f x) `finally` signalQSem sem
-        putMVar mv (either (\e -> Left (show (e :: SomeException))) id r)
+        putMVar mv (either (\e -> Left (OtherError (show (e :: SomeException)))) id r)
       pure mv
 
 -- | Build the resolved git-dependency closure (from @zinc.lock@) from source
@@ -170,13 +171,13 @@ parMapBounded n f xs = do
 -- its library compiled + registered. (Compiling arbitrary upstream packages
 -- with Setup.hs / Template Haskell / deep closures is a further follow-up;
 -- this handles zinc-native git library deps.)
-buildClosure :: FilePath -> FilePath -> FilePath -> String -> [(String, [String])] -> IO (Either String ())
+buildClosure :: FilePath -> FilePath -> FilePath -> String -> [(String, [String])] -> IO (Either ZincError ())
 buildClosure wsDir storeRoot wsDb ghcVersion buildOpts = runResult $ do
   let lockFile = wsDir </> "zinc.lock"
   present <- liftIO (doesFileExist lockFile)
   when present $ do
     locks <- liftEither . parseLock =<< liftIO (readFile lockFile)
-    levels <- liftEither (topoLevels (map toResolved locks))
+    levels <- liftEitherE (topoLevels (map toResolved locks))
     let byName = Map.fromList [(lockName l, l) | l <- locks]
     mapM_ (buildLevel . map ((byName Map.!) . rdName)) levels
   where
@@ -194,7 +195,7 @@ buildClosure wsDir storeRoot wsDb ghcVersion buildOpts = runResult $ do
     buildLevel level = do
       n <- liftIO getNumCapabilities
       produced <- liftIO (parMapBounded n produceOne level)
-      regs <- liftEither (sequence produced)
+      regs <- liftEitherE (sequence produced)
       mapM_ registerNeeded (catMaybes regs)
 
     registerNeeded (unitId, pkgOut, conf) = do
@@ -226,7 +227,7 @@ buildClosure wsDir storeRoot wsDb ghcVersion buildOpts = runResult $ do
           exists <- liftIO (doesDirectoryExist dest)
           when (not exists) $
             orFail (first (("fetch " ++ lockName l ++ ": ") ++) <$> cloneAt (lockRepo l) (lockRev l) dest) >> pure ()
-          orFail (verifyFetched l dest)
+          orFailE (verifyFetched l dest)
           -- The package may live in a subdirectory of the repo (monorepo);
           -- read its manifest/sources from there.
           let pkgDir = maybe dest (dest </>) (snd (splitRepoSubdir (lockRepo l)))
@@ -238,7 +239,7 @@ buildClosure wsDir storeRoot wsDb ghcVersion buildOpts = runResult $ do
               -- Apply any per-dependency build overrides (extra ghc flags,
               -- e.g. -XSafe) from the workspace [build-options].
               let lib' = lib {compGhcOptions = compGhcOptions lib ++ overrideFor l}
-              (conf, _) <- orFail (buildLibArtifacts (LibBuild pkgDir pkgOut wsDb (lockName l) version lib'))
+              (conf, _) <- orFailE (buildLibArtifacts (LibBuild pkgDir pkgOut wsDb (lockName l) version lib'))
               pure (Just (lockName l, pkgOut, conf))
 
     -- Tamper detection (spec §8): a fetched tree's content hash must match the
@@ -246,11 +247,11 @@ buildClosure wsDir storeRoot wsDb ghcVersion buildOpts = runResult $ do
     -- placeholder shas (fixtures, pre-freeze locks) don't block the build.
     verifyFetched l dest
       | looksRealSha (lockSha256 l) = do
-          ok <- verifyContent dest (lockSha256 l)
+          got <- contentHash dest
           pure $
-            if ok
+            if got == lockSha256 l
               then Right ()
-              else Left (lockName l ++ ": content hash mismatch (lock expects " ++ lockSha256 l ++ ")")
+              else Left (ContentHashMismatch (lockName l) (lockSha256 l) got)
       | otherwise = pure (Right ())
 
     looksRealSha s = case stripPrefix "sha256:" s of
@@ -303,9 +304,9 @@ checkLockDrift wsDir = do
 
 -- | @zinc repl@: build the workspace (so deps are registered), then launch an
 -- interactive ghci loading the first member's first component.
-runRepl :: FilePath -> IO (Either String ())
+runRepl :: FilePath -> IO (Either ZincError ())
 runRepl wsDir = runResult $ do
-  _ <- orFail (runBuild wsDir)
+  _ <- orFailE (runBuild wsDir)
   wsSrc <- liftIO $ readFile (wsDir </> "zinc.toml")
   ws <- liftEither (parseWorkspace wsSrc)
   case wsMembers ws of

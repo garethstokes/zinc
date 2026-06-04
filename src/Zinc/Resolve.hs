@@ -17,6 +17,7 @@ module Zinc.Resolve
 
 import Control.Monad (foldM)
 import Control.Monad.Trans.Except (ExceptT (ExceptT), except, runExceptT)
+import Zinc.Diagnostic (ZincError (NoRepoInRegistry, OtherError))
 import qualified Data.Map as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
@@ -48,11 +49,11 @@ data Req = Req String Ref String
 -- because root deps are walked first, a root pin overrides a transitive one.
 resolve
   :: Monad m
-  => (String -> Bool)                                            -- ^ is this a GHC boot lib?
-  -> (String -> String -> Ref -> m (Either String DepManifest))  -- ^ fetch: name repo ref
-  -> [Dependency]                                                -- ^ root @[dependencies]@
-  -> [(String, String)]                                          -- ^ root @[registry]@
-  -> m (Either String [ResolvedDep])
+  => (String -> Bool)                                             -- ^ is this a GHC boot lib?
+  -> (String -> String -> Ref -> m (Either ZincError DepManifest)) -- ^ fetch: name repo ref
+  -> [Dependency]                                                 -- ^ root @[dependencies]@
+  -> [(String, String)]                                           -- ^ root @[registry]@
+  -> m (Either ZincError [ResolvedDep])
 resolve isBoot fetch rootDeps rootReg = runExceptT $ do
   reqs <- except (traverse (toReq rootReg "<workspace>") rootDeps)
   go Map.empty reqs
@@ -64,7 +65,7 @@ resolve isBoot fetch rootDeps rootReg = runExceptT $ do
     toReq reg parent d = case lookup (depName d) (reg ++ rootReg) of
       Just repo -> Right (Req (depName d) (depRef d) repo)
       Nothing ->
-        Left ("no repo in [registry] for '" ++ depName d ++ "' (required by " ++ parent ++ ")")
+        Left (NoRepoInRegistry (depName d) parent)
 
     go seen [] = pure (Map.elems seen)
     go seen (Req name ref repo : rest)
@@ -81,7 +82,7 @@ resolve isBoot fetch rootDeps rootReg = runExceptT $ do
 -- the in-closure dependencies it builds against (build order). Dependency
 -- names not in the closure (e.g. boot libs) are ignored. Fails on a cycle —
 -- GHC cannot build cyclic package dependencies.
-topoSort :: [ResolvedDep] -> Either String [ResolvedDep]
+topoSort :: [ResolvedDep] -> Either ZincError [ResolvedDep]
 topoSort nodes = do
   (_, ordered) <- foldM (visit Set.empty) (Set.empty, []) (map rdName nodes)
   pure (map (byName Map.!) (reverse ordered))
@@ -94,10 +95,10 @@ topoSort nodes = do
       :: Set String                 -- names on the current DFS path
       -> (Set String, [String])     -- (finished, reverse build order)
       -> String
-      -> Either String (Set String, [String])
+      -> Either ZincError (Set String, [String])
     visit path acc@(done, _) name
       | name `Set.member` done = Right acc
-      | name `Set.member` path = Left ("dependency cycle involving '" ++ name ++ "'")
+      | name `Set.member` path = Left (OtherError ("dependency cycle involving '" ++ name ++ "'"))
       | otherwise = do
           (done', order') <- foldM (visit (Set.insert name path)) acc (depsOf name)
           pure (Set.insert name done', name : order')
@@ -108,7 +109,7 @@ topoSort nodes = do
 -- Nodes within a level are mutually independent, so they can be compiled
 -- concurrently; flattening the levels yields a valid 'topoSort' order. Fails on
 -- a cycle (no node ever becomes ready). Input order is preserved within levels.
-topoLevels :: [ResolvedDep] -> Either String [[ResolvedDep]]
+topoLevels :: [ResolvedDep] -> Either ZincError [[ResolvedDep]]
 topoLevels nodes = go Set.empty (map rdName nodes) []
   where
     byName = Map.fromList [(rdName n, n) | n <- nodes]
@@ -118,7 +119,7 @@ topoLevels nodes = go Set.empty (map rdName nodes) []
     go done remaining acc =
       let ready = [name | name <- remaining, all (`Set.member` done) (depsOf name)]
        in if null ready
-            then Left ("dependency cycle among: " ++ unwords remaining)
+            then Left (OtherError ("dependency cycle among: " ++ unwords remaining))
             else
               go
                 (foldr Set.insert done ready)

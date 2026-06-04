@@ -31,7 +31,7 @@ parseArgs args =
     opts =
       info
         (commandParser <**> helper)
-        (fullDesc <> progDesc "A git-native, Nix-assisted build tool for Haskell")
+        (fullDesc <> progDesc "Fast, reproducible Haskell builds that just work.")
 
 commandParser :: Parser Command
 commandParser =

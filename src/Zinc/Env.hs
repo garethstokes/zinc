@@ -13,6 +13,7 @@ import qualified Data.ByteString.Lazy.Char8 as BL8
 import Data.Digest.Pure.SHA (sha256, showDigest)
 import Data.List (intercalate, sort)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
+import Zinc.Diagnostic (ZincError)
 import Zinc.Except (liftIO, orFail, runResult)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
@@ -33,7 +34,7 @@ provisionEnv
   -> FilePath                                           -- ^ cache root
   -> String                                             -- ^ ghc version
   -> [String]                                           -- ^ system libs
-  -> IO (Either String String)
+  -> IO (Either ZincError String)
 provisionEnv eval cacheRoot ghcVersion systemLibs = runResult $ do
   let file = cacheRoot </> ("env-" ++ envCacheKey ghcVersion systemLibs)
   hit <- liftIO (doesFileExist file)

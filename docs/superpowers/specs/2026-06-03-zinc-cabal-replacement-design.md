@@ -1,4 +1,4 @@
-# zinc — A git-native, Nix-assisted build tool for Haskell
+# zinc — Fast, reproducible Haskell builds that just work
 
 **Status:** Design approved 2026-06-03
 **Author:** Gareth (with Claude)

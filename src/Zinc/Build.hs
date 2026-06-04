@@ -27,7 +27,8 @@ import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileE
 import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, takeExtension, (-<.>), (<.>), (</>))
 import System.Process (readProcessWithExitCode)
-import Zinc.Except (liftIO, orFail, runResult)
+import Zinc.Diagnostic (ZincError)
+import Zinc.Except (liftIO, orFail, orFailE, runResult)
 import Zinc.Macros (emitCabalMacros)
 import Zinc.Manifest (Component (..))
 import Zinc.Paths (pathsModuleName, synthesizePaths)
@@ -201,9 +202,9 @@ data LibBuild = LibBuild
 
 -- | Compile a library component, archive it, and register it into the
 -- workspace package db so sibling members can @-package@ it.
-buildLib :: LibBuild -> IO (Either String ())
+buildLib :: LibBuild -> IO (Either ZincError ())
 buildLib lb = runResult $ do
-  (conf, confChanged) <- orFail (buildLibArtifacts lb)
+  (conf, confChanged) <- orFailE (buildLibArtifacts lb)
   -- Skip re-registration on a persisted db when the conf is unchanged and the
   -- lib is already registered at this dir (inner-loop incrementality).
   reg <- liftIO (isRegistered (lbPackageDb lb) (lbName lb) (lbDistDir lb))
@@ -214,7 +215,7 @@ buildLib lb = runResult $ do
 -- workspace db. Registration is split out so independent closure libraries can
 -- be compiled concurrently and then registered serially (ghc-pkg register on a
 -- shared db is not concurrency-safe).
-buildLibArtifacts :: LibBuild -> IO (Either String (String, Bool))
+buildLibArtifacts :: LibBuild -> IO (Either ZincError (String, Bool))
 buildLibArtifacts lb = runResult $ do
   liftIO $ createDirectoryIfMissing True (lbDistDir lb)
   -- Synthesize the Cabal-autogen files (Paths_<pkg>, cabal_macros.h) into a

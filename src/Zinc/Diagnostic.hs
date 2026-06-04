@@ -8,6 +8,7 @@ module Zinc.Diagnostic
   , Severity (..)
   , Diagnostic (..)
   , toDiagnostic
+  , renderError
   , errorCode
   , exitCodeFor
   , diagnosticJson
@@ -128,6 +129,14 @@ toDiagnostic e =
         , Just ("add `" ++ name ++ " = \"<git-url>\"` to the workspace [registry]") )
       OtherError msg ->
         ( msg, Nothing, Nothing, Nothing, Nothing )
+
+-- | A human one-line rendering of an error, for the plain-text CLI surface and
+-- test failure messages: @title@ (plus @detail@ when present). The next-action
+-- and code are part of the richer 'Diagnostic'/JSON surface, not this line.
+renderError :: ZincError -> String
+renderError e =
+  let d = toDiagnostic e
+   in diagTitle d ++ maybe "" (\x -> ": " ++ x) (diagDetail d)
 
 -- | The process exit code for an error category, so agents branch without
 -- parsing. 2 = usage/manifest, 3 = resolution/fetch, 4 = build, 5 = environment,

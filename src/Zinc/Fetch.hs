@@ -13,7 +13,8 @@ import Data.List (nub)
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory, removeDirectoryRecursive)
 import System.FilePath (takeExtension, (</>))
 import Zinc.Cabal (cabalBuildType, parseCabalComponentsForGhc)
-import Zinc.Except (failWith, liftEither, liftIO, orFail, runResult)
+import Zinc.Diagnostic (ZincError (BuildTypeCustom))
+import Zinc.Except (failWith, failWithError, liftEither, liftIO, orFail, orFailE, runResult)
 import Zinc.Git (cloneAt, listTags, splitRepoSubdir)
 import Zinc.Manifest (Component (compDepends, compKind), ComponentKind (Library), Dependency (..), Ref (..), parseDependencies)
 import Zinc.Resolve (DepManifest (..))
@@ -25,7 +26,7 @@ import Zinc.Version (newestTag)
 -- deps derived from the cabal file via the Opt-2 reader (their repos then come
 -- from the root workspace registry). @ghcVersion@ resolves @impl(ghc)@
 -- conditionals. Matches the fetch signature 'Zinc.Resolve.resolve' expects.
-gitFetchManifest :: FilePath -> String -> String -> String -> Ref -> IO (Either String DepManifest)
+gitFetchManifest :: FilePath -> String -> String -> String -> Ref -> IO (Either ZincError DepManifest)
 gitFetchManifest storeRoot ghcVersion name repo ref = runResult $ do
   refStr <- orFail (first ((name ++ ": ") ++) <$> resolveRef repo ref)
   let dest = storeRoot </> "checkout" </> name
@@ -40,12 +41,12 @@ gitFetchManifest storeRoot ghcVersion name repo ref = runResult $ do
       src <- liftIO (readFile (pkgDir </> "zinc.toml"))
       (deps, reg) <- liftEither (first ((name ++ ": ") ++) (parseDependencies src))
       pure (DepManifest deps reg)
-    else orFail (cabalManifest name ghcVersion pkgDir)
+    else orFailE (cabalManifest name ghcVersion pkgDir)
 
 -- | Derive a 'DepManifest' for a real upstream from its @.cabal@: the library
 -- component's @build-depends@ become dependencies pinned to @Latest@ (their
 -- repos are supplied by the root workspace registry). No own registry.
-cabalManifest :: String -> String -> FilePath -> IO (Either String DepManifest)
+cabalManifest :: String -> String -> FilePath -> IO (Either ZincError DepManifest)
 cabalManifest name ghcVersion pkgDir = runResult $ do
   entries <- liftIO (listDirectory pkgDir)
   case filter ((== ".cabal") . takeExtension) entries of
@@ -53,7 +54,7 @@ cabalManifest name ghcVersion pkgDir = runResult $ do
     (cab : _) -> do
       src <- liftIO (readFile (pkgDir </> cab))
       when (cabalBuildType src == Right "Custom") $
-        failWith (name ++ ": build-type: Custom (Setup.hs) is not supported yet")
+        failWithError (BuildTypeCustom name)
       comps <- liftEither (first ((name ++ ": ") ++) (parseCabalComponentsForGhc ghcVersion src))
       let libDeps = nub (concat [compDepends c | c <- comps, compKind c == Library])
       pure (DepManifest [Dependency d Latest | d <- libDeps] [])

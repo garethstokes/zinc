@@ -1,5 +1,5 @@
 {
-  description = "zinc — a git-native, Nix-assisted build tool for Haskell";
+  description = "Fast, reproducible Haskell builds that just work.";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
 
