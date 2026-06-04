@@ -44,7 +44,7 @@ Decision: **ship A now, track B as a documented fast-follow, defer C.**
   project against the same Nix-provided GHC the devShell already pins (so the
   release toolchain matches the dev toolchain — dogfoods zinc's thesis).
 - `apps.<system>.default` — `{ type = "app"; program = ".../bin/zinc"; }`, so
-  `nix run github:<owner>/zinc` works.
+  `nix run github:garethstokes/zinc` works.
 - `overlays.default` — exposes `zinc` so other flakes / nixpkgs configs pull it
   in.
 - keep `devShells` unchanged.
@@ -54,9 +54,9 @@ The existing systems list (`x86_64-linux`, `aarch64-linux`, `x86_64-darwin`,
 
 Resulting install paths:
 ```
-nix run github:<owner>/zinc                 # one-shot
-nix profile install github:<owner>/zinc     # put zinc on PATH
-github:<owner>/zinc/v0.1.0                   # pin an exact release
+nix run github:garethstokes/zinc                 # one-shot
+nix profile install github:garethstokes/zinc     # put zinc on PATH
+github:garethstokes/zinc/v0.1.0                   # pin an exact release
 ```
 
 ### 4.2 Nix preflight — the one code change
