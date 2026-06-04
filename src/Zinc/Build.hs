@@ -16,6 +16,7 @@ module Zinc.Build
   , LibBuild (..)
   , buildLib
   , buildLibArtifacts
+  , writeFileIfChanged
   , initPackageDb
   , installedVersions
   ) where

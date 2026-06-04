@@ -48,7 +48,7 @@ import Zinc.Manifest
 import Zinc.Fetch (gitFetchManifest)
 import Zinc.GC (GCRoot (..), gcStore, runGc)
 import Zinc.Add (freezeClosure, lockEntry, runAdd, runUpdate)
-import Zinc.Build (GhcInvocation (..), MemberBuild (..), PackageConf (..), archiveArgs, buildMember, ghcMakeArgs, installedVersions, preprocessorFor, registerPackage, renderConf, replArgs, runPreprocessor)
+import Zinc.Build (GhcInvocation (..), MemberBuild (..), PackageConf (..), archiveArgs, buildMember, ghcMakeArgs, installedVersions, preprocessorFor, registerPackage, renderConf, replArgs, runPreprocessor, writeFileIfChanged)
 import Zinc.Cache (BuildKey (..), buildCacheKey, cacheHit, storeConfPath, storePkgPath, writeCachedConf)
 import Zinc.Cabal (cabalBuildType, cabalVersion, parseCabalComponents, parseCabalComponentsForGhc)
 import Zinc.Env (envCacheKey, nixPrintDevEnv, provisionEnv)
@@ -262,6 +262,27 @@ main = hspec $ do
       parseJson "[1,2" `shouldSatisfy` isLeft
       parseJson "tru" `shouldSatisfy` isLeft
       parseJson "{\"k\" 1}" `shouldSatisfy` isLeft
+
+  describe "writeFileIfChanged (zinc-k2i regression)" $ do
+    it "overwrites changed content without locking the file" $ do
+      -- Regression: lazy readFile left the read handle open when (==)
+      -- short-circuited on content that differs at byte 0, so the rewrite hit
+      -- "resource busy (file is locked)". Strict readFile' closes it first.
+      let dir = "/tmp/zinc-wfic-test"
+          p = dir </> "f.txt"
+      createDirectoryIfMissing True dir
+      _ <- writeFileIfChanged p "original content goes here"
+      wrote <- writeFileIfChanged p "totally different content" -- differs at byte 0
+      contents <- readFile p
+      (wrote, contents) `shouldBe` (True, "totally different content")
+
+    it "reports no write (and preserves the file) when content is unchanged" $ do
+      let dir = "/tmp/zinc-wfic-test"
+          p = dir </> "g.txt"
+      createDirectoryIfMissing True dir
+      _ <- writeFileIfChanged p "same"
+      wrote <- writeFileIfChanged p "same"
+      wrote `shouldBe` False
 
   describe "concurrency-safe store (rdy.8)" $ do
     it "runs the action and releases the per-key lock afterward" $ do
