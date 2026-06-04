@@ -11,8 +11,10 @@ module Zinc.GC
   , runGc
   ) where
 
+import Control.Monad (when)
 import Data.List (sort)
 import qualified Data.Set as Set
+import Zinc.Except (failWith, liftEither, liftIO, runResult)
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory, removeDirectoryRecursive)
 import System.FilePath ((</>))
 import Zinc.Cache (BuildKey (..), buildCacheKey)
@@ -62,19 +64,16 @@ gcStore root roots = do
 -- | CLI entry: GC the shared store, treating the workspace at @wsDir@ as the
 -- sole live root (its @zinc.lock@ closure built with its @[workspace] ghc@).
 runGc :: FilePath -> IO (Either String ([FilePath], [FilePath]))
-runGc wsDir = do
-  hasWs <- doesFileExist (wsDir </> "zinc.toml")
-  if not hasWs
-    then pure (Left "no zinc.toml in the current directory")
-    else do
-      wsSrc <- readFile (wsDir </> "zinc.toml")
-      case parseWorkspace wsSrc of
-        Left err -> pure (Left err)
-        Right ws -> do
-          hasLock <- doesFileExist (wsDir </> "zinc.lock")
-          locks <-
-            if hasLock
-              then either (const []) id . parseLock <$> readFile (wsDir </> "zinc.lock")
-              else pure []
-          storeRoot <- resolveStoreRoot
-          Right <$> gcStore storeRoot [GCRoot (wsGhc ws) locks]
+runGc wsDir = runResult $ do
+  hasWs <- liftIO (doesFileExist (wsDir </> "zinc.toml"))
+  when (not hasWs) $ failWith "no zinc.toml in the current directory"
+  wsSrc <- liftIO (readFile (wsDir </> "zinc.toml"))
+  ws <- liftEither (parseWorkspace wsSrc)
+  hasLock <- liftIO (doesFileExist (wsDir </> "zinc.lock"))
+  locks <-
+    liftIO $
+      if hasLock
+        then either (const []) id . parseLock <$> readFile (wsDir </> "zinc.lock")
+        else pure []
+  storeRoot <- liftIO resolveStoreRoot
+  liftIO (gcStore storeRoot [GCRoot (wsGhc ws) locks])

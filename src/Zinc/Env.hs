@@ -13,6 +13,7 @@ import qualified Data.ByteString.Lazy.Char8 as BL8
 import Data.Digest.Pure.SHA (sha256, showDigest)
 import Data.List (intercalate, sort)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
+import Zinc.Except (liftIO, orFail, runResult)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 import System.Process (readProcessWithExitCode)
@@ -33,19 +34,17 @@ provisionEnv
   -> String                                             -- ^ ghc version
   -> [String]                                           -- ^ system libs
   -> IO (Either String String)
-provisionEnv eval cacheRoot ghcVersion systemLibs = do
+provisionEnv eval cacheRoot ghcVersion systemLibs = runResult $ do
   let file = cacheRoot </> ("env-" ++ envCacheKey ghcVersion systemLibs)
-  hit <- doesFileExist file
+  hit <- liftIO (doesFileExist file)
   if hit
-    then Right <$> readFile file
+    then liftIO (readFile file)
     else do
-      result <- eval ghcVersion systemLibs
-      case result of
-        Left err -> pure (Left err)
-        Right env -> do
-          createDirectoryIfMissing True cacheRoot
-          writeFile file env
-          pure (Right env)
+      env <- orFail (eval ghcVersion systemLibs)
+      liftIO $ do
+        createDirectoryIfMissing True cacheRoot
+        writeFile file env
+      pure env
 
 -- | The concrete evaluator (suitable as @provisionEnv@'s @eval@ argument,
 -- partially applied to a work dir): generate the flake, git-track it (flakes

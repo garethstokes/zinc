@@ -16,6 +16,7 @@ module Zinc.Resolve
   ) where
 
 import Control.Monad (foldM)
+import Control.Monad.Trans.Except (ExceptT (ExceptT), except, runExceptT)
 import qualified Data.Map as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
@@ -52,10 +53,9 @@ resolve
   -> [Dependency]                                                -- ^ root @[dependencies]@
   -> [(String, String)]                                          -- ^ root @[registry]@
   -> m (Either String [ResolvedDep])
-resolve isBoot fetch rootDeps rootReg =
-  case traverse (toReq rootReg "<workspace>") rootDeps of
-    Left err   -> pure (Left err)
-    Right reqs -> go Map.empty reqs
+resolve isBoot fetch rootDeps rootReg = runExceptT $ do
+  reqs <- except (traverse (toReq rootReg "<workspace>") rootDeps)
+  go Map.empty reqs
   where
     -- A dep's repo comes from the declaring package's own @[registry]@ first,
     -- then falls back to the root workspace registry. Real upstreams (only a
@@ -66,20 +66,16 @@ resolve isBoot fetch rootDeps rootReg =
       Nothing ->
         Left ("no repo in [registry] for '" ++ depName d ++ "' (required by " ++ parent ++ ")")
 
-    go seen [] = pure (Right (Map.elems seen))
+    go seen [] = pure (Map.elems seen)
     go seen (Req name ref repo : rest)
       | isBoot name            = go seen rest
       | name `Map.member` seen = go seen rest -- one ref per name; first/root wins
       | otherwise = do
-          fetched <- fetch name repo ref
-          case fetched of
-            Left err -> pure (Left err)
-            Right dm ->
-              let transitive = filter (not . isBoot . depName) (dmDeps dm)
-                  node = ResolvedDep name repo ref (map depName transitive)
-               in case traverse (toReq (dmRegistry dm) name) transitive of
-                    Left err      -> pure (Left err)
-                    Right newReqs -> go (Map.insert name node seen) (rest ++ newReqs)
+          dm <- ExceptT (fetch name repo ref)
+          let transitive = filter (not . isBoot . depName) (dmDeps dm)
+              node = ResolvedDep name repo ref (map depName transitive)
+          newReqs <- except (traverse (toReq (dmRegistry dm) name) transitive)
+          go (Map.insert name node seen) (rest ++ newReqs)
 
 -- | Topologically sort a resolved closure so each package appears after all
 -- the in-closure dependencies it builds against (build order). Dependency

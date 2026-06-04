@@ -8,10 +8,12 @@ module Zinc.Fetch
   ) where
 
 import Control.Monad (when)
+import Data.Bifunctor (first)
 import Data.List (nub)
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory, removeDirectoryRecursive)
 import System.FilePath (takeExtension, (</>))
 import Zinc.Cabal (cabalBuildType, parseCabalComponentsForGhc)
+import Zinc.Except (failWith, liftEither, liftIO, orFail, runResult)
 import Zinc.Git (cloneAt, listTags, splitRepoSubdir)
 import Zinc.Manifest (Component (compDepends, compKind), ComponentKind (Library), Dependency (..), Ref (..), parseDependencies)
 import Zinc.Resolve (DepManifest (..))
@@ -24,45 +26,37 @@ import Zinc.Version (newestTag)
 -- from the root workspace registry). @ghcVersion@ resolves @impl(ghc)@
 -- conditionals. Matches the fetch signature 'Zinc.Resolve.resolve' expects.
 gitFetchManifest :: FilePath -> String -> String -> String -> Ref -> IO (Either String DepManifest)
-gitFetchManifest storeRoot ghcVersion name repo ref = do
-  resolved <- resolveRef repo ref
-  case resolved of
-    Left err -> pure (Left (name ++ ": " ++ err))
-    Right refStr -> do
-      let dest = storeRoot </> "checkout" </> name
-      stale <- doesDirectoryExist dest
-      when stale (removeDirectoryRecursive dest)
-      cloned <- cloneAt repo refStr dest
-      case cloned of
-        Left err -> pure (Left ("fetch " ++ name ++ ": " ++ err))
-        Right _rev -> do
-          let pkgDir = maybe dest (dest </>) (snd (splitRepoSubdir repo))
-          hasZinc <- doesFileExist (pkgDir </> "zinc.toml")
-          if hasZinc
-            then do
-              src <- readFile (pkgDir </> "zinc.toml")
-              pure $ case parseDependencies src of
-                Left err          -> Left (name ++ ": " ++ err)
-                Right (deps, reg) -> Right (DepManifest deps reg)
-            else cabalManifest name ghcVersion pkgDir
+gitFetchManifest storeRoot ghcVersion name repo ref = runResult $ do
+  refStr <- orFail (first ((name ++ ": ") ++) <$> resolveRef repo ref)
+  let dest = storeRoot </> "checkout" </> name
+  liftIO $ do
+    stale <- doesDirectoryExist dest
+    when stale (removeDirectoryRecursive dest)
+  _ <- orFail (first (("fetch " ++ name ++ ": ") ++) <$> cloneAt repo refStr dest)
+  let pkgDir = maybe dest (dest </>) (snd (splitRepoSubdir repo))
+  hasZinc <- liftIO (doesFileExist (pkgDir </> "zinc.toml"))
+  if hasZinc
+    then do
+      src <- liftIO (readFile (pkgDir </> "zinc.toml"))
+      (deps, reg) <- liftEither (first ((name ++ ": ") ++) (parseDependencies src))
+      pure (DepManifest deps reg)
+    else orFail (cabalManifest name ghcVersion pkgDir)
 
 -- | Derive a 'DepManifest' for a real upstream from its @.cabal@: the library
 -- component's @build-depends@ become dependencies pinned to @Latest@ (their
 -- repos are supplied by the root workspace registry). No own registry.
 cabalManifest :: String -> String -> FilePath -> IO (Either String DepManifest)
-cabalManifest name ghcVersion pkgDir = do
-  entries <- listDirectory pkgDir
+cabalManifest name ghcVersion pkgDir = runResult $ do
+  entries <- liftIO (listDirectory pkgDir)
   case filter ((== ".cabal") . takeExtension) entries of
-    [] -> pure (Left (name ++ ": no zinc.toml or .cabal in the checkout"))
+    [] -> failWith (name ++ ": no zinc.toml or .cabal in the checkout")
     (cab : _) -> do
-      src <- readFile (pkgDir </> cab)
-      pure $ case cabalBuildType src of
-        Right "Custom" -> Left (name ++ ": build-type: Custom (Setup.hs) is not supported yet")
-        _ -> case parseCabalComponentsForGhc ghcVersion src of
-          Left err -> Left (name ++ ": " ++ err)
-          Right comps ->
-            let libDeps = nub (concat [compDepends c | c <- comps, compKind c == Library])
-             in Right (DepManifest [Dependency d Latest | d <- libDeps] [])
+      src <- liftIO (readFile (pkgDir </> cab))
+      when (cabalBuildType src == Right "Custom") $
+        failWith (name ++ ": build-type: Custom (Setup.hs) is not supported yet")
+      comps <- liftEither (first ((name ++ ": ") ++) (parseCabalComponentsForGhc ghcVersion src))
+      let libDeps = nub (concat [compDepends c | c <- comps, compKind c == Library])
+      pure (DepManifest [Dependency d Latest | d <- libDeps] [])
 
 -- | The git checkout target for a ref. 'Latest' is resolved to the repo's
 -- newest release tag.
