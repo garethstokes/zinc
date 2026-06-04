@@ -26,14 +26,14 @@ import Control.Exception (SomeException, finally, try)
 import Control.Monad (when)
 import Data.Bifunctor (first)
 import Data.Char (isHexDigit)
-import Data.List (isInfixOf, stripPrefix)
+import Data.List (stripPrefix)
 import qualified Data.Map as Map
 import Data.Maybe (catMaybes, fromMaybe)
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory, makeAbsolute, removeDirectoryRecursive)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeExtension, (</>))
 import System.Process (callProcess, readProcess, readProcessWithExitCode)
-import Zinc.Build (LibBuild (..), MemberBuild (..), buildLib, buildLibArtifacts, buildMember, initPackageDb, registerPackage, replArgs)
+import Zinc.Build (LibBuild (..), MemberBuild (..), buildLib, buildLibArtifacts, buildMember, initPackageDb, isRegistered, registerPackage, replArgs)
 import Zinc.Cabal (cabalBuildType, cabalVersion, parseCabalComponentsForGhc)
 import Zinc.Cache (BuildKey (..), buildCacheKey, storeConfPath, storePkgPath)
 import Zinc.Git (cloneAt, splitRepoSubdir)
@@ -164,15 +164,6 @@ parMapBounded n f xs = do
         putMVar mv (either (\e -> Left (show (e :: SomeException))) id r)
       pure mv
 
--- | Is @unitId@ already registered in @db@ with @pkgDir@ among its
--- library-dirs? Used to skip re-registering a closure dep whose current
--- key-addressed build is already in the (persisted) package db. A changed rev
--- yields a different pkg dir, so this correctly re-registers across rev bumps.
-isRegistered :: FilePath -> String -> FilePath -> IO Bool
-isRegistered db unitId pkgDir = do
-  (code, out, _) <- readProcessWithExitCode "ghc-pkg" ["--package-db", db, "field", unitId, "library-dirs"] ""
-  pure (code == ExitSuccess && pkgDir `isInfixOf` out)
-
 -- | Build the resolved git-dependency closure (from @zinc.lock@) from source
 -- into the workspace package db, in dependency order, so members can link it.
 -- Each locked package is fetched at its exact commit, its zinc.toml read, and
@@ -247,7 +238,7 @@ buildClosure wsDir storeRoot wsDb ghcVersion buildOpts = runResult $ do
               -- Apply any per-dependency build overrides (extra ghc flags,
               -- e.g. -XSafe) from the workspace [build-options].
               let lib' = lib {compGhcOptions = compGhcOptions lib ++ overrideFor l}
-              conf <- orFail (buildLibArtifacts (LibBuild pkgDir pkgOut wsDb (lockName l) version lib'))
+              (conf, _) <- orFail (buildLibArtifacts (LibBuild pkgDir pkgOut wsDb (lockName l) version lib'))
               pure (Just (lockName l, pkgOut, conf))
 
     -- Tamper detection (spec §8): a fetched tree's content hash must match the

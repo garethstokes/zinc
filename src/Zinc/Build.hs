@@ -7,6 +7,7 @@ module Zinc.Build
   , renderConf
   , archiveArgs
   , registerPackage
+  , isRegistered
   , preprocessorFor
   , runPreprocessor
   , MemberBuild (..)
@@ -19,10 +20,10 @@ module Zinc.Build
   , installedVersions
   ) where
 
-import Data.List (find, intercalate, isPrefixOf, nub)
 import Data.Maybe (fromMaybe, isJust)
-import Control.Monad (unless)
-import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory)
+import Control.Monad (unless, when)
+import Data.List (find, intercalate, isInfixOf, isPrefixOf, nub)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getModificationTime, listDirectory)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, takeExtension, (-<.>), (<.>), (</>))
 import System.Process (readProcessWithExitCode)
@@ -202,15 +203,18 @@ data LibBuild = LibBuild
 -- workspace package db so sibling members can @-package@ it.
 buildLib :: LibBuild -> IO (Either String ())
 buildLib lb = runResult $ do
-  conf <- orFail (buildLibArtifacts lb)
-  orFail (registerPackage (lbPackageDb lb) conf)
+  (conf, confChanged) <- orFail (buildLibArtifacts lb)
+  -- Skip re-registration on a persisted db when the conf is unchanged and the
+  -- lib is already registered at this dir (inner-loop incrementality).
+  reg <- liftIO (isRegistered (lbPackageDb lb) (lbName lb) (lbDistDir lb))
+  when (confChanged || not reg) (orFail (registerPackage (lbPackageDb lb) conf))
 
 -- | Compile and archive a library and persist its @package.conf@ into the
 -- store, returning the conf text — but /without/ registering it into the
 -- workspace db. Registration is split out so independent closure libraries can
 -- be compiled concurrently and then registered serially (ghc-pkg register on a
 -- shared db is not concurrency-safe).
-buildLibArtifacts :: LibBuild -> IO (Either String String)
+buildLibArtifacts :: LibBuild -> IO (Either String (String, Bool))
 buildLibArtifacts lb = runResult $ do
   liftIO $ createDirectoryIfMissing True (lbDistDir lb)
   -- Synthesize the Cabal-autogen files (Paths_<pkg>, cabal_macros.h) into a
@@ -223,7 +227,7 @@ buildLibArtifacts lb = runResult $ do
       unitId = lbName lb
       pathsMod = pathsModuleName (lbName lb)
       macrosHeader = gen </> "cabal_macros.h"
-  liftIO $ writeFileIfChanged (gen </> pathsMod <.> "hs") (synthesizePaths (lbName lb) (versionInts (lbVersion lb)))
+  _ <- liftIO $ writeFileIfChanged (gen </> pathsMod <.> "hs") (synthesizePaths (lbName lb) (versionInts (lbVersion lb)))
   installed <- liftIO installedVersions
   let depVersion d = fromMaybe [0] (lookup d installed)
       -- A direct dep's id for the conf's @depends@ (drives a dependent's
@@ -233,7 +237,7 @@ buildLibArtifacts lb = runResult $ do
       depConfId d
         | isBootLib d = d ++ "-" ++ intercalate "." (map show (depVersion d))
         | otherwise = d
-  liftIO $ writeFileIfChanged macrosHeader $
+  _ <- liftIO $ writeFileIfChanged macrosHeader $
     emitCabalMacros ((lbName lb, versionInts (lbVersion lb)) : [(d, depVersion d) | d <- compDepends comp])
   let srcDirs = if null (compSourceDirs comp) then ["."] else compSourceDirs comp
       -- nub so a package that already lists Paths_<pkg> in its (other-)modules
@@ -257,7 +261,12 @@ buildLibArtifacts lb = runResult $ do
   orFail (runPreprocessorsIn (map (lbMemberDir lb </>) srcDirs))
   orFail (runUnit "ghc" compileArgs)
   objs <- liftIO (findObjs (lbDistDir lb))
-  orFail (runUnit "ar" (archiveArgs (lbDistDir lb) unitId objs))
+  -- Re-archive only when an object is newer than the archive: ghc --make keeps
+  -- objects incremental, so an unchanged lib's .a (and the exe linking it)
+  -- need not be rebuilt.
+  let aPath = lbDistDir lb </> ("libHS" ++ unitId ++ ".a")
+  stale <- liftIO (archiveStale aPath objs)
+  when stale $ orFail (runUnit "ar" (archiveArgs (lbDistDir lb) unitId objs))
   let confText =
         renderConf
           PackageConf
@@ -272,19 +281,42 @@ buildLibArtifacts lb = runResult $ do
               -- zinc deps by bare name, non-base boot libs by real id.
               confDepends = [depConfId d | d <- nub (compDepends comp), d /= "base"]
             }
-  -- Persist the conf alongside the build so the artifact cache can
-  -- re-register it without recompiling.
-  liftIO $ writeFile (lbDistDir lb </> "package.conf") confText
-  pure confText
+  -- Persist the conf alongside the build (the artifact cache re-registers it
+  -- without recompiling); report whether it changed so a sibling lib can skip
+  -- re-registration on the persisted db.
+  confChanged <- liftIO (writeFileIfChanged (lbDistDir lb </> "package.conf") confText)
+  pure (confText, confChanged)
 
 -- | Write @content@ to @path@ only if it differs from the current contents,
 -- preserving the mtime when unchanged so ghc --make does not needlessly
 -- recompile modules that depend on a regenerated autogen file (Paths_/macros).
-writeFileIfChanged :: FilePath -> String -> IO ()
+-- Returns whether it actually wrote.
+writeFileIfChanged :: FilePath -> String -> IO Bool
 writeFileIfChanged path content = do
   exists <- doesFileExist path
   same <- if exists then (== content) <$> readFile path else pure False
   unless same (writeFile path content)
+  pure (not same)
+
+-- | Is @unitId@ registered in @db@ with @pkgDir@ among its library-dirs? Used
+-- to decide whether a (sibling) lib still needs (re-)registering on a persisted
+-- db. A changed rev yields a different pkg dir, so this re-registers correctly.
+isRegistered :: FilePath -> String -> FilePath -> IO Bool
+isRegistered db unitId pkgDir = do
+  (code, out, _) <- readProcessWithExitCode "ghc-pkg" ["--package-db", db, "field", unitId, "library-dirs"] ""
+  pure (code == ExitSuccess && pkgDir `isInfixOf` out)
+
+-- | Does the archive need rebuilding — i.e. it is missing or some object is
+-- newer than it?
+archiveStale :: FilePath -> [FilePath] -> IO Bool
+archiveStale aPath objs = do
+  exists <- doesFileExist aPath
+  if not exists
+    then pure True
+    else do
+      aTime <- getModificationTime aPath
+      oTimes <- mapM getModificationTime objs
+      pure (any (> aTime) oTimes)
 
 -- | Recursively list object files under a directory.
 findObjs :: FilePath -> IO [FilePath]
