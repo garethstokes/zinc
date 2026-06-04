@@ -89,7 +89,8 @@ tf-random = "https://github.com/garethstokes/tf-random.git"
 [build-options]
 colour = ["-XSafe"]
 # splitmix's Init.hs uses Data.Time.Clock.POSIX unless its Linux cabal branch's
-# cpp-options (-DSPLITMIX_INIT_C) + c-sources are applied; zinc's reader doesn't
-# yet handle cpp-options/c-sources, so expose the boot `time` package and take
-# the time-based seeding path instead. (Tracked: zinc cpp-options/c-sources gap.)
+# cpp-options (-DSPLITMIX_INIT_C) + c-sources are applied. zinc's reader now
+# supports both (zinc-izy), but splitmix gates them behind a platform/flag
+# conditional, so this workaround stays until the Opt-2 conditional resolver is
+# confirmed to surface splitmix's Linux c-sources (then drop this line).
 splitmix = ["-package", "time"]

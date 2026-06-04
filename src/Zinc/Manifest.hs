@@ -62,6 +62,8 @@ data Component = Component
   , compDepends        :: [String]
   , compSystemLibs     :: [String]     -- ^ nixpkgs attr names
   , compIncludeDirs    :: [String]     -- ^ C-header search dirs for CPP, relative to the package
+  , compCppOptions     :: [String]     -- ^ CPP @-D@ defines (cabal cpp-options), passed via @-optP@
+  , compCSources       :: [String]     -- ^ C sources to compile + archive (cabal c-sources), relative to the package
   }
   deriving (Eq, Show)
 
@@ -112,6 +114,8 @@ mkComponent kind name t =
     , compDepends = strs "depends"
     , compSystemLibs = strs "system-libs"
     , compIncludeDirs = strs "include-dirs"
+    , compCppOptions = strs "cpp-options"
+    , compCSources = strs "c-sources"
     }
   where
     strs k = either (const []) id (optStringArray k t)

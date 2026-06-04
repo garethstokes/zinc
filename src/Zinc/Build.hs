@@ -265,8 +265,13 @@ buildLibArtifacts lb = runResult $ do
           ++ concatMap (\d -> let p = lbMemberDir lb </> d in ["-I" ++ p, "-optP-I" ++ p]) (compIncludeDirs comp)
           ++ ["-this-unit-id", unitId, "-outputdir", lbDistDir lb]
           ++ map ("-X" ++) (compExtensions comp)
+          -- CPP -D defines (cabal cpp-options) for conditionally-compiled source.
+          ++ map ("-optP" ++) (compCppOptions comp)
           ++ compGhcOptions comp
           ++ modules
+          -- C sources (cabal c-sources): ghc --make compiles each and ghc puts
+          -- the object in -outputdir, where findObjs collects it into the .a.
+          ++ map (lbMemberDir lb </>) (compCSources comp)
   -- Generate sources from any .x/.y/.hsc the dep ships (e.g. toml-parser's
   -- alex/happy lexer+parser) so ghc --make finds the resulting .hs modules,
   -- then compile and archive. orFail short-circuits on the first failure.

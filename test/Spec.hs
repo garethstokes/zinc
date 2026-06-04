@@ -772,6 +772,8 @@ main = hspec $ do
             , compDepends = ["aeson"]
             , compSystemLibs = ["zlib"]
             , compIncludeDirs = []
+            , compCppOptions = []
+            , compCSources = []
             }
 
     it "parses a named executable component" $
@@ -1062,6 +1064,8 @@ main = hspec $ do
             , compDepends = ["aeson", "base"] -- finalizePD normalizes build-depends order
             , compSystemLibs = ["zlib"]
             , compIncludeDirs = []
+            , compCppOptions = []
+            , compCSources = []
             }
 
     it "derives an executable component" $
@@ -1422,6 +1426,8 @@ main = hspec $ do
               , compDepends = []
               , compSystemLibs = []
               , compIncludeDirs = []
+              , compCppOptions = []
+              , compCSources = []
               }
       r <- buildMember (MemberBuild dir (dir ++ "/build") Nothing comp)
       case r of
@@ -1448,7 +1454,7 @@ main = hspec $ do
   describe "orderMembers" $
     it "orders a member after the siblings it depends on" $ do
       let comp deps =
-            Component Library "x" [] [] Nothing [] [] deps [] []
+            Component Library "x" [] [] Nothing [] [] deps [] [] [] []
           core = ("packages/core", MemberManifest "core" "1.0" [comp []])
           app = ("packages/app", MemberManifest "app" "1.0" [comp ["core"]])
       map (pkgName . snd) (orderMembers [app, core]) `shouldBe` ["core", "app"]
@@ -1529,7 +1535,7 @@ main = hspec $ do
 
   describe "replArgs" $ do
     let exeComp =
-          Component Executable "app" ["app"] [] (Just "Main.hs") [] [] [] [] []
+          Component Executable "app" ["app"] [] (Just "Main.hs") [] [] [] [] [] [] []
 
     it "builds ghci args loading the member's main" $
       replArgs (Just "/db") "/m" exeComp
@@ -1542,7 +1548,7 @@ main = hspec $ do
       createDirectoryIfMissing True dir
       materialize dir (scaffoldNew "demo")
       let memberDir = dir ++ "/packages/demo"
-          comp = Component Executable "demo" ["app"] [] (Just "Main.hs") [] [] [] [] []
+          comp = Component Executable "demo" ["app"] [] (Just "Main.hs") [] [] [] [] [] [] []
       out <- readProcess "ghci" (replArgs Nothing memberDir comp ++ ["-e", "main"]) ""
       out `shouldBe` "Hello from demo!\n"
 
@@ -1562,7 +1568,7 @@ main = hspec $ do
       allB <- runBuildMember d Nothing
       (length <$> one, length <$> allB) `shouldBe` (Right 1, Right 2)
 
-  describe "parseCabalComponentsForGhc" $
+  describe "parseCabalComponentsForGhc" $ do
     it "resolves impl(ghc) conditionals using the supplied version" $ do
       let c =
             unlines
@@ -1578,6 +1584,22 @@ main = hspec $ do
           libFor v = either (const Nothing) (find ((== "lib") . compName)) (parseCabalComponentsForGhc v c)
       (compModules <$> libFor "9.8.2", compModules <$> libFor "9.6.5")
         `shouldBe` (Just ["M", "NewGhc"], Just ["M"])
+
+    it "extracts cpp-options and c-sources from a library (zinc-izy)" $ do
+      let c =
+            unlines
+              [ "cabal-version: 2.4"
+              , "name: d"
+              , "version: 1"
+              , "library"
+              , "  build-depends: base"
+              , "  exposed-modules: M"
+              , "  cpp-options: -DUSE_C"
+              , "  c-sources: cbits/init.c"
+              ]
+          libFor = either (const Nothing) (find ((== "lib") . compName)) (parseCabalComponents c)
+      (compCppOptions <$> libFor, compCSources <$> libFor)
+        `shouldBe` (Just ["-DUSE_C"], Just ["cbits/init.c"])
 
   describe "git dependency build from .cabal (end-to-end)" $
     it "builds a non-zinc-native git dep (only a .cabal) and links a member" $ do

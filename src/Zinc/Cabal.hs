@@ -29,6 +29,8 @@ import Distribution.PackageDescription
   , TestSuite (testBuildInfo, testInterface, testName)
   , TestSuiteInterface (TestSuiteExeV10)
   , buildType
+  , cSources
+  , cppOptions
   , defaultExtensions
   , packageDescription
   , exposedModules
@@ -125,6 +127,8 @@ fromBuildInfo kind name bi =
     , compDepends = map (unPackageName . depPkgName) (targetBuildDepends bi)
     , compSystemLibs = nub (mapMaybe toNixpkgs (extraLibs bi ++ pkgconfigNames bi))
     , compIncludeDirs = includeDirs bi
+    , compCppOptions = cppOptions bi
+    , compCSources = cSources bi
     }
   where
     pkgconfigNames b = [unPkgconfigName n | PkgconfigDependency n _ <- pkgconfigDepends b]
