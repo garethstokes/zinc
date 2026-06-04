@@ -36,6 +36,7 @@ import Zinc.Manifest
   , renderWorkspace
   )
 import Zinc.Fetch (gitFetchManifest)
+import Zinc.GC (GCRoot (..), gcStore, runGc)
 import Zinc.Add (freezeClosure, lockEntry, runAdd, runUpdate)
 import Zinc.Build (GhcInvocation (..), MemberBuild (..), PackageConf (..), archiveArgs, buildMember, ghcMakeArgs, installedVersions, preprocessorFor, registerPackage, renderConf, replArgs, runPreprocessor)
 import Zinc.Cache (BuildKey (..), buildCacheKey, cacheHit, storeConfPath, storePkgPath, writeCachedConf)
@@ -185,6 +186,9 @@ main = hspec $ do
 
     it "parses `clean`" $
       parseArgs ["clean"] `shouldBe` Right Clean
+
+    it "parses `gc`" $
+      parseArgs ["gc"] `shouldBe` Right Gc
 
     it "parses `repl` with no target" $
       parseArgs ["repl"] `shouldBe` Right (Repl Nothing)
@@ -1298,6 +1302,46 @@ main = hspec $ do
       pkgdb <- doesDirectoryExist (d ++ "/.zinc/pkgdb")
       memberZinc <- doesDirectoryExist (d ++ "/packages/a/.zinc")
       (store, pkgdb, memberZinc) `shouldBe` (True, False, False)
+
+  describe "gcStore (store garbage collection)" $
+    it "sweeps unreferenced pkg/ and src/ entries, keeping live ones" $ do
+      let root = "/tmp/zinc-gc-store"
+          ghc = "9.6.5"
+          liveLock = LockedPackage "a" "r/a" "rev-a" "sha256:x" []
+          liveKey = buildCacheKey (BuildKey "rev-a" ghc [] [])
+          deadKey = buildCacheKey (BuildKey "rev-z" ghc [] [])
+      stale <- doesDirectoryExist root
+      when stale $ removeDirectoryRecursive root
+      writeFileIn (root ++ "/pkg/" ++ liveKey ++ "/package.conf") "live"
+      writeFileIn (root ++ "/pkg/" ++ deadKey ++ "/package.conf") "dead"
+      writeFileIn (root ++ "/src/a-rev-a/x.hs") "live"
+      writeFileIn (root ++ "/src/b-rev-b/x.hs") "dead"
+      (rmPkg, rmSrc) <- gcStore root [GCRoot ghc [liveLock]]
+      livePkg <- doesDirectoryExist (root ++ "/pkg/" ++ liveKey)
+      deadPkg <- doesDirectoryExist (root ++ "/pkg/" ++ deadKey)
+      liveSrc <- doesDirectoryExist (root ++ "/src/a-rev-a")
+      deadSrc <- doesDirectoryExist (root ++ "/src/b-rev-b")
+      (livePkg, deadPkg, liveSrc, deadSrc, rmPkg, rmSrc)
+        `shouldBe` (True, False, True, False, [deadKey], ["b-rev-b"])
+
+  describe "runGc (workspace GC entry)" $
+    it "collects store entries not referenced by the current workspace lock" $ do
+      let dir = "/tmp/zinc-gc-ws"
+          gcRoot = "/tmp/zinc-gc-ws-store"
+          ghc = "9.6.5"
+          liveKey = buildCacheKey (BuildKey "rev-a" ghc [] [])
+          deadKey = buildCacheKey (BuildKey "rev-z" ghc [] [])
+      mapM_ (\p -> doesDirectoryExist p >>= \e -> when e (removeDirectoryRecursive p)) [dir, gcRoot]
+      setEnv "ZINC_STORE" gcRoot
+      writeFileIn (dir ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] ghc [Dependency "a" (Rev "rev-a")] [("a", "r/a")]))
+      writeFileIn (dir ++ "/zinc.lock") (renderLock [LockedPackage "a" "r/a" "rev-a" "sha256:x" []])
+      writeFileIn (gcRoot ++ "/pkg/" ++ liveKey ++ "/package.conf") "live"
+      writeFileIn (gcRoot ++ "/pkg/" ++ deadKey ++ "/package.conf") "dead"
+      writeFileIn (gcRoot ++ "/src/a-rev-a/x.hs") "live"
+      writeFileIn (gcRoot ++ "/src/zombie-rev-z/x.hs") "dead"
+      r <- runGc dir
+      setEnv "ZINC_STORE" testStoreDir -- restore shared isolation
+      r `shouldBe` Right ([deadKey], ["zombie-rev-z"])
 
   describe "runUpdate" $ do
     (wsFile, store, _leafRepo) <- runIO setupAddFixture

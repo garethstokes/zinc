@@ -15,6 +15,7 @@ data Command
   | Test (Maybe String)   -- ^ build and run tests for an optional target
   | Update (Maybe String) -- ^ bump refs for an optional package
   | Clean                 -- ^ remove build artifacts
+  | Gc                    -- ^ garbage-collect the shared store
   deriving (Eq, Show)
 
 -- | Pure, testable entry point: parse argv into a 'Command'.
@@ -44,6 +45,7 @@ commandParser =
       , sub "test"   "Build and run tests"            (Test <$> optional (strArgument (metavar "TARGET")))
       , sub "update" "Bump dependency refs to latest" (Update <$> optional (strArgument (metavar "PKG")))
       , sub "clean"  "Remove build artifacts"         (pure Clean)
+      , sub "gc"     "Garbage-collect the shared store" (pure Gc)
       ]
   where
     sub name desc p = command name (info (p <**> helper) (progDesc desc))

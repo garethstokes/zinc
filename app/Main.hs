@@ -5,6 +5,7 @@ import Data.List (intercalate)
 import System.Environment (getArgs)
 import Zinc.Add (addInWorkspace, updateInWorkspace)
 import Zinc.CLI (Command (..), parseArgs)
+import Zinc.GC (runGc)
 import Zinc.Orchestrate (buildAndRun, checkLockDrift, runBuildMember, runClean, runRepl, runTests)
 import Zinc.Scaffold (materialize, scaffoldNew)
 
@@ -46,3 +47,8 @@ dispatch (Update _) =
 dispatch Clean = do
   runClean "."
   putStrLn "Cleaned build artifacts (kept the store)."
+dispatch Gc =
+  runGc "." >>= \r -> case r of
+    Left e -> putStrLn ("zinc gc: " ++ e)
+    Right (pkgs, srcs) ->
+      putStrLn ("Collected " ++ show (length pkgs) ++ " package(s) and " ++ show (length srcs) ++ " source(s) from the store.")

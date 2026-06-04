@@ -18,6 +18,7 @@ library
                     Zinc.Cache
                     Zinc.Env
                     Zinc.Fetch
+                    Zinc.GC
                     Zinc.Git
                     Zinc.Hackage
                     Zinc.Lock
