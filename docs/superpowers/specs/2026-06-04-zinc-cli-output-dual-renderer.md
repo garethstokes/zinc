@@ -86,3 +86,36 @@ renderer is the home of `rdy`'s JSON; streaming extends the build report
 (`rdy.2`); the speed summary consumes perf data (`hbv`); the human renderer
 subsumes the closed human-error work (`unv`). Not gated (MVP done), but the
 foundation depends on `rdy.1` landing first.
+
+## 8. Shaping decisions (2026-06-05)
+
+**Current state — build on what exists, don't reinvent.** The diagnostic core
+already shipped: `Zinc.Diagnostic` exports `toDiagnostic`, `renderError` (a basic
+human renderer), `envelope`, `exitCodeFor`; `Zinc.Json` is the JSON surface; the
+build report carries per-package `timeMs`. But `--json` is currently a *bolted-on
+per-command `Bool`* (`Build (Maybe String) Bool`, `Doctor Bool`, …) with no TTY
+detection, no `--quiet`, no `NO_COLOR`, no event stream, and plain (uncolored)
+human output. So `hw6` = **unify the bolted-on `--json` into one mode-selected
+dual renderer, add the human-delight layer on top of `renderError`, and introduce
+incremental events** — not a from-scratch build.
+
+Decisions:
+
+1. **Unified output mode (replaces per-command `--json` Bool).** Resolve one
+   `OutputMode` at the CLI/Main boundary: TTY → human+color; pipe → human plain;
+   `--json` → machine; plus `--quiet` and `NO_COLOR`. Drop the per-command `Bool`
+   (a CLI.hs + Main.hs dispatch refactor).
+2. **Event emission via a `ReaderT` sink over `ExceptT ZincError IO`.** Build code
+   calls `emit (CompileDone …)`; the env carries the sink. Composes with the
+   existing monad; one plumbing pass enables real streaming + live progress. (This
+   is cross-cutting — threads through Orchestrate/Build/Fetch — so sequence it to
+   avoid colliding with other in-flight refactors.)
+3. **Live rewriting progress line** (human): cargo/bun-style single in-place line,
+   `Building [23/47] aeson`, cleared on finish. TTY-only; falls back to
+   append-only when not a TTY / under `--quiet`.
+4. **Color via raw ANSI** in a tiny internal module — no `ansi-terminal`/`colour`
+   dependency (keeps zinc dep-light and dodges the very Safe-Haskell pain those
+   packages caused during self-host). `NO_COLOR`-gated.
+
+Elm/rustc-style error rendering (hw6.2) extends the existing `renderError` rather
+than replacing it.
