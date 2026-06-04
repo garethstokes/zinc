@@ -176,13 +176,15 @@ severityText SWarning = "warning"
 severityText SInfo = "info"
 
 -- | The JSON envelope every @--json@ command emits:
--- @{ zinc, command, ok, data, diagnostics }@.
-envelope :: String -> Bool -> Maybe Json -> [Diagnostic] -> Json
-envelope command ok dat diags =
-  JObject
+-- @{ zinc, command, ok, data, timing?, diagnostics }@. The @timing@ block
+-- (perf spec §2) is included only when measured; 'envelope' omits it otherwise.
+envelope :: String -> Bool -> Maybe Json -> Maybe Json -> [Diagnostic] -> Json
+envelope command ok dat timing diags =
+  JObject $
     [ ("zinc", JString zincVersion)
     , ("command", JString command)
     , ("ok", JBool ok)
     , ("data", maybe JNull id dat)
-    , ("diagnostics", JArray (map diagnosticJson diags))
     ]
+      ++ maybe [] (\t -> [("timing", t)]) timing
+      ++ [("diagnostics", JArray (map diagnosticJson diags))]

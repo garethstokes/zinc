@@ -50,7 +50,7 @@ import Zinc.Macros (emitCabalMacros)
 import Zinc.Nix (generateFlake)
 import Zinc.Orchestrate (buildAndRun, lockDrift, orderMembers, parMapBounded, runBuild, runBuildMember, runClean, runTests)
 import Zinc.Paths (pathsModuleName, synthesizePaths)
-import Zinc.Report (BuildOutcome (..), PackageReport (..), PackageStatus (..), buildDataJson, packageReportJson, renderResolution, statusText)
+import Zinc.Report (BuildOutcome (..), CacheStats (..), PackageReport (..), PackageStatus (..), Timing (..), buildDataJson, cacheStatsOf, packageReportJson, renderResolution, statusText, timingJson)
 import Zinc.SysLibs (toNixpkgs)
 import Zinc.Resolve (DepManifest (..), ResolvedDep (..), isBootLib, resolve, topoLevels, topoSort)
 import Zinc.Version (newestTag)
@@ -185,8 +185,8 @@ main = hspec $ do
       renderJson (diagnosticJson (toDiagnostic (ManifestParse "f.toml" "bad")))
         `shouldBe` "{\"code\":\"ZINC_MANIFEST_PARSE\",\"severity\":\"error\",\"title\":\"manifest parse error\",\"detail\":\"bad\",\"location\":\"f.toml\",\"nextAction\":\"fix the TOML in the manifest\"}"
 
-    it "wraps output in the standard envelope" $
-      renderJson (envelope "build" True (Just (JObject [("built", JInt 1)])) [])
+    it "wraps output in the standard envelope (timing omitted when absent)" $
+      renderJson (envelope "build" True (Just (JObject [("built", JInt 1)])) Nothing [])
         `shouldBe` "{\"zinc\":\"0.1.0.0\",\"command\":\"build\",\"ok\":true,\"data\":{\"built\":1},\"diagnostics\":[]}"
 
     it "assigns stable exit codes per category" $ do
@@ -213,7 +213,7 @@ main = hspec $ do
         `shouldBe` "{\"executables\":[\"/w/.zinc/build/app\"],\"packages\":[{\"name\":\"colour\",\"ref\":\"a1b2c3\",\"status\":\"built\"}]}"
 
     it "wraps a build outcome in the standard envelope" $
-      renderJson (envelope "build" True (Just (buildDataJson (BuildOutcome [] []))) [])
+      renderJson (envelope "build" True (Just (buildDataJson (BuildOutcome [] []))) Nothing [])
         `shouldBe` "{\"zinc\":\"0.1.0.0\",\"command\":\"build\",\"ok\":true,\"data\":{\"executables\":[],\"packages\":[]},\"diagnostics\":[]}"
 
     it "build in a non-workspace dir fails structurally (ZINC_NO_ZINC_TOML), not a crash" $ do
@@ -221,6 +221,20 @@ main = hspec $ do
       createDirectoryIfMissing True d
       r <- runBuild d
       either errorCode (const "built") r `shouldBe` "ZINC_NO_ZINC_TOML"
+
+  describe "command timing (hbv.1)" $ do
+    it "derives cache stats from per-package statuses" $ do
+      let pkgs = [PackageReport "a" "r" Cached, PackageReport "b" "r" Built, PackageReport "c" "r" Cached, PackageReport "d" "r" Skipped]
+          c = cacheStatsOf pkgs
+      (csHits c, csMisses c, csPkgsBuilt c, csPkgsCached c) `shouldBe` (2, 1, 1, 2)
+
+    it "renders the timing block (totalMs, phases, cache)" $
+      renderJson (timingJson (Timing 1234 [("closure", 900), ("member", 300)] (CacheStats 2 1 1 2)))
+        `shouldBe` "{\"totalMs\":1234,\"phases\":{\"closure\":900,\"member\":300},\"cache\":{\"hits\":2,\"misses\":1,\"pkgsBuilt\":1,\"pkgsCached\":2}}"
+
+    it "includes the timing block in the envelope when present" $
+      renderJson (envelope "build" True (Just (buildDataJson (BuildOutcome [] []))) (Just (timingJson (Timing 5 [] (CacheStats 0 0 0 0)))) [])
+        `shouldBe` "{\"zinc\":\"0.1.0.0\",\"command\":\"build\",\"ok\":true,\"data\":{\"executables\":[],\"packages\":[]},\"timing\":{\"totalMs\":5,\"phases\":{},\"cache\":{\"hits\":0,\"misses\":0,\"pkgsBuilt\":0,\"pkgsCached\":0}},\"diagnostics\":[]}"
 
   describe "non-interactive contract (rdy.7)" $ do
     it "accepts (and ignores) --yes on add: zinc never prompts" $ do

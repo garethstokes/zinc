@@ -21,6 +21,7 @@ module Zinc.Orchestrate
   ) where
 
 import Control.Concurrent (forkIO, getNumCapabilities)
+import GHC.Clock (getMonotonicTime)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.QSem (newQSem, signalQSem, waitQSem)
 import Control.Exception (SomeException, finally, try)
@@ -51,8 +52,8 @@ import Zinc.Manifest
   , parseBuildOptions
   )
 import Zinc.Diagnostic (ZincError (ContentHashMismatch, NoZincToml, OtherError))
-import Zinc.Except (failWith, failWithError, liftEither, liftEitherE, liftIO, orFail, orFailE, runResult)
-import Zinc.Report (BuildOutcome (..), PackageReport (..), PackageStatus (..))
+import Zinc.Except (Result, failWith, failWithError, liftEither, liftEitherE, liftIO, orFail, orFailE, runResult)
+import Zinc.Report (BuildOutcome (..), PackageReport (..), PackageStatus (..), Timing (..), cacheStatsOf)
 import Zinc.Resolve (ResolvedDep (..), topoLevels)
 import Zinc.Store (contentHash, resolveStoreRoot, storeSrcPath)
 
@@ -61,12 +62,12 @@ import Zinc.Store (contentHash, resolveStoreRoot, storeSrcPath)
 -- @target@ (when 'Just') restricts which member's @keep@-components are built;
 -- libraries are always built so dependencies remain available.
 buildWorkspace :: FilePath -> Maybe String -> (ComponentKind -> Bool) -> IO (Either ZincError [FilePath])
-buildWorkspace wsDir target keep = fmap (fmap boExes) (buildWorkspaceReport wsDir target keep)
+buildWorkspace wsDir target keep = fmap (fmap (boExes . fst)) (buildWorkspaceReport wsDir target keep)
 
 -- | As 'buildWorkspace', but also returns the per-package closure report (spec
--- §3.2) for the structured @--json@ surface. 'buildWorkspace' is the thin
--- exes-only projection of this.
-buildWorkspaceReport :: FilePath -> Maybe String -> (ComponentKind -> Bool) -> IO (Either ZincError BuildOutcome)
+-- §3.2) and per-phase wall-clock timings (perf spec §2) for the structured
+-- @--json@ surface. 'buildWorkspace' is the thin exes-only projection.
+buildWorkspaceReport :: FilePath -> Maybe String -> (ComponentKind -> Bool) -> IO (Either ZincError (BuildOutcome, [(String, Int)]))
 buildWorkspaceReport wsDir target keep = runResult $ do
   let wsFile = wsDir </> "zinc.toml"
   present <- liftIO (doesFileExist wsFile)
@@ -80,9 +81,12 @@ buildWorkspaceReport wsDir target keep = runResult $ do
   -- already registered at their current key-addressed pkg dir.
   orFail (initPackageDb wsDb)
   storeRoot <- liftIO resolveStoreRoot
-  pkgs <- orFailE (buildClosure wsDir storeRoot wsDb (wsGhc ws) (parseBuildOptions wsSrc))
-  exes <- concat <$> traverse (buildMemberAll wsDb) (orderMembers members)
-  pure (BuildOutcome exes pkgs)
+  -- Coarse phases (perf spec §2): the dependency-closure build (fetch + compile
+  -- + register of deps) and the workspace-member build (compile + link). Finer
+  -- breakdown (resolve/provision/fetch/register/link split) is a follow-up.
+  (pkgs, closureMs) <- timed (orFailE (buildClosure wsDir storeRoot wsDb (wsGhc ws) (parseBuildOptions wsSrc)))
+  (exes, memberMs) <- timed (concat <$> traverse (buildMemberAll wsDb) (orderMembers members))
+  pure (BuildOutcome exes pkgs, [("closure", closureMs), ("member", memberMs)])
   where
     loadMember member = do
       let dir = wsDir </> member
@@ -116,9 +120,23 @@ runBuildMember :: FilePath -> Maybe String -> IO (Either ZincError [FilePath])
 runBuildMember wsDir target = buildWorkspace wsDir target (== Executable)
 
 -- | @zinc build [member] --json@: build, returning the structured outcome
--- (executables + per-package closure report) for the machine surface.
-runBuildReport :: FilePath -> Maybe String -> IO (Either ZincError BuildOutcome)
-runBuildReport wsDir target = buildWorkspaceReport wsDir target (== Executable)
+-- (executables + per-package closure report) and the 'Timing' block (total
+-- wall-clock, per-phase durations, cache stats) for the machine surface.
+runBuildReport :: FilePath -> Maybe String -> IO (Either ZincError (BuildOutcome, Timing))
+runBuildReport wsDir target = do
+  t0 <- getMonotonicTime
+  r <- buildWorkspaceReport wsDir target (== Executable)
+  t1 <- getMonotonicTime
+  let totalMs = round ((t1 - t0) * 1000) :: Int
+  pure $ fmap (\(o, phases) -> (o, Timing totalMs phases (cacheStatsOf (boPackages o)))) r
+
+-- | Run a pipeline step, returning its wall-clock duration in milliseconds.
+timed :: Result a -> Result (a, Int)
+timed act = do
+  t0 <- liftIO getMonotonicTime
+  a <- act
+  t1 <- liftIO getMonotonicTime
+  pure (a, round ((t1 - t0) * 1000))
 
 -- | @zinc run@: build, then run the first executable with the given args,
 -- returning its stdout.

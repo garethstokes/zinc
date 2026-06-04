@@ -11,7 +11,7 @@ import Zinc.Diagnostic (ZincError, envelope, exitCodeFor, renderError, toDiagnos
 import Zinc.GC (runGc)
 import Zinc.Json (renderJson)
 import Zinc.Orchestrate (buildAndRun, checkLockDrift, runBuildMember, runBuildReport, runClean, runRepl, runTests)
-import Zinc.Report (buildDataJson)
+import Zinc.Report (buildDataJson, timingJson)
 import Zinc.Scaffold (materialize, scaffoldNew)
 
 -- | Thin executable shim. Parsing/dispatch logic lives in (and is tested via)
@@ -44,10 +44,10 @@ dispatch (Build target json)
       -- carry the diagnostic and the category exit code. No human chatter.
       runBuildReport "." target >>= \r -> case r of
         Left e -> do
-          putStrLn (renderJson (envelope "build" False Nothing [toDiagnostic e]))
+          putStrLn (renderJson (envelope "build" False Nothing Nothing [toDiagnostic e]))
           exitWith (exitCodeFor e)
-        Right outcome ->
-          putStrLn (renderJson (envelope "build" True (Just (buildDataJson outcome)) []))
+        Right (outcome, timing) ->
+          putStrLn (renderJson (envelope "build" True (Just (buildDataJson outcome)) (Just (timingJson timing)) []))
   | otherwise = do
       drift <- checkLockDrift "."
       unless (null drift) $

@@ -10,6 +10,10 @@ module Zinc.Report
   , statusText
   , packageReportJson
   , buildDataJson
+  , CacheStats (..)
+  , Timing (..)
+  , cacheStatsOf
+  , timingJson
   ) where
 
 import Zinc.Json (Json (..), object)
@@ -65,6 +69,59 @@ buildDataJson o =
     [ ("executables", JArray (map JString (boExes o)))
     , ("packages", JArray (map packageReportJson (boPackages o)))
     ]
+
+-- | Cache effectiveness for a build (perf spec §2): closure deps reused from the
+-- content-addressed store (@hits@ / @pkgsCached@) vs compiled from source
+-- (@misses@ / @pkgsBuilt@). Library-less deps ('Skipped') count as neither.
+data CacheStats = CacheStats
+  { csHits       :: Int
+  , csMisses     :: Int
+  , csPkgsBuilt  :: Int
+  , csPkgsCached :: Int
+  }
+  deriving (Eq, Show)
+
+-- | The @timing@ block (perf spec §2): wall-clock total, per-phase durations
+-- (ms, in build order), and cache stats. Hangs off the JSON envelope so perf
+-- work (5ko inner-loop, vwn caching) has a measurement/validation feedback loop.
+data Timing = Timing
+  { tiTotalMs :: Int
+  , tiPhases  :: [(String, Int)] -- ^ phase name -> milliseconds, ordered
+  , tiCache   :: CacheStats
+  }
+  deriving (Eq, Show)
+
+-- | Derive cache stats from the per-package report (no extra measurement).
+cacheStatsOf :: [PackageReport] -> CacheStats
+cacheStatsOf pkgs =
+  CacheStats
+    { csHits = cached
+    , csMisses = built
+    , csPkgsBuilt = built
+    , csPkgsCached = cached
+    }
+  where
+    cached = count Cached
+    built = count Built
+    count s = length (filter ((== s) . prStatus) pkgs)
+
+-- | A 'Timing' as JSON: @{ totalMs, phases:{…}, cache:{…} }@.
+timingJson :: Timing -> Json
+timingJson t =
+  JObject
+    [ ("totalMs", JInt (tiTotalMs t))
+    , ("phases", JObject [(p, JInt ms) | (p, ms) <- tiPhases t])
+    , ( "cache"
+      , JObject
+          [ ("hits", JInt (csHits c))
+          , ("misses", JInt (csMisses c))
+          , ("pkgsBuilt", JInt (csPkgsBuilt c))
+          , ("pkgsCached", JInt (csPkgsCached c))
+          ]
+      )
+    ]
+  where
+    c = tiCache t
 
 -- | Render the resolved closure as an aligned @package / ref / repo@ table.
 renderResolution :: [ResolvedDep] -> String
