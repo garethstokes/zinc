@@ -4,7 +4,10 @@ import Control.Monad (forM_, when)
 import Data.Char (isSpace)
 import Data.Either (isLeft, isRight)
 import Data.Functor.Identity (runIdentity)
-import Data.IORef (modifyIORef', newIORef, readIORef)
+import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
+import Control.Exception (IOException, try)
+import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (find, isInfixOf, sort)
 import Data.Maybe (isJust)
 import System.Directory
@@ -27,7 +30,7 @@ import Zinc.Prime (onboardText, primeText)
 import Zinc.Json (Json (..), parseJson, renderJson)
 import Zinc.Git (cloneAt, gitEnv, listTags, splitRepoSubdir)
 import Zinc.Hackage (hackageCabalUrl, sourceRepoOf)
-import Zinc.Store (contentHash, resolveStoreRoot, storeSrcPath, verifyContent)
+import Zinc.Store (contentHash, resolveStoreRoot, storeSrcPath, verifyContent, withStoreLock)
 import Zinc.Manifest
   ( Component (..)
   , ComponentKind (..)
@@ -259,6 +262,36 @@ main = hspec $ do
       parseJson "[1,2" `shouldSatisfy` isLeft
       parseJson "tru" `shouldSatisfy` isLeft
       parseJson "{\"k\" 1}" `shouldSatisfy` isLeft
+
+  describe "concurrency-safe store (rdy.8)" $ do
+    it "runs the action and releases the per-key lock afterward" $ do
+      let root = "/tmp/zinc-lock-test1"
+      createDirectoryIfMissing True root
+      r <- withStoreLock root "k1" (pure (42 :: Int))
+      held <- doesDirectoryExist (root </> "locks" </> "k1")
+      (r, held) `shouldBe` (42, False)
+
+    it "releases the lock even when the action throws" $ do
+      let root = "/tmp/zinc-lock-test2"
+      createDirectoryIfMissing True root
+      _ <- (try (withStoreLock root "k" (ioError (userError "boom"))) :: IO (Either IOException ()))
+      doesDirectoryExist (root </> "locks" </> "k") `shouldReturn` False
+
+    it "serializes concurrent critical sections (no lost updates)" $ do
+      let root = "/tmp/zinc-lock-test3"
+          n = 12
+      createDirectoryIfMissing True root
+      ref <- newIORef (0 :: Int)
+      done <- newEmptyMVar
+      forM_ [1 .. n] $ \_ ->
+        forkIO $ do
+          withStoreLock root "shared" $ do
+            v <- readIORef ref
+            threadDelay 1000 -- 1ms: without the lock this read/write interleaves and loses updates
+            writeIORef ref (v + 1)
+          putMVar done ()
+      forM_ [1 .. n] (const (takeMVar done))
+      readIORef ref `shouldReturn` n
 
   describe "context priming (rdy.5)" $ do
     it "parses prime / onboard" $ do

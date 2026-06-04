@@ -55,7 +55,7 @@ import Zinc.Diagnostic (ZincError (ContentHashMismatch, NoZincToml, OtherError))
 import Zinc.Except (Result, failWith, failWithError, liftEither, liftEitherE, liftIO, orFail, orFailE, runResult)
 import Zinc.Report (BuildOutcome (..), PackageReport (..), PackageStatus (..), Timing (..), cacheStatsOf)
 import Zinc.Resolve (ResolvedDep (..), topoLevels)
-import Zinc.Store (contentHash, resolveStoreRoot, storeSrcPath)
+import Zinc.Store (contentHash, resolveStoreRoot, storeSrcPath, withStoreLock)
 
 -- | Build a workspace: each member's library (so siblings can link) plus every
 -- component whose kind satisfies @keep@, returned as built executable paths.
@@ -251,35 +251,45 @@ buildClosure wsDir storeRoot wsDb ghcVersion buildOpts = runResult $ do
     -- text to register (@Just@), or @Nothing@ when the dep ships no library.
     -- No shared-state writes, so this is safe to run concurrently across the
     -- independent nodes of one level.
-    produceOne l = runResult $ do
+    -- Fast path: a cached conf is reused without locking. Otherwise take the
+    -- per-key store lock (so parallel agents/worktrees can't write pkg/<key>
+    -- concurrently), re-check the cache inside the lock — a peer may have built
+    -- it while we waited — and only then fetch + compile.
+    produceOne l = do
       let key = cacheKeyOf l
           confPath = storeConfPath storeRoot key
-          pkgOut = storePkgPath storeRoot key
-          report st = PackageReport (lockName l) (lockRev l) st
-      cached <- liftIO (doesFileExist confPath)
+      cached <- doesFileExist confPath
       if cached
-        then do
-          conf <- liftIO (readFile confPath) -- cache hit: reuse conf, no fetch/compile
-          pure (report Cached, Just (lockName l, pkgOut, conf))
-        else do
-          let dest = storeSrcPath storeRoot (lockName l) (lockRev l)
-          exists <- liftIO (doesDirectoryExist dest)
-          when (not exists) $
-            orFail (first (("fetch " ++ lockName l ++ ": ") ++) <$> cloneAt (lockRepo l) (lockRev l) dest) >> pure ()
-          orFailE (verifyFetched l dest)
-          -- The package may live in a subdirectory of the repo (monorepo);
-          -- read its manifest/sources from there.
-          let pkgDir = maybe dest (dest </>) (snd (splitRepoSubdir (lockRepo l)))
-          comps <- liftIO (loadDepComponents pkgDir)
-          (version, components) <- liftEither (first ((lockName l ++ ": ") ++) comps)
-          case filter ((== Library) . compKind) components of
-            []        -> pure (report Skipped, Nothing) -- no library to build
-            (lib : _) -> do
-              -- Apply any per-dependency build overrides (extra ghc flags,
-              -- e.g. -XSafe) from the workspace [build-options].
-              let lib' = lib {compGhcOptions = compGhcOptions lib ++ overrideFor l}
-              (conf, _) <- orFailE (buildLibArtifacts (LibBuild pkgDir pkgOut wsDb (lockName l) version lib'))
-              pure (report Built, Just (lockName l, pkgOut, conf))
+        then reuseCached l key
+        else withStoreLock storeRoot key $ do
+          nowCached <- doesFileExist confPath
+          if nowCached then reuseCached l key else runResult (buildNode l key)
+
+    reuseCached l key = do
+      conf <- readFile (storeConfPath storeRoot key)
+      pure (Right (PackageReport (lockName l) (lockRev l) Cached, Just (lockName l, storePkgPath storeRoot key, conf)))
+
+    buildNode l key = do
+      let pkgOut = storePkgPath storeRoot key
+          report st = PackageReport (lockName l) (lockRev l) st
+          dest = storeSrcPath storeRoot (lockName l) (lockRev l)
+      exists <- liftIO (doesDirectoryExist dest)
+      when (not exists) $
+        orFail (first (("fetch " ++ lockName l ++ ": ") ++) <$> cloneAt (lockRepo l) (lockRev l) dest) >> pure ()
+      orFailE (verifyFetched l dest)
+      -- The package may live in a subdirectory of the repo (monorepo);
+      -- read its manifest/sources from there.
+      let pkgDir = maybe dest (dest </>) (snd (splitRepoSubdir (lockRepo l)))
+      comps <- liftIO (loadDepComponents pkgDir)
+      (version, components) <- liftEither (first ((lockName l ++ ": ") ++) comps)
+      case filter ((== Library) . compKind) components of
+        []        -> pure (report Skipped, Nothing) -- no library to build
+        (lib : _) -> do
+          -- Apply any per-dependency build overrides (extra ghc flags,
+          -- e.g. -XSafe) from the workspace [build-options].
+          let lib' = lib {compGhcOptions = compGhcOptions lib ++ overrideFor l}
+          (conf, _) <- orFailE (buildLibArtifacts (LibBuild pkgDir pkgOut wsDb (lockName l) version lib'))
+          pure (report Built, Just (lockName l, pkgOut, conf))
 
     -- Tamper detection (spec §8): a fetched tree's content hash must match the
     -- lock's recorded sha256. Only enforced for real-shaped hashes so that

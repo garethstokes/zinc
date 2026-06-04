@@ -8,15 +8,19 @@ module Zinc.Store
   , contentHash
   , verifyContent
   , hashString
+  , withStoreLock
   ) where
 
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Lazy.Char8 as BL8
 import Data.Digest.Pure.SHA (sha256, showDigest)
 import Data.List (sort)
-import Control.Monad (forM)
-import System.Directory (doesDirectoryExist, getHomeDirectory, listDirectory)
+import Control.Concurrent (threadDelay)
+import Control.Exception (bracket)
+import Control.Monad (forM, when)
+import System.Directory (createDirectory, createDirectoryIfMissing, doesDirectoryExist, getHomeDirectory, listDirectory, removeDirectory)
 import System.Environment (lookupEnv)
+import System.IO.Error (catchIOError)
 import System.FilePath ((</>))
 
 -- | Resolve the store root, shared by @add@, @update@, and @build@ so a
@@ -53,6 +57,33 @@ verifyContent dir expected = (== expected) <$> contentHash dir
 -- lockfile so perf records correlate to a dependency set (perf spec §3.1).
 hashString :: String -> String
 hashString s = "sha256:" ++ take 16 (showDigest (sha256 (BL8.pack s)))
+
+-- | Serialize work on a content-addressed store key across processes (spec
+-- §3.4): parallel agents / worktrees share @~\/.zinc\/store@, so two builds of
+-- the same key must not write into @pkg\/\<key\>@ at once. Uses an atomic
+-- @mkdir@ as a portable advisory lock — the directory is either created (lock
+-- acquired) or already exists (held elsewhere). Crash-tolerant: a waiter polls
+-- for a bounded window, then proceeds best-effort, so a stale lock left by a
+-- dead process can never deadlock the build. The lock is removed only by the
+-- holder that created it.
+withStoreLock :: FilePath -> String -> IO a -> IO a
+withStoreLock storeRoot key action = bracket acquire release (const action)
+  where
+    lockDir = storeRoot </> "locks" </> key
+    acquire = do
+      createDirectoryIfMissing True (storeRoot </> "locks")
+      tryAcquire (0 :: Int)
+    tryAcquire n = do
+      got <- (createDirectory lockDir >> pure True) `catchIOError` const (pure False)
+      if got
+        then pure True
+        else
+          if n >= maxAttempts
+            then pure False -- give up waiting; proceed best-effort (no deadlock)
+            else threadDelay pollMicros >> tryAcquire (n + 1)
+    release held = when held (removeDirectory lockDir `catchIOError` const (pure ()))
+    maxAttempts = 2000 -- ~20s at 10ms
+    pollMicros = 10000 -- 10ms
 
 -- | Recursively list files as relative paths, skipping any @.git@ directory.
 listFiles :: FilePath -> IO [FilePath]
