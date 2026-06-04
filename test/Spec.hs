@@ -54,7 +54,7 @@ import Zinc.Cabal (cabalBuildType, cabalVersion, parseCabalComponents, parseCaba
 import Zinc.Env (envCacheKey, nixPrintDevEnv, provisionEnv)
 import Zinc.Macros (emitCabalMacros)
 import Zinc.Nix (generateFlake)
-import Zinc.Orchestrate (buildAndRun, lockDrift, orderMembers, parMapBounded, runBuild, runBuildMember, runClean, runTests, runWarm)
+import Zinc.Orchestrate (buildAndRun, lockDrift, orderMembers, parMapBounded, resolveTarget, runBuild, runBuildMember, runClean, runTests, runWarm)
 import Zinc.Paths (pathsModuleName, synthesizePaths)
 import Zinc.Report (BuildOutcome (..), CacheStats (..), PackageReport (..), PackageStatus (..), Timing (..), buildDataJson, cacheStatsOf, packageReportJson, renderResolution, statusText, timingJson)
 import Zinc.SysLibs (toNixpkgs)
@@ -262,6 +262,25 @@ main = hspec $ do
       parseJson "[1,2" `shouldSatisfy` isLeft
       parseJson "tru" `shouldSatisfy` isLeft
       parseJson "{\"k\" 1}" `shouldSatisfy` isLeft
+
+  describe "run target selection (tci.1)" $ do
+    it "selects the sole executable when no target is given" $
+      resolveTarget Nothing [("app", "/w/app")] `shouldBe` Right "/w/app"
+
+    it "errors when there is no executable" $
+      either errorCode (const "ok") (resolveTarget Nothing []) `shouldBe` "ZINC_ERROR"
+
+    it "is ambiguous (lists candidates) when many exes and no target" $
+      either errorCode (const "ok") (resolveTarget Nothing [("a", "/a"), ("b", "/b")]) `shouldBe` "ZINC_AMBIGUOUS_TARGET"
+
+    it "selects a named target" $
+      resolveTarget (Just "b") [("a", "/a"), ("b", "/b")] `shouldBe` Right "/b"
+
+    it "accepts a member:exe qualifier (matches the exe part)" $
+      resolveTarget (Just "mylib:b") [("a", "/a"), ("b", "/b")] `shouldBe` Right "/b"
+
+    it "lists candidates for an unknown target" $
+      either errorCode (const "ok") (resolveTarget (Just "ghost") [("a", "/a")]) `shouldBe` "ZINC_AMBIGUOUS_TARGET"
 
   describe "warm / build --deps-only (vwn.1)" $ do
     it "parses warm and build --deps-only to the same closure-only command" $ do
@@ -500,8 +519,10 @@ main = hspec $ do
     it "parses `update` with no package" $
       parseArgs ["update"] `shouldBe` Right (Update Nothing)
 
-    it "parses `run` and passes through args after --" $
-      parseArgs ["run", "--", "a", "b"] `shouldBe` Right (Run ["a", "b"])
+    it "parses `run [TARGET] [-- ARGS]` (target first, then program args)" $ do
+      parseArgs ["run"] `shouldBe` Right (Run Nothing [])
+      parseArgs ["run", "web"] `shouldBe` Right (Run (Just "web") [])
+      parseArgs ["run", "web", "--", "a", "b"] `shouldBe` Right (Run (Just "web") ["a", "b"])
 
     it "rejects an unknown subcommand" $
       parseArgs ["frobnicate"] `shouldSatisfy` isLeft

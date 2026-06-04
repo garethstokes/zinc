@@ -11,7 +11,7 @@ data Command
   | Add String            -- ^ resolve a dependency closure and freeze it
   | Build (Maybe String) Bool -- ^ build the workspace (or one member); Bool = --json
 
-  | Run [String]          -- ^ build then run an executable, passing through args
+  | Run (Maybe String) [String] -- ^ build then run an executable: TARGET (first positional), then program ARGS
   | Repl (Maybe String)   -- ^ ghci for an optional target
   | Test (Maybe String)   -- ^ build and run tests for an optional target
   | Update (Maybe String) -- ^ bump refs for an optional package
@@ -50,7 +50,7 @@ commandParser =
       , sub "add"    "Add a dependency"               (Add <$> (yesFlag *> strArgument (metavar "PKG")))
       , sub "build"  "Build the workspace or a member" buildCmd
       , sub "warm"   "Build only the dependency closure (CI/Docker cache)" (Warm <$> jsonFlag)
-      , sub "run"    "Build then run an executable"   (Run <$> many (strArgument (metavar "ARGS")))
+      , sub "run"    "Build then run an executable"   (Run <$> optional (strArgument (metavar "[TARGET]")) <*> many (strArgument (metavar "[-- ARGS...]")))
       , sub "repl"   "Open ghci for a target"         (Repl <$> optional (strArgument (metavar "TARGET")))
       , sub "test"   "Build and run tests"            (Test <$> optional (strArgument (metavar "TARGET")))
       , sub "update" "Bump dependency refs to latest" (Update <$> optional (strArgument (metavar "PKG")))

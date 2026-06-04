@@ -13,7 +13,7 @@ import Zinc.GC (runGc)
 import Zinc.Introspect (explainJson, graphJson, renderExplain, renderGraph, renderStatus, runExplain, runGraph, runStatus, statusJson)
 import Zinc.Json (Json (..), renderJson)
 import Zinc.Metrics (recordBuild)
-import Zinc.Orchestrate (buildAndRun, checkLockDrift, runBuildReport, runClean, runRepl, runTests, runWarm)
+import Zinc.Orchestrate (checkLockDrift, runBuildReport, runClean, runRepl, runTarget, runTests, runWarm)
 import Zinc.Perf (perfSummaryJson, renderPerf, runPerf)
 import Zinc.Prime (runOnboard, runPrime)
 import Zinc.Report (PackageReport, PackageStatus (Built, Cached), boExes, buildDataJson, packageReportJson, prStatus, timingJson)
@@ -83,8 +83,8 @@ dispatch (Build target json) = do
         else do
           putStrLn ("Built " ++ show (length (boExes outcome)) ++ " executable(s):")
           mapM_ (putStrLn . ("  " ++)) (boExes outcome)
-dispatch (Run args) =
-  buildAndRun "." args >>= either (failCmd "zinc run") putStr
+dispatch (Run target args) =
+  runTarget "." target args >>= either (failCmd "zinc run") putStr
 dispatch (Test _) =
   runTests "." >>= \r -> case r of
     Left e  -> failCmd "zinc test" e

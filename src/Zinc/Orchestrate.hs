@@ -12,6 +12,8 @@ module Zinc.Orchestrate
   , runBuildReport
   , runWarm
   , buildAndRun
+  , runTarget
+  , resolveTarget
   , runTests
   , orderMembers
   , lockDrift
@@ -34,7 +36,7 @@ import qualified Data.Map as Map
 import Data.Maybe (fromMaybe, mapMaybe)
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory, makeAbsolute, removeDirectoryRecursive)
 import System.Exit (ExitCode (..))
-import System.FilePath (takeExtension, (</>))
+import System.FilePath (takeExtension, takeFileName, (</>))
 import System.Process (callProcess, readProcess, readProcessWithExitCode)
 import Zinc.Build (LibBuild (..), MemberBuild (..), buildLib, buildLibArtifacts, buildMember, initPackageDb, isRegistered, registerPackage, replArgs)
 import Zinc.Cabal (cabalBuildType, cabalVersion, parseCabalComponentsForGhc)
@@ -52,7 +54,7 @@ import Zinc.Manifest
   , parseWorkspace
   , parseBuildOptions
   )
-import Zinc.Diagnostic (ZincError (ContentHashMismatch, NoZincToml, OtherError))
+import Zinc.Diagnostic (ZincError (AmbiguousTarget, ContentHashMismatch, NoZincToml, OtherError))
 import Zinc.Except (Result, failWith, failWithError, liftEither, liftEitherE, liftIO, orFail, orFailE, runResult)
 import Zinc.Report (BuildOutcome (..), PackageReport (..), PackageStatus (..), Timing (..), cacheStatsOf)
 import Zinc.Resolve (ResolvedDep (..), topoLevels)
@@ -157,13 +159,40 @@ timed act = do
   pure (a, round ((t1 - t0) * 1000))
 
 -- | @zinc run@: build, then run the first executable with the given args,
--- returning its stdout.
+-- returning its stdout. (Retained for the test surface; the CLI uses
+-- 'runTarget' for proper target selection.)
 buildAndRun :: FilePath -> [String] -> IO (Either ZincError String)
 buildAndRun wsDir args = runResult $ do
   built <- orFailE (runBuild wsDir)
   case built of
     []        -> failWith "no executable to run"
     (exe : _) -> liftIO (readProcess exe args "")
+
+-- | Resolve a @zinc run@ TARGET against the workspace's built executables
+-- (exe name -> path). 'Nothing' selects the sole exe (error if zero, ambiguous
+-- if many); a 'Just' name matches by exe name, or the @exe@ part of a
+-- @member:exe@ qualifier. An unknown or ambiguous target yields a structured
+-- 'AmbiguousTarget' listing the candidates (spec §6 taxonomy).
+resolveTarget :: Maybe String -> [(String, FilePath)] -> Either ZincError FilePath
+resolveTarget Nothing exes = case exes of
+  []       -> Left (OtherError "no executable to run")
+  [(_, e)] -> Right e
+  _        -> Left (AmbiguousTarget (map fst exes))
+resolveTarget (Just t) exes =
+  maybe (Left (AmbiguousTarget (map fst exes))) Right (lookup (exeName t) exes)
+  where
+    exeName s = case break (== ':') s of
+      (_, ':' : e) -> e -- member:exe -> exe
+      _            -> s
+
+-- | @zinc run [TARGET] [-- ARGS]@: build the workspace, resolve TARGET to a
+-- single executable, and run it with ARGS, returning its stdout. (Proper exec
+-- semantics — stdio inheritance + exit-code propagation — are refined in tci.2.)
+runTarget :: FilePath -> Maybe String -> [String] -> IO (Either ZincError String)
+runTarget wsDir target progArgs = runResult $ do
+  exes <- orFailE (runBuild wsDir)
+  selected <- liftEitherE (resolveTarget target [(takeFileName e, e) | e <- exes])
+  liftIO (readProcess selected progArgs "")
 
 -- | @zinc test@: build and run all test-suite components, returning how many
 -- passed. Fails on the first non-zero exit.
