@@ -35,7 +35,7 @@ import System.Process (callProcess, readProcess, readProcessWithExitCode)
 import Zinc.Build (LibBuild (..), MemberBuild (..), buildLib, buildLibArtifacts, buildMember, initPackageDb, registerPackage, replArgs)
 import Zinc.Cabal (cabalBuildType, parseCabalComponentsForGhc)
 import Zinc.Cache (BuildKey (..), buildCacheKey, storeConfPath, storePkgPath)
-import Zinc.Git (cloneAt)
+import Zinc.Git (cloneAt, splitRepoSubdir)
 import Zinc.Lock (LockedPackage (..), parseLock)
 import Zinc.Manifest
   ( Component (compDepends, compKind)
@@ -258,12 +258,15 @@ buildClosure wsDir storeRoot wsDb ghcVersion = do
               case integrity of
                 Left err -> pure (Left err)
                 Right () -> do
-                  comps <- loadDepComponents dest
+                  -- The package may live in a subdirectory of the repo
+                  -- (monorepo); read its manifest/sources from there.
+                  let pkgDir = maybe dest (dest </>) (snd (splitRepoSubdir (lockRepo l)))
+                  comps <- loadDepComponents pkgDir
                   case comps of
                     Left err -> pure (Left (lockName l ++ ": " ++ err))
                     Right (version, components) -> case filter ((== Library) . compKind) components of
                       []        -> pure (Right Nothing) -- no library to build
-                      (lib : _) -> fmap (fmap Just) (buildLibArtifacts (LibBuild dest (storePkgPath storeRoot key) wsDb (lockName l) version lib))
+                      (lib : _) -> fmap (fmap Just) (buildLibArtifacts (LibBuild pkgDir (storePkgPath storeRoot key) wsDb (lockName l) version lib))
 
     -- Tamper detection (spec §8): a fetched tree's content hash must match the
     -- lock's recorded sha256. Only enforced for real-shaped hashes so that

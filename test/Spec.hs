@@ -19,7 +19,7 @@ import System.FilePath (takeDirectory, (</>))
 import System.Process (readProcess)
 import Test.Hspec
 import Zinc.CLI (Command (..), parseArgs)
-import Zinc.Git (cloneAt, listTags)
+import Zinc.Git (cloneAt, listTags, splitRepoSubdir)
 import Zinc.Hackage (hackageCabalUrl, sourceRepoOf)
 import Zinc.Store (contentHash, resolveStoreRoot, storeSrcPath, verifyContent)
 import Zinc.Manifest
@@ -1292,6 +1292,42 @@ main = hspec $ do
       writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Lexer (firstWord)\nmain :: IO ()\nmain = putStrLn firstWord\n"
       r <- buildAndRun ws []
       r `shouldBe` Right "hello\n"
+
+  describe "splitRepoSubdir" $ do
+    it "returns the whole spec and no subdir when there is no # suffix" $
+      splitRepoSubdir "https://github.com/a/b.git" `shouldBe` ("https://github.com/a/b.git", Nothing)
+
+    it "splits a url#subdir suffix into url and subdir" $
+      splitRepoSubdir "https://github.com/quchen/prettyprinter#prettyprinter" `shouldBe` ("https://github.com/quchen/prettyprinter", Just "prettyprinter")
+
+    it "supports a nested subdir path" $
+      splitRepoSubdir "/local/repo#pkgs/core" `shouldBe` ("/local/repo", Just "pkgs/core")
+
+  describe "git dependency in a repo subdirectory (end-to-end)" $
+    it "builds a package located in a monorepo subdir and links a member" $ do
+      let base = "/tmp/zinc-subdir-ws"
+          repo = base ++ "/mono-repo"
+          ws = base ++ "/ws"
+      stale <- doesDirectoryExist base
+      when stale $ removeDirectoryRecursive base
+      -- a monorepo: the package lives under pkgs/greet, not at the root
+      writeFileIn (repo ++ "/README.md") "monorepo root\n"
+      writeFileIn (repo ++ "/pkgs/greet/zinc.toml") (unlines ["[package]", "name = \"greet\"", "version = \"1.0\"", "[build.lib]", "source-dirs = [\"src\"]", "exposed-modules = [\"Greet\"]"])
+      writeFileIn (repo ++ "/pkgs/greet/src/Greet.hs") "module Greet (hi) where\nhi :: String\nhi = \"hi from subdir\"\n"
+      let git args = readProcess "git" ("-C" : repo : args) ""
+      _ <- git ["init", "--quiet"]
+      _ <- git ["config", "user.email", "t@example.com"]
+      _ <- git ["config", "user.name", "Test"]
+      _ <- git ["add", "."]
+      _ <- git ["commit", "--quiet", "-m", "mono"]
+      rev <- trimStr <$> git ["rev-parse", "HEAD"]
+      let repoSpec = repo ++ "#pkgs/greet"
+      writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "greet" (Rev rev)] [("greet", repoSpec)]))
+      writeFileIn (ws ++ "/zinc.lock") (renderLock [LockedPackage "greet" repoSpec rev "sha256:x" []])
+      writeFileIn (ws ++ "/packages/app/zinc.toml") (unlines ["[package]", "name = \"app\"", "version = \"1.0\"", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "depends = [\"greet\"]"])
+      writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Greet (hi)\nmain :: IO ()\nmain = putStrLn hi\n"
+      r <- buildAndRun ws []
+      r `shouldBe` Right "hi from subdir\n"
 
   -- Test ladder rung 2 (spec §12): a REAL Hackage leaf pulled from git and
   -- built via the Opt-2 .cabal reader. Network-gated so the default suite

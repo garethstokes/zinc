@@ -10,7 +10,7 @@ module Zinc.Fetch
 import Control.Monad (when)
 import System.Directory (doesDirectoryExist, doesFileExist, removeDirectoryRecursive)
 import System.FilePath ((</>))
-import Zinc.Git (cloneAt, listTags)
+import Zinc.Git (cloneAt, listTags, splitRepoSubdir)
 import Zinc.Manifest (Ref (..), parseDependencies)
 import Zinc.Resolve (DepManifest (..))
 import Zinc.Version (newestTag)
@@ -31,7 +31,8 @@ gitFetchManifest storeRoot name repo ref = do
       case cloned of
         Left err -> pure (Left ("fetch " ++ name ++ ": " ++ err))
         Right _rev -> do
-          let manifest = dest </> "zinc.toml"
+          let pkgDir = maybe dest (dest </>) (snd (splitRepoSubdir repo))
+              manifest = pkgDir </> "zinc.toml"
           present <- doesFileExist manifest
           if not present
             then pure (Left (name ++ ": no zinc.toml in " ++ repo))
@@ -48,7 +49,7 @@ resolveRef _    (Tag t)    = pure (Right t)
 resolveRef _    (Branch b) = pure (Right b)
 resolveRef _    (Rev r)    = pure (Right r)
 resolveRef repo Latest     = do
-  tags <- listTags repo
+  tags <- listTags (fst (splitRepoSubdir repo))
   pure $ case tags of
     Left err -> Left err
     Right ts -> maybe (Left "no release tags found") Right (newestTag ts)
