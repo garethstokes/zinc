@@ -1,0 +1,9 @@
+[workspace]
+members = ["app"]
+ghc = "9.6.5"
+
+[dependencies]
+aeson = { tag = "v2.3.0.0" }
+
+[registry]
+aeson = "https://github.com/haskell/aeson"

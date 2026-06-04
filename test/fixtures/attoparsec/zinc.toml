@@ -1,0 +1,9 @@
+[workspace]
+members = ["app"]
+ghc = "9.6.5"
+
+[dependencies]
+attoparsec = { tag = "0.14.4" }
+
+[registry]
+attoparsec = "https://github.com/haskell/attoparsec"

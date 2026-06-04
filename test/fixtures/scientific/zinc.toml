@@ -1,0 +1,9 @@
+[workspace]
+members = ["app"]
+ghc = "9.6.5"
+
+[dependencies]
+scientific = { tag = "v0.3.8.1" }
+
+[registry]
+scientific = "https://github.com/basvandijk/scientific"

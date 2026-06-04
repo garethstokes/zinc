@@ -1,0 +1,8 @@
+[package]
+name = "scientific-fixture"
+version = "0.1.0"
+
+[build.exe.main]
+source-dirs = ["src"]
+main = "Main.hs"
+depends = ["scientific"]

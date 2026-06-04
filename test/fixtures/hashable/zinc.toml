@@ -1,0 +1,9 @@
+[workspace]
+members = ["app"]
+ghc = "9.6.5"
+
+[dependencies]
+hashable = { tag = "v1.5.1.0" }
+
+[registry]
+hashable = "https://github.com/haskell-unordered-containers/hashable"
