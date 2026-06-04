@@ -26,6 +26,7 @@ import Data.List (find, intercalate, isInfixOf, isPrefixOf, nub)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getModificationTime, listDirectory)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, takeExtension, (-<.>), (<.>), (</>))
+import System.IO (readFile')
 import System.Process (readProcessWithExitCode)
 import Zinc.Diagnostic (ZincError)
 import Zinc.Except (liftIO, orFail, orFailE, runResult)
@@ -295,7 +296,10 @@ buildLibArtifacts lb = runResult $ do
 writeFileIfChanged :: FilePath -> String -> IO Bool
 writeFileIfChanged path content = do
   exists <- doesFileExist path
-  same <- if exists then (== content) <$> readFile path else pure False
+  -- NB: readFile' (strict) closes the handle before the writeFile below;
+  -- lazy readFile leaves the handle open when (==) short-circuits on changed
+  -- content, causing "resource busy (file is locked)" on the write.
+  same <- if exists then (== content) <$> readFile' path else pure False
   unless same (writeFile path content)
   pure (not same)
 
