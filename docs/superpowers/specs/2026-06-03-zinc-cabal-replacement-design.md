@@ -13,7 +13,38 @@ Hackage-version dance. zinc keeps the good parts and replaces the painful ones.
 **Thesis: ergonomics.** zinc is a Cargo-like front-end where Nix is a hidden
 implementation detail the user never has to touch. Speed (prebuilt/cached
 artifacts, fast inner loop) and "it just works" (no solver errors, ever) are the
-north stars.
+goal.
+
+### 1.1 Principles (revised 2026-06-04)
+
+These were once framed as two co-equal "north stars" — *explicit / no-magic* and
+*it just works* — which appeared to conflict (does an awkward build flag for a
+deep transitive dependency get stated explicitly, or hidden to keep things
+effortless?). The conflict was an artifact of wording: it only arises if
+*explicit* is read as *user-authored*. It isn't. zinc already discovers
+transitive deps from self-describing manifests and auto-freezes the lockfile —
+explicit in the system, effortless for the user. So the principles are layered,
+not competing:
+
+1. **Ergonomics is the goal; explicitness is the mechanism.** The user
+   experiences "it just works" *because* the tool makes every decision explicit
+   and frozen — not in spite of it.
+2. **Explicit state, not explicit effort.** Every resolve/build decision is
+   recorded as inspectable, reproducible data (manifest, lockfile, declared
+   build facts). The tool produces and freezes it; the user never hand-maintains
+   it.
+3. **Declared once, at the source, inherited transitively.** Any fact a
+   dependency needs to build — ref, ghc flags, `system-libs`, a Safe-Haskell
+   assertion — lives *with that dependency* (or in zinc's own inspectable data
+   for it), never re-stated by consumers.
+4. **Reject inference, not automation.** No hidden solving, no version-fragile
+   heuristics (the unpredictable part of cabal). Deterministic automation that
+   yields frozen, auditable state is the whole point.
+
+The user is concise (states direct intent); the *system* is explicit (records
+and freezes everything else). "Magic" zinc rejects = decisions you can't see or
+reproduce. "Automation" zinc embraces = the tool producing explicit state for
+you.
 
 **Division of labour:**
 
@@ -74,6 +105,22 @@ delegation).
 
 **Known casualty:** `build-type: Custom` / `Setup.hs` packages remain
 unsupported until specially handled (deferred — see §13).
+
+**Per-package build facts / quirks (decided 2026-06-04).** Some upstreams need a
+ghc flag that is neither in their `.cabal` nor derivable by inference — the
+canonical case is a package that must be built `-XTrustworthy` so a
+`{-# LANGUAGE Safe #-}` dependent can import it (cabal achieves this via an
+implicit, version-fragile Safe-detection heuristic zinc deliberately does *not*
+replicate — §1.1 principle 4). Per principles 2–3, such a fact is **zinc-authored
+data attached to the package** — a small, version-controlled quirks table
+shipped *with zinc* (e.g. `colour → -XTrustworthy`), or the package's wrapped
+manifest — applied automatically when zinc builds that dependency and frozen
+like any other build input. The end user never states it, even when the package
+is a deep transitive dependency. A workspace `[build-options]` table is the
+user-facing override for first-party packages and the long tail; it is the
+escape hatch, not the mechanism. This is a *permanent* need, not an Opt-2
+stopgap: the fact is absent from the `.cabal`, so the reader can never surface
+it — but it stays small, since Safe-importing packages are rare.
 
 ## 4. Manifest — `zinc.toml`
 
