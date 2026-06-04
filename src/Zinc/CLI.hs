@@ -26,6 +26,7 @@ data Command
   | Onboard               -- ^ minimal AGENTS.md/CLAUDE.md snippet
   | Warm Bool             -- ^ build only the dependency closure; Bool = --json
   | Dockerfile            -- ^ emit a multi-stage Docker build recipe
+  | Fmt Bool              -- ^ canonically format zinc.toml; Bool = --check
   deriving (Eq, Show)
 
 -- | Pure, testable entry point: parse argv into a 'Command'.
@@ -65,6 +66,7 @@ commandParser =
       , sub "prime"  "Print AI-optimized orientation for this workspace" (pure Prime)
       , sub "onboard" "Print an AGENTS.md/CLAUDE.md snippet" (pure Onboard)
       , sub "dockerfile" "Emit a multi-stage Docker build recipe" (pure Dockerfile)
+      , sub "fmt"    "Canonically format zinc.toml" (Fmt <$> switch (long "check" <> help "Exit non-zero if not already canonical; write nothing"))
       ]
   where
     sub name desc p = command name (info (p <**> helper) (progDesc desc))

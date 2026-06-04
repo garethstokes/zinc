@@ -11,6 +11,7 @@ module Zinc.Manifest
   , parseMember
   , parseDependencies
   , renderWorkspace
+  , renderDependencies
   , addDep
   ) where
 
@@ -192,9 +193,16 @@ renderWorkspace w =
     , "members = [" ++ intercalate ", " (map quote (wsMembers w)) ++ "]"
     , "ghc = " ++ quote (wsGhc w)
     , ""
-    , "[dependencies]"
     ]
-      ++ concatMap renderDep (sortOn depName (wsDependencies w))
+      ++ renderDependencies (wsDependencies w)
+  where
+    quote s = "\"" ++ s ++ "\""
+
+-- | Render the canonical @[dependencies]@ block: deps sorted by name, each as a
+-- one-line shorthand (ref only) or a @[dependencies.name]@ sub-table (ref, then
+-- repo, then ghc-options). Shared by 'renderWorkspace' and @zinc fmt@.
+renderDependencies :: [Dependency] -> [String]
+renderDependencies deps = "[dependencies]" : concatMap renderDep (sortOn depName deps)
   where
     quote s = "\"" ++ s ++ "\""
     refStr (Tag t)    = ("tag", t)

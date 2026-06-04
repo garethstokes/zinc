@@ -25,6 +25,7 @@ import System.Exit (ExitCode (..))
 import Zinc.CLI (Command (..), parseArgs)
 import Zinc.Diagnostic (Diagnostic (..), Severity (..), ZincError (..), diagnosticJson, envelope, errorCode, exitCodeFor, renderError, toDiagnostic)
 import Zinc.Docker (dockerfileText)
+import Zinc.Fmt (canonicalizeManifest)
 import Zinc.Doctor (doctorJson, doctorOk, flakesOffDiagnostic, lockDriftDiagnostic, renderDoctor, runDoctor)
 import Zinc.Introspect (DepStatus (..), explainJson, graphJson, statusJson)
 import Zinc.Prime (onboardText, primeText)
@@ -292,6 +293,23 @@ main = hspec $ do
 
     it "lists candidates for an unknown target" $
       either errorCode (const "ok") (resolveTarget (Just "ghost") [("a", "/a")]) `shouldBe` "ZINC_AMBIGUOUS_TARGET"
+
+  describe "zinc fmt (8n6.3)" $ do
+    it "parses fmt and fmt --check" $ do
+      parseArgs ["fmt"] `shouldBe` Right (Fmt False)
+      parseArgs ["fmt", "--check"] `shouldBe` Right (Fmt True)
+
+    it "canonicalizes deps (sorted, shorthand) and is idempotent" $ do
+      let src = unlines ["[workspace]", "members = []", "ghc = \"9.6.5\"", "[dependencies]", "zebra = { tag = \"v2\" }", "alpha = \"*\""]
+          out1 = either error id (canonicalizeManifest src)
+          out2 = either error id (canonicalizeManifest out1)
+      out1 `shouldBe` out2
+      all (`isInfixOf` out1) ["alpha = \"*\"", "zebra = \"v2\""] `shouldBe` True
+
+    it "preserves [package]/[build.*] while rewriting deps" $ do
+      let src = unlines ["[workspace]", "members = [\".\"]", "ghc = \"9.6.5\"", "[package]", "name = \"z\"", "[build.lib]", "source-dirs = [\"src\"]", "[dependencies]", "x = \"v1\""]
+          out = either error id (canonicalizeManifest src)
+      all (`isInfixOf` out) ["[package]", "[build.lib]", "source-dirs = [\"src\"]", "x = \"v1\""] `shouldBe` True
 
   describe "dockerfile recipe (vwn.2)" $ do
     it "parses the `dockerfile` subcommand" $

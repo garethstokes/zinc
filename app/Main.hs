@@ -11,6 +11,7 @@ import Zinc.CLI (Command (..), parseArgs)
 import Zinc.Diagnostic (ZincError, envelope, exitCodeFor, renderError, toDiagnostic)
 import Zinc.Docker (runDockerfile)
 import Zinc.Doctor (doctorJson, doctorOk, renderDoctor, runDoctor)
+import Zinc.Fmt (runFmt)
 import Zinc.GC (runGc)
 import Zinc.Introspect (explainJson, graphJson, renderExplain, renderGraph, renderStatus, runExplain, runGraph, runStatus, statusJson)
 import Zinc.Json (Json (..), renderJson)
@@ -141,3 +142,11 @@ dispatch Onboard =
   runOnboard "." >>= either (failCmd "zinc onboard") putStr
 dispatch Dockerfile =
   runDockerfile "." >>= either (failCmd "zinc dockerfile") putStr
+dispatch (Fmt check) =
+  runFmt check "." >>= \r -> case r of
+    Left e -> failCmd "zinc fmt" e
+    Right clean
+      | check && not clean -> hPutStrLn stderr "zinc.toml is not canonical (run `zinc fmt`)" >> exitWith (ExitFailure 1)
+      | check              -> putStrLn "zinc.toml is canonical."
+      | clean              -> putStrLn "zinc.toml is already canonical."
+      | otherwise          -> putStrLn "Formatted zinc.toml."
