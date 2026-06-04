@@ -19,6 +19,9 @@ data Command
   | Gc                    -- ^ garbage-collect the shared store
   | Perf Bool             -- ^ analyze build performance history; Bool = --json
   | Doctor Bool           -- ^ diagnose env/project problems; Bool = --json
+  | Status Bool           -- ^ workspace status overview; Bool = --json
+  | Graph Bool            -- ^ the closure build DAG; Bool = --json
+  | Explain String Bool   -- ^ why a package is in the build; Bool = --json
   deriving (Eq, Show)
 
 -- | Pure, testable entry point: parse argv into a 'Command'.
@@ -51,6 +54,9 @@ commandParser =
       , sub "gc"     "Garbage-collect the shared store" (pure Gc)
       , sub "perf"   "Analyze build performance history" (Perf <$> jsonFlag)
       , sub "doctor" "Diagnose environment and project problems" (Doctor <$> jsonFlag)
+      , sub "status" "Show workspace status (members, closure, drift)" (Status <$> jsonFlag)
+      , sub "graph"  "Show the closure build DAG"        (Graph <$> jsonFlag)
+      , sub "explain" "Explain why a package is in the build" (Explain <$> strArgument (metavar "PKG") <*> jsonFlag)
       ]
   where
     sub name desc p = command name (info (p <**> helper) (progDesc desc))

@@ -14,7 +14,7 @@ source-dirs = ["src"]
 exposed-modules = [
   "Zinc.Add", "Zinc.Build", "Zinc.CLI", "Zinc.Cabal", "Zinc.Cache",
   "Zinc.Diagnostic", "Zinc.Doctor", "Zinc.Env", "Zinc.Except", "Zinc.Fetch", "Zinc.GC", "Zinc.Git", "Zinc.Hackage",
-  "Zinc.Json", "Zinc.Metrics",
+  "Zinc.Introspect", "Zinc.Json", "Zinc.Metrics",
   "Zinc.Lock", "Zinc.Macros", "Zinc.Manifest", "Zinc.Nix", "Zinc.Orchestrate", "Zinc.Perf",
   "Zinc.Paths", "Zinc.Report", "Zinc.Resolve", "Zinc.Scaffold", "Zinc.Store",
   "Zinc.SysLibs", "Zinc.TOML", "Zinc.Version"

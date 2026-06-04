@@ -22,6 +22,7 @@ import System.Exit (ExitCode (..))
 import Zinc.CLI (Command (..), parseArgs)
 import Zinc.Diagnostic (Diagnostic (..), Severity (..), ZincError (..), diagnosticJson, envelope, errorCode, exitCodeFor, renderError, toDiagnostic)
 import Zinc.Doctor (doctorJson, doctorOk, flakesOffDiagnostic, lockDriftDiagnostic, renderDoctor, runDoctor)
+import Zinc.Introspect (DepStatus (..), explainJson, graphJson, statusJson)
 import Zinc.Json (Json (..), parseJson, renderJson)
 import Zinc.Git (cloneAt, gitEnv, listTags, splitRepoSubdir)
 import Zinc.Hackage (hackageCabalUrl, sourceRepoOf)
@@ -257,6 +258,31 @@ main = hspec $ do
       parseJson "[1,2" `shouldSatisfy` isLeft
       parseJson "tru" `shouldSatisfy` isLeft
       parseJson "{\"k\" 1}" `shouldSatisfy` isLeft
+
+  describe "introspection (rdy.4)" $ do
+    it "parses status / graph / explain (+ --json)" $ do
+      parseArgs ["status"] `shouldBe` Right (Status False)
+      parseArgs ["graph", "--json"] `shouldBe` Right (Graph True)
+      parseArgs ["explain", "aeson"] `shouldBe` Right (Explain "aeson" False)
+      parseArgs ["explain", "aeson", "--json"] `shouldBe` Right (Explain "aeson" True)
+
+    it "renders status as JSON" $
+      renderJson (statusJson "9.6.5" ["packages/app"] [DepStatus "colour" "abc1234" True] ["aeson"])
+        `shouldBe` "{\"ghc\":\"9.6.5\",\"members\":[\"packages/app\"],\"dependencies\":[{\"name\":\"colour\",\"ref\":\"abc1234\",\"cached\":true}],\"drift\":[\"aeson\"]}"
+
+    it "renders the closure graph: nodes, edges, topo levels" $ do
+      let locks = [LockedPackage "a" "r/a" "ra" "sha256:x" ["b"], LockedPackage "b" "r/b" "rb" "sha256:y" []]
+      renderJson (graphJson locks)
+        `shouldBe` "{\"nodes\":[\"a\",\"b\"],\"edges\":[{\"from\":\"a\",\"to\":\"b\"}],\"levels\":[[\"b\"],[\"a\"]]}"
+
+    it "explains a package's provenance (who requires it, at which rev)" $ do
+      let locks = [LockedPackage "a" "r/a" "ra" "sha256:x" ["b"], LockedPackage "b" "r/b" "rb" "sha256:y" []]
+      renderJson (explainJson "b" locks)
+        `shouldBe` "{\"package\":\"b\",\"inClosure\":true,\"ref\":\"rb\",\"requiredBy\":[\"a\"]}"
+
+    it "explains a package outside the closure" $
+      renderJson (explainJson "ghost" [])
+        `shouldBe` "{\"package\":\"ghost\",\"inClosure\":false,\"ref\":null,\"requiredBy\":[]}"
 
   describe "doctor (rdy.6)" $ do
     it "parses the `doctor` subcommand (+ --json)" $ do

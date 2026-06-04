@@ -10,7 +10,8 @@ import Zinc.CLI (Command (..), parseArgs)
 import Zinc.Diagnostic (ZincError, envelope, exitCodeFor, renderError, toDiagnostic)
 import Zinc.Doctor (doctorJson, doctorOk, renderDoctor, runDoctor)
 import Zinc.GC (runGc)
-import Zinc.Json (renderJson)
+import Zinc.Introspect (explainJson, graphJson, renderExplain, renderGraph, renderStatus, runExplain, runGraph, runStatus, statusJson)
+import Zinc.Json (Json, renderJson)
 import Zinc.Metrics (recordBuild)
 import Zinc.Orchestrate (buildAndRun, checkLockDrift, runBuildReport, runClean, runRepl, runTests)
 import Zinc.Perf (perfSummaryJson, renderPerf, runPerf)
@@ -34,6 +35,17 @@ failCmd :: String -> ZincError -> IO ()
 failCmd cmd e = do
   hPutStrLn stderr (cmd ++ ": " ++ renderError e)
   exitWith (exitCodeFor e)
+
+-- | Emit a read-only command's result: the JSON envelope under --json (failures
+-- carry the diagnostic + category exit code), or human text otherwise.
+emitIntrospection :: String -> Bool -> (a -> Json) -> (a -> String) -> Either ZincError a -> IO ()
+emitIntrospection cmd json toJson toHuman r = case r of
+  Left e
+    | json      -> putStrLn (renderJson (envelope cmd False Nothing Nothing [toDiagnostic e])) >> exitWith (exitCodeFor e)
+    | otherwise -> failCmd ("zinc " ++ cmd) e
+  Right a
+    | json      -> putStrLn (renderJson (envelope cmd True (Just (toJson a)) Nothing []))
+    | otherwise -> putStr (toHuman a)
 
 dispatch :: Command -> IO ()
 dispatch (New name) = do
@@ -92,3 +104,9 @@ dispatch (Doctor json) = do
     else putStr (renderDoctor diags)
   -- Exit non-zero on an error-severity finding so agents/CI can gate on health.
   unless (doctorOk diags) (exitWith (ExitFailure 1))
+dispatch (Status json) =
+  runStatus "." >>= emitIntrospection "status" json (\(g, m, d, dr) -> statusJson g m d dr) (\(g, m, d, dr) -> renderStatus g m d dr)
+dispatch (Graph json) =
+  runGraph "." >>= emitIntrospection "graph" json graphJson renderGraph
+dispatch (Explain pkg json) =
+  runExplain "." >>= emitIntrospection "explain" json (explainJson pkg) (renderExplain pkg)
