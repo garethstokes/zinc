@@ -990,6 +990,9 @@ main = hspec $ do
     it "changes with the ghc version" $
       (buildCacheKey (BuildKey "abc" "9.8.2" ["base-4", "aeson-2"] ["-O2"]) == k1) `shouldBe` False
 
+    it "changes with the build options (per-dep overrides)" $
+      (key ["base-4", "aeson-2"] ["-XSafe"] == k1) `shouldBe` False
+
     it "lays out the package store path" $
       storePkgPath "/store" "deadbeef" `shouldBe` "/store/pkg/deadbeef"
 

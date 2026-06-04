@@ -194,8 +194,11 @@ buildClosure wsDir storeRoot wsDb ghcVersion buildOpts = runResult $ do
       mapM_ (orFail . registerPackage wsDb) (catMaybes confs)
 
     -- Content-addressed cache key from data available without the source, so a
-    -- cached build is reused without even fetching.
-    cacheKeyOf l = buildCacheKey (BuildKey (lockRev l) ghcVersion (lockDepends l) [])
+    -- cached build is reused without even fetching. Includes the dep's
+    -- [build-options] override so changing an override invalidates the cache.
+    cacheKeyOf l = buildCacheKey (BuildKey (lockRev l) ghcVersion (lockDepends l) (overrideFor l))
+
+    overrideFor l = fromMaybe [] (lookup (lockName l) buildOpts)
 
     -- Produce a closure node's library WITHOUT registering it: returns the conf
     -- text to register (@Just@), or @Nothing@ when the dep ships no library.
@@ -223,8 +226,7 @@ buildClosure wsDir storeRoot wsDb ghcVersion buildOpts = runResult $ do
             (lib : _) -> do
               -- Apply any per-dependency build overrides (extra ghc flags,
               -- e.g. -XSafe) from the workspace [build-options].
-              let extra = fromMaybe [] (lookup (lockName l) buildOpts)
-                  lib' = lib {compGhcOptions = compGhcOptions lib ++ extra}
+              let lib' = lib {compGhcOptions = compGhcOptions lib ++ overrideFor l}
               Just <$> orFail (buildLibArtifacts (LibBuild pkgDir (storePkgPath storeRoot key) wsDb (lockName l) version lib'))
 
     -- Tamper detection (spec §8): a fetched tree's content hash must match the
