@@ -11,12 +11,12 @@ import Zinc.Diagnostic (ZincError, envelope, exitCodeFor, renderError, toDiagnos
 import Zinc.Doctor (doctorJson, doctorOk, renderDoctor, runDoctor)
 import Zinc.GC (runGc)
 import Zinc.Introspect (explainJson, graphJson, renderExplain, renderGraph, renderStatus, runExplain, runGraph, runStatus, statusJson)
-import Zinc.Json (Json, renderJson)
+import Zinc.Json (Json (..), renderJson)
 import Zinc.Metrics (recordBuild)
-import Zinc.Orchestrate (buildAndRun, checkLockDrift, runBuildReport, runClean, runRepl, runTests)
+import Zinc.Orchestrate (buildAndRun, checkLockDrift, runBuildReport, runClean, runRepl, runTests, runWarm)
 import Zinc.Perf (perfSummaryJson, renderPerf, runPerf)
 import Zinc.Prime (runOnboard, runPrime)
-import Zinc.Report (boExes, buildDataJson, timingJson)
+import Zinc.Report (PackageReport, PackageStatus (Built, Cached), boExes, buildDataJson, packageReportJson, prStatus, timingJson)
 import Zinc.Scaffold (materialize, scaffoldNew)
 
 -- | Thin executable shim. Parsing/dispatch logic lives in (and is tested via)
@@ -47,6 +47,14 @@ emitIntrospection cmd json toJson toHuman r = case r of
   Right a
     | json      -> putStrLn (renderJson (envelope cmd True (Just (toJson a)) Nothing []))
     | otherwise -> putStr (toHuman a)
+
+-- | One-line summary of a closure-only (@warm@) build.
+warmSummary :: [PackageReport] -> String
+warmSummary pkgs =
+  "Warmed " ++ show (length pkgs) ++ " closure package(s): "
+    ++ show (count Built) ++ " built, " ++ show (count Cached) ++ " cached."
+  where
+    count s = length (filter ((== s) . prStatus) pkgs)
 
 dispatch :: Command -> IO ()
 dispatch (New name) = do
@@ -111,6 +119,14 @@ dispatch (Graph json) =
   runGraph "." >>= emitIntrospection "graph" json graphJson renderGraph
 dispatch (Explain pkg json) =
   runExplain "." >>= emitIntrospection "explain" json (explainJson pkg) (renderExplain pkg)
+dispatch (Warm json) =
+  runWarm "." >>= \r -> case r of
+    Left e
+      | json -> putStrLn (renderJson (envelope "warm" False Nothing Nothing [toDiagnostic e])) >> exitWith (exitCodeFor e)
+      | otherwise -> failCmd "zinc warm" e
+    Right pkgs
+      | json -> putStrLn (renderJson (envelope "warm" True (Just (JObject [("packages", JArray (map packageReportJson pkgs))])) Nothing []))
+      | otherwise -> putStrLn (warmSummary pkgs)
 dispatch Prime =
   runPrime "." >>= either (failCmd "zinc prime") putStr
 dispatch Onboard =

@@ -10,6 +10,7 @@ module Zinc.Orchestrate
   ( runBuild
   , runBuildMember
   , runBuildReport
+  , runWarm
   , buildAndRun
   , runTests
   , orderMembers
@@ -118,6 +119,23 @@ runBuild wsDir = buildWorkspace wsDir Nothing (== Executable)
 -- | @zinc build \<member\>@: build only the named member's executables.
 runBuildMember :: FilePath -> Maybe String -> IO (Either ZincError [FilePath])
 runBuildMember wsDir target = buildWorkspace wsDir target (== Executable)
+
+-- | @zinc build --deps-only@ / @zinc warm@: resolve + build the dependency
+-- closure into the store WITHOUT building workspace members, so the
+-- slow-stable closure can be its own Docker layer / CI cache entry, separate
+-- from fast-changing source (ephemeral-builds spec §3). Returns the per-package
+-- closure report.
+runWarm :: FilePath -> IO (Either ZincError [PackageReport])
+runWarm wsDir = runResult $ do
+  let wsFile = wsDir </> "zinc.toml"
+  present <- liftIO (doesFileExist wsFile)
+  when (not present) $ failWithError (NoZincToml wsDir)
+  wsSrc <- liftIO (readFile wsFile)
+  ws <- liftEither (parseWorkspace wsSrc)
+  let wsDb = wsDir </> ".zinc" </> "pkgdb"
+  orFail (initPackageDb wsDb)
+  storeRoot <- liftIO resolveStoreRoot
+  orFailE (buildClosure wsDir storeRoot wsDb (wsGhc ws) (parseBuildOptions wsSrc))
 
 -- | @zinc build [member] --json@: build, returning the structured outcome
 -- (executables + per-package closure report) and the 'Timing' block (total

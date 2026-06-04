@@ -54,7 +54,7 @@ import Zinc.Cabal (cabalBuildType, cabalVersion, parseCabalComponents, parseCaba
 import Zinc.Env (envCacheKey, nixPrintDevEnv, provisionEnv)
 import Zinc.Macros (emitCabalMacros)
 import Zinc.Nix (generateFlake)
-import Zinc.Orchestrate (buildAndRun, lockDrift, orderMembers, parMapBounded, runBuild, runBuildMember, runClean, runTests)
+import Zinc.Orchestrate (buildAndRun, lockDrift, orderMembers, parMapBounded, runBuild, runBuildMember, runClean, runTests, runWarm)
 import Zinc.Paths (pathsModuleName, synthesizePaths)
 import Zinc.Report (BuildOutcome (..), CacheStats (..), PackageReport (..), PackageStatus (..), Timing (..), buildDataJson, cacheStatsOf, packageReportJson, renderResolution, statusText, timingJson)
 import Zinc.SysLibs (toNixpkgs)
@@ -262,6 +262,26 @@ main = hspec $ do
       parseJson "[1,2" `shouldSatisfy` isLeft
       parseJson "tru" `shouldSatisfy` isLeft
       parseJson "{\"k\" 1}" `shouldSatisfy` isLeft
+
+  describe "warm / build --deps-only (vwn.1)" $ do
+    it "parses warm and build --deps-only to the same closure-only command" $ do
+      parseArgs ["warm"] `shouldBe` Right (Warm False)
+      parseArgs ["warm", "--json"] `shouldBe` Right (Warm True)
+      parseArgs ["build", "--deps-only"] `shouldBe` Right (Warm False)
+      parseArgs ["build", "--deps-only", "--json"] `shouldBe` Right (Warm True)
+
+    it "builds the closure only (empty for a depless workspace)" $ do
+      let d = "/tmp/zinc-warm-test"
+      createDirectoryIfMissing True d
+      writeFileIn (d </> "zinc.toml") (renderWorkspace (WorkspaceManifest [] "9.6.5" [] []))
+      r <- runWarm d
+      r `shouldBe` Right []
+
+    it "fails with NoZincToml outside a workspace" $ do
+      let d = "/tmp/zinc-warm-nows"
+      createDirectoryIfMissing True d
+      r <- runWarm d
+      either errorCode (const "ok") r `shouldBe` "ZINC_NO_ZINC_TOML"
 
   describe "writeFileIfChanged (zinc-k2i regression)" $ do
     it "overwrites changed content without locking the file" $ do

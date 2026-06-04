@@ -24,6 +24,7 @@ data Command
   | Explain String Bool   -- ^ why a package is in the build; Bool = --json
   | Prime                 -- ^ AI-optimized orientation for this workspace
   | Onboard               -- ^ minimal AGENTS.md/CLAUDE.md snippet
+  | Warm Bool             -- ^ build only the dependency closure; Bool = --json
   deriving (Eq, Show)
 
 -- | Pure, testable entry point: parse argv into a 'Command'.
@@ -47,7 +48,8 @@ commandParser =
     mconcat
       [ sub "new"    "Scaffold a new workspace"       (New <$> strArgument (metavar "NAME"))
       , sub "add"    "Add a dependency"               (Add <$> (yesFlag *> strArgument (metavar "PKG")))
-      , sub "build"  "Build the workspace or a member" (Build <$> optional (strArgument (metavar "MEMBER")) <*> jsonFlag)
+      , sub "build"  "Build the workspace or a member" buildCmd
+      , sub "warm"   "Build only the dependency closure (CI/Docker cache)" (Warm <$> jsonFlag)
       , sub "run"    "Build then run an executable"   (Run <$> many (strArgument (metavar "ARGS")))
       , sub "repl"   "Open ghci for a target"         (Repl <$> optional (strArgument (metavar "TARGET")))
       , sub "test"   "Build and run tests"            (Test <$> optional (strArgument (metavar "TARGET")))
@@ -64,6 +66,12 @@ commandParser =
       ]
   where
     sub name desc p = command name (info (p <**> helper) (progDesc desc))
+    -- `build --deps-only` is a synonym for `warm` (build just the closure).
+    buildCmd =
+      (\target json depsOnly -> if depsOnly then Warm json else Build target json)
+        <$> optional (strArgument (metavar "MEMBER"))
+        <*> jsonFlag
+        <*> switch (long "deps-only" <> help "Build only the dependency closure (alias: zinc warm)")
     -- zinc never prompts (the confirm flow is a human nicety layered elsewhere),
     -- so --yes is accepted for forward-compatible non-interactive scripting and
     -- otherwise ignored. Documents the never-prompt contract (spec §3.4).
