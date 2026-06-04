@@ -14,7 +14,7 @@ import System.Directory
   , getHomeDirectory
   , removeDirectoryRecursive
   )
-import System.Environment (setEnv, unsetEnv)
+import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.FilePath (takeDirectory, (</>))
 import System.Process (readProcess)
 import Test.Hspec
@@ -1230,6 +1230,56 @@ main = hspec $ do
       writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Greet (hello)\nmain :: IO ()\nmain = putStrLn hello\n"
       r <- buildAndRun ws []
       r `shouldBe` Right "hi from cabal dep\n"
+
+  describe "non-base boot-lib linking (end-to-end)" $
+    it "links a dep that uses a boot lib base does not pull (array)" $ do
+      let base = "/tmp/zinc-bootlink-ws"
+          dep = base ++ "/boxed-repo"
+          ws = base ++ "/ws"
+      stale <- doesDirectoryExist base
+      when stale $ removeDirectoryRecursive base
+      -- a zinc-native dep whose library uses Data.Array (boot lib 'array',
+      -- which 'base' does not transitively provide at link time)
+      writeFileIn (dep ++ "/zinc.toml") (unlines ["[package]", "name = \"boxed\"", "version = \"1.0\"", "[build.lib]", "source-dirs = [\"src\"]", "exposed-modules = [\"Boxed\"]", "depends = [\"array\"]"])
+      writeFileIn (dep ++ "/src/Boxed.hs") "module Boxed (firstElem) where\nimport Data.Array (listArray, (!))\nfirstElem :: Int\nfirstElem = listArray (0, 2 :: Int) [10, 20, 30] ! (0 :: Int)\n"
+      let git args = readProcess "git" ("-C" : dep : args) ""
+      _ <- git ["init", "--quiet"]
+      _ <- git ["config", "user.email", "t@example.com"]
+      _ <- git ["config", "user.name", "Test"]
+      _ <- git ["add", "."]
+      _ <- git ["commit", "--quiet", "-m", "boxed"]
+      rev <- trimStr <$> git ["rev-parse", "HEAD"]
+      writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "boxed" (Rev rev)] [("boxed", dep)]))
+      writeFileIn (ws ++ "/zinc.lock") (renderLock [LockedPackage "boxed" dep rev "sha256:x" []])
+      writeFileIn (ws ++ "/packages/app/zinc.toml") (unlines ["[package]", "name = \"app\"", "version = \"1.0\"", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "depends = [\"boxed\"]"])
+      writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Boxed (firstElem)\nmain :: IO ()\nmain = print firstElem\n"
+      r <- buildAndRun ws []
+      r `shouldBe` Right "10\n"
+
+  -- Test ladder rung 2 (spec §12): a REAL Hackage leaf pulled from git and
+  -- built via the Opt-2 .cabal reader. Network-gated so the default suite
+  -- stays hermetic; run with ZINC_NET_TESTS=1 (the capability is also covered
+  -- hermetically by the boot-lib and .cabal-dep e2e tests above).
+  describe "real Hackage leaf via Opt-2 reader (rung 2, network)" $
+    it "builds integer-logarithms from git and links a member" $ do
+      net <- lookupEnv "ZINC_NET_TESTS"
+      case net of
+        Nothing -> pendingWith "network test; set ZINC_NET_TESTS=1 to run"
+        Just _ -> do
+          let base = "/tmp/zinc-rung2-ws"
+              dep = base ++ "/integer-logarithms"
+              ws = base ++ "/ws"
+          stale <- doesDirectoryExist base
+          when stale $ removeDirectoryRecursive base
+          createDirectoryIfMissing True base
+          _ <- readProcess "git" ["clone", "--depth", "1", "https://github.com/Bodigrim/integer-logarithms.git", dep] ""
+          rev <- trimStr <$> readProcess "git" ["-C", dep, "rev-parse", "HEAD"] ""
+          writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "integer-logarithms" (Rev rev)] [("integer-logarithms", dep)]))
+          writeFileIn (ws ++ "/zinc.lock") (renderLock [LockedPackage "integer-logarithms" dep rev "sha256:x" []])
+          writeFileIn (ws ++ "/packages/app/zinc.toml") (unlines ["[package]", "name = \"app\"", "version = \"1.0\"", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "depends = [\"integer-logarithms\"]"])
+          writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Math.NumberTheory.Logarithms (integerLog2)\nmain :: IO ()\nmain = putStrLn (\"log2(1000)=\" ++ show (integerLog2 1000))\n"
+          r <- buildAndRun ws []
+          r `shouldBe` Right "log2(1000)=9\n"
 
   describe "content-hash verification on build (spec §8)" $
     it "rejects a fetched dep whose content hash does not match the lock" $ do

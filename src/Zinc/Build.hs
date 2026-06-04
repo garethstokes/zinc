@@ -204,6 +204,13 @@ buildLibArtifacts lb = do
   writeFile (gen </> pathsMod <.> "hs") (synthesizePaths (lbName lb) (versionInts (lbVersion lb)))
   installed <- installedVersions
   let depVersion d = fromMaybe [0] (lookup d installed)
+      -- A direct dep's id for the conf's @depends@ (drives a dependent's
+      -- linking): zinc-built deps by bare name (their unit-id); non-base boot
+      -- libs by their real installed id (e.g. @array-0.5.6.0@) so the linker
+      -- pulls them in. base is omitted — it is always linked via -package base.
+      depConfId d
+        | isBootLib d = d ++ "-" ++ intercalate "." (map show (depVersion d))
+        | otherwise = d
   writeFile macrosHeader $
     emitCabalMacros ((lbName lb, versionInts (lbVersion lb)) : [(d, depVersion d) | d <- compDepends comp])
   let srcDirs = if null (compSourceDirs comp) then ["."] else compSourceDirs comp
@@ -230,9 +237,9 @@ buildLibArtifacts lb = do
                 , confImportDirs = [lbDistDir lb]
                 , confLibraryDirs = [lbDistDir lb]
                 , confHsLibraries = ["HS" ++ unitId]
-                , -- non-boot deps only (boot libs link via the always-present -package base;
-                  -- their registered ids carry versions we don't track here)
-                  confDepends = filter (not . isBootLib) (compDepends comp)
+                , -- Direct deps as installed unit-ids so dependents link them:
+                  -- zinc deps by bare name, non-base boot libs by real id.
+                  confDepends = [depConfId d | d <- nub (compDepends comp), d /= "base"]
                 }
       -- Persist the conf alongside the build so the artifact cache can
       -- re-register it without recompiling.
