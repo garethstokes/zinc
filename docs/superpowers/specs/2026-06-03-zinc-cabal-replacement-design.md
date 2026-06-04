@@ -149,9 +149,7 @@ name = "myapp"
 version = "0.1.0"
 
 [build.lib]                        # optional library component
-source-dirs     = ["src"]
-exposed-modules = ["Myapp", "Myapp.Core"]
-other-modules   = ["Myapp.Internal"]
+source-dirs     = ["src"]          # every module under here is discovered + exposed
 extensions      = ["OverloadedStrings", "LambdaCase"]
 ghc-options     = ["-Wall"]
 depends         = ["aeson", "mylib"]   # workspace siblings allowed
@@ -170,6 +168,19 @@ depends = ["myapp", "hspec"]
 
 `system-libs` naming nixpkgs attrs directly sidesteps the
 `.cabal extra-libraries → nixpkgs` mapping problem in Opt 1.
+
+**Modules: discovered, all exposed (decided 2026-06-04).** zinc has no
+`exposed-modules`/`other-modules` distinction — there is no module hiding. A
+library's modules are **auto-discovered** by walking its `source-dirs`
+(`.hs`/`.hsc`/`.x`/`.y`), and **every** discovered module is exposed and
+importable by dependents (the user enumerates nothing — §1.1: the user is
+concise, the system is explicit). GHC's `.conf` still carries an
+`exposed-modules:` field; zinc simply populates it with all compiled modules.
+For Opt-2 upstreams, the module *set* is taken from the `.cabal` (precise for
+conditional/component-specific modules), but its exposed/other split is collapsed
+— all are exposed. Trade-off accepted: no encapsulation of internal modules,
+which suits zinc's model (pinned commits, you control your deps, no stable
+published API).
 
 **External deps live at the workspace root (decided 2026-06-03).** All external
 dependencies are declared once in the root `[dependencies]` + `[registry]`
