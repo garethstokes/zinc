@@ -29,6 +29,11 @@ main = "Main.hs"
 ghc-options = ["-threaded", "-rtsopts", "-with-rtsopts=-N"]
 depends = ["base", "zinc"]
 
+[build.test.spec]
+source-dirs = ["test"]
+main = "Spec.hs"
+depends = ["base", "directory", "filepath", "process", "zinc", "hspec"]
+
 # Whole non-boot closure pinned by rev to the versions GHC/Nix ships zinc
 # against (so zinc's own source compiles). Boot libs incl. Cabal come from GHC.
 [dependencies]
@@ -41,6 +46,20 @@ ansi-terminal = { rev = "0f22df579e543f0b05da15ffbb913edeb646a954" }          # 
 ansi-terminal-types = { rev = "2a4a6d89980801ae353fb573753d6205f90115e7" }    # 0.11.5
 colour = { rev = "a291db24d299b90f6eda344fe40cbc1453507f95" }                 # 2.3.6 (vendored)
 transformers-compat = { rev = "879dc486166d3a9e653695572f9c28d88af7e2d7" }    # 0.7.2
+# hspec closure (test-suite). hspec/hspec-core/hspec-discover share one monorepo rev.
+hspec = { rev = "770a64366a3059cc7a91012a3ffb43ab8d0b29f4" }                  # 2.11.8
+hspec-core = { rev = "770a64366a3059cc7a91012a3ffb43ab8d0b29f4" }             # 2.11.8
+hspec-discover = { rev = "770a64366a3059cc7a91012a3ffb43ab8d0b29f4" }         # 2.11.8
+hspec-expectations = { rev = "0c2f8822744c3fbf09356919a337361b80ad33c9" }     # 0.8.4
+HUnit = { rev = "f28ba094f18504579fa29efe247af3a31108cd3c" }                  # 1.6.2.0
+QuickCheck = { rev = "2d73ed7c8a5b272df108307bd4d25f898e94034e" }             # 2.14.3
+call-stack = { rev = "1d78c6320f986a2948b2076736b1678e53f862cf" }            # 0.4.0
+quickcheck-io = { rev = "7b8fb741efa277cfb772f72611e39b68b61aca15" }          # 0.2.0
+random = { rev = "ba5587fcda28f376d087f812614b50fc10249d74" }                # 1.2.1.2
+splitmix = { rev = "a52b12732c729c87fdb4937adc689afb8cbe408b" }              # 0.1.0.5
+haskell-lexer = { rev = "3fa63b7e9f90a396ddb9c9e4818c748546b6b692" }          # 1.2.1
+tf-random = { rev = "7a9026a1b3bef79ca7d78c925ca7194805719bed" }              # 0.5 (vendored)
+primitive = { rev = "518fe62e2f4b23dda89cb8acd64fa2945e1e6ffd" }              # 0.8.0.0
 
 # Per-project decentralized registry: a git repo (optionally #subdir) for every
 # non-boot transitive dep, since real upstreams carry no zinc registry.
@@ -56,6 +75,26 @@ transformers-compat = "https://github.com/ekmett/transformers-compat.git"
 # colour has no upstream git repo (darcs-era); vendored into a git mirror
 # (Hackage colour-2.3.6 tarball) per the project decision.
 colour = "https://github.com/garethstokes/color.git"
+# hspec closure (test-suite). hspec/hspec-core/hspec-discover share one monorepo.
+hspec = "https://github.com/hspec/hspec.git"
+hspec-core = "https://github.com/hspec/hspec.git#hspec-core"
+hspec-discover = "https://github.com/hspec/hspec.git#hspec-discover"
+hspec-expectations = "https://github.com/hspec/hspec-expectations.git"
+HUnit = "https://github.com/hspec/HUnit.git"
+QuickCheck = "https://github.com/nick8325/quickcheck.git"
+call-stack = "https://github.com/sol/call-stack.git"
+quickcheck-io = "https://github.com/hspec/quickcheck-io.git"
+random = "https://github.com/haskell/random.git"
+splitmix = "https://github.com/haskellari/splitmix.git"
+haskell-lexer = "https://github.com/yav/haskell-lexer.git"
+primitive = "https://github.com/haskell/primitive.git"
+# tf-random has no upstream git repo (darcs-era); vendored mirror, like colour.
+tf-random = "https://github.com/garethstokes/tf-random.git"
 
 [build-options]
 colour = ["-XSafe"]
+# splitmix's Init.hs uses Data.Time.Clock.POSIX unless its Linux cabal branch's
+# cpp-options (-DSPLITMIX_INIT_C) + c-sources are applied; zinc's reader doesn't
+# yet handle cpp-options/c-sources, so expose the boot `time` package and take
+# the time-based seeding path instead. (Tracked: zinc cpp-options/c-sources gap.)
+splitmix = ["-package", "time"]

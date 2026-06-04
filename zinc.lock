@@ -1,4 +1,18 @@
 [[locked]]
+name = "HUnit"
+repo = "https://github.com/hspec/HUnit.git"
+rev = "f28ba094f18504579fa29efe247af3a31108cd3c"
+sha256 = "sha256:1e1d09d5d9773f49b811d90e4534f2ce213eab6d04856acc70d56e8c386c56f8"
+depends = ["call-stack"]
+
+[[locked]]
+name = "QuickCheck"
+repo = "https://github.com/nick8325/quickcheck.git"
+rev = "2d73ed7c8a5b272df108307bd4d25f898e94034e"
+sha256 = "sha256:d632b4f74f46bfb69cd6205e2939fe95afdab3731be8663a85e0a4eac9591b34"
+depends = ["random", "splitmix"]
+
+[[locked]]
 name = "SHA"
 repo = "https://github.com/GaloisInc/SHA.git"
 rev = "9653669162f411b0250e83ddbdb375ff0a63e6eb"
@@ -20,11 +34,53 @@ sha256 = "sha256:d382318642831365d9e431d4a2c1c3805bd95e1472077843394640e3d21d52b
 depends = ["colour"]
 
 [[locked]]
+name = "call-stack"
+repo = "https://github.com/sol/call-stack.git"
+rev = "1d78c6320f986a2948b2076736b1678e53f862cf"
+sha256 = "sha256:d15e84f7c78c6cb1ab323fcbee1f2e3fa011aaebb8b712bfcf186a8a4d469592"
+depends = []
+
+[[locked]]
 name = "colour"
 repo = "https://github.com/garethstokes/color.git"
 rev = "a291db24d299b90f6eda344fe40cbc1453507f95"
 sha256 = "sha256:0593b267dda0b49a14282788f3d7876f45639f8bd6265e2ed9292dc2bbd58231"
 depends = []
+
+[[locked]]
+name = "haskell-lexer"
+repo = "https://github.com/yav/haskell-lexer.git"
+rev = "3fa63b7e9f90a396ddb9c9e4818c748546b6b692"
+sha256 = "sha256:bac60245b0a061be04f030aced459d53835b93e2bad6d029faf313f4ee028a49"
+depends = []
+
+[[locked]]
+name = "hspec"
+repo = "https://github.com/hspec/hspec.git"
+rev = "770a64366a3059cc7a91012a3ffb43ab8d0b29f4"
+sha256 = "sha256:e634f76803a45af599ca335a8c47c63db3e471b015bcbcea9e4ecbeba2c18af2"
+depends = ["QuickCheck", "hspec-core", "hspec-discover", "hspec-expectations"]
+
+[[locked]]
+name = "hspec-core"
+repo = "https://github.com/hspec/hspec.git#hspec-core"
+rev = "770a64366a3059cc7a91012a3ffb43ab8d0b29f4"
+sha256 = "sha256:e634f76803a45af599ca335a8c47c63db3e471b015bcbcea9e4ecbeba2c18af2"
+depends = ["HUnit", "QuickCheck", "ansi-terminal", "call-stack", "haskell-lexer", "hspec-expectations", "quickcheck-io", "random", "tf-random"]
+
+[[locked]]
+name = "hspec-discover"
+repo = "https://github.com/hspec/hspec.git#hspec-discover"
+rev = "770a64366a3059cc7a91012a3ffb43ab8d0b29f4"
+sha256 = "sha256:e634f76803a45af599ca335a8c47c63db3e471b015bcbcea9e4ecbeba2c18af2"
+depends = []
+
+[[locked]]
+name = "hspec-expectations"
+repo = "https://github.com/hspec/hspec-expectations.git"
+rev = "0c2f8822744c3fbf09356919a337361b80ad33c9"
+sha256 = "sha256:d6f75d30f9f7e6cf67aabd077aeb8d793be71a9bf26db4fdac9de85644d07c1a"
+depends = ["HUnit", "call-stack"]
 
 [[locked]]
 name = "optparse-applicative"
@@ -46,6 +102,41 @@ repo = "https://github.com/quchen/prettyprinter.git#prettyprinter-ansi-terminal"
 rev = "7f9af88c37a511c1bca1af6836bf250319817926"
 sha256 = "sha256:ad4eb12a5799011abc244bd7284d1bc415c991dfa1b3d175056d8685a8c3acf3"
 depends = ["ansi-terminal", "prettyprinter"]
+
+[[locked]]
+name = "primitive"
+repo = "https://github.com/haskell/primitive.git"
+rev = "518fe62e2f4b23dda89cb8acd64fa2945e1e6ffd"
+sha256 = "sha256:45fd90828368fdc4a0988b65ad461001f3ca5cb2e0e9edfa23b23f7499f31a08"
+depends = []
+
+[[locked]]
+name = "quickcheck-io"
+repo = "https://github.com/hspec/quickcheck-io.git"
+rev = "7b8fb741efa277cfb772f72611e39b68b61aca15"
+sha256 = "sha256:9e75c0c6b38523b52e82d1ce6a84d07c324dbadc9e2f3d428d402e63ca981363"
+depends = ["HUnit", "QuickCheck"]
+
+[[locked]]
+name = "random"
+repo = "https://github.com/haskell/random.git"
+rev = "ba5587fcda28f376d087f812614b50fc10249d74"
+sha256 = "sha256:702ffcb544c145d8fe9ab0a2634b9da9bc07ed70303fa3280ed12e03d1d07c3e"
+depends = ["splitmix"]
+
+[[locked]]
+name = "splitmix"
+repo = "https://github.com/haskellari/splitmix.git"
+rev = "a52b12732c729c87fdb4937adc689afb8cbe408b"
+sha256 = "sha256:f5df3ca257a1b3922f2abeb8a1ffaaf58659f881f4ace1c496f9830c9f93d106"
+depends = []
+
+[[locked]]
+name = "tf-random"
+repo = "https://github.com/garethstokes/tf-random.git"
+rev = "7a9026a1b3bef79ca7d78c925ca7194805719bed"
+sha256 = "sha256:39575400d744f41d6c1d984f59a5246f45453ee3bddd97de9a9fdab4674611a0"
+depends = ["primitive", "random"]
 
 [[locked]]
 name = "toml-parser"
