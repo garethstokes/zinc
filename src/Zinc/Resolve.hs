@@ -57,7 +57,11 @@ resolve isBoot fetch rootDeps rootReg =
     Left err   -> pure (Left err)
     Right reqs -> go Map.empty reqs
   where
-    toReq reg parent d = case lookup (depName d) reg of
+    -- A dep's repo comes from the declaring package's own @[registry]@ first,
+    -- then falls back to the root workspace registry. Real upstreams (only a
+    -- .cabal, no zinc.toml) carry no registry, so the root workspace must list
+    -- the repos for the whole non-boot closure.
+    toReq reg parent d = case lookup (depName d) (reg ++ rootReg) of
       Just repo -> Right (Req (depName d) (depRef d) repo)
       Nothing ->
         Left ("no repo in [registry] for '" ++ depName d ++ "' (required by " ++ parent ++ ")")

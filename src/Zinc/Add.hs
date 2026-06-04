@@ -20,7 +20,7 @@ import Zinc.Lock (LockedPackage (..), renderLock)
 import Zinc.Manifest
   ( Dependency (depName, depRef)
   , Ref (Latest)
-  , WorkspaceManifest (wsDependencies, wsRegistry)
+  , WorkspaceManifest (wsDependencies, wsGhc, wsRegistry)
   , addDep
   , parseWorkspace
   , renderWorkspace
@@ -73,7 +73,7 @@ runAdd wsFile storeRoot name ref repo = do
     Left err -> pure (Left err)
     Right ws -> do
       let ws' = addDep ws name ref repo
-      resolved <- resolve isBootLib (gitFetchManifest storeRoot) (wsDependencies ws') (wsRegistry ws')
+      resolved <- resolve isBootLib (gitFetchManifest storeRoot (wsGhc ws')) (wsDependencies ws') (wsRegistry ws')
       case resolved of
         Left err -> pure (Left err)
         Right closure -> do
@@ -114,7 +114,7 @@ runUpdate wsFile storeRoot = do
   case parseWorkspace src of
     Left err -> pure (Left err)
     Right ws -> do
-      resolved <- resolve isBootLib (gitFetchManifest storeRoot) (wsDependencies ws) (wsRegistry ws)
+      resolved <- resolve isBootLib (gitFetchManifest storeRoot (wsGhc ws)) (wsDependencies ws) (wsRegistry ws)
       case resolved of
         Left err -> pure (Left err)
         Right closure -> do

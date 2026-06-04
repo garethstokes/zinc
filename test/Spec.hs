@@ -490,6 +490,16 @@ main = hspec $ do
           r = run fix [dep "aeson" (Tag "v2")] [("aeson", "r/aeson")]
       r `shouldSatisfy` isLeft
 
+    it "falls back to the root registry for a transitive dep's repo" $ do
+      -- a real upstream 'a' declares dep 'b' but carries no registry of its own;
+      -- b's repo is supplied by the root workspace registry.
+      let fix =
+            [ ("a", DepManifest [dep "b" Latest] [])
+            , ("b", DepManifest [] [])
+            ]
+          r = run fix [dep "a" Latest] [("a", "r/a"), ("b", "r/b")]
+      (sort . map rdName <$> r) `shouldBe` Right ["a", "b"]
+
     it "terminates on dependency cycles" $ do
       let fix =
             [ ("a", DepManifest [dep "b" Latest] [("b", "r/b")])
@@ -580,12 +590,28 @@ main = hspec $ do
     repo <- runIO setupDepRepo
 
     it "clones a dep at a ref and parses its manifest" $ do
-      r <- gitFetchManifest "/tmp/zinc-fetch-store" "dep" repo (Tag "v1")
+      r <- gitFetchManifest "/tmp/zinc-fetch-store" "9.6.5" "dep" repo (Tag "v1")
       r `shouldBe` Right (DepManifest [Dependency "aeson" (Tag "v2")] [("aeson", "r/aeson")])
 
     it "resolves a Latest ref to the newest tag and parses its manifest" $ do
-      r <- gitFetchManifest "/tmp/zinc-fetch-store" "dep" repo Latest
+      r <- gitFetchManifest "/tmp/zinc-fetch-store" "9.6.5" "dep" repo Latest
       r `shouldBe` Right (DepManifest [Dependency "aeson" (Tag "v2")] [("aeson", "r/aeson")])
+
+    it "derives deps from a .cabal when a real upstream has no zinc.toml" $ do
+      let cabalRepo = "/tmp/zinc-fetch-cabal-dep"
+      stale <- doesDirectoryExist cabalRepo
+      when stale $ removeDirectoryRecursive cabalRepo
+      writeFileIn (cabalRepo ++ "/up.cabal") (unlines ["cabal-version: 2.4", "name: up", "version: 1.0", "library", "  build-depends: base, containers, prettyprinter", "  exposed-modules: Up"])
+      let git args = readProcess "git" ("-C" : cabalRepo : args) ""
+      _ <- git ["init", "--quiet"]
+      _ <- git ["config", "user.email", "t@e"]
+      _ <- git ["config", "user.name", "T"]
+      _ <- git ["add", "."]
+      _ <- git ["commit", "--quiet", "-m", "up"]
+      rev <- trimStr <$> git ["rev-parse", "HEAD"]
+      r <- gitFetchManifest "/tmp/zinc-fetch-store" "9.6.5" "up" cabalRepo (Rev rev)
+      -- repos come from the root registry, so the derived manifest carries none
+      r `shouldBe` Right (DepManifest [Dependency "base" Latest, Dependency "containers" Latest, Dependency "prettyprinter" Latest] [])
 
   describe "newestTag" $ do
     it "picks the highest semver tag (numeric, not lexical)" $
