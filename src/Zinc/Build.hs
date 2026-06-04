@@ -21,7 +21,8 @@ module Zinc.Build
 
 import Data.List (find, intercalate, isPrefixOf, nub)
 import Data.Maybe (fromMaybe, isJust)
-import System.Directory (createDirectoryIfMissing, doesDirectoryExist, listDirectory)
+import Control.Monad (unless)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, takeExtension, (-<.>), (<.>), (</>))
 import System.Process (readProcessWithExitCode)
@@ -222,7 +223,7 @@ buildLibArtifacts lb = runResult $ do
       unitId = lbName lb
       pathsMod = pathsModuleName (lbName lb)
       macrosHeader = gen </> "cabal_macros.h"
-  liftIO $ writeFile (gen </> pathsMod <.> "hs") (synthesizePaths (lbName lb) (versionInts (lbVersion lb)))
+  liftIO $ writeFileIfChanged (gen </> pathsMod <.> "hs") (synthesizePaths (lbName lb) (versionInts (lbVersion lb)))
   installed <- liftIO installedVersions
   let depVersion d = fromMaybe [0] (lookup d installed)
       -- A direct dep's id for the conf's @depends@ (drives a dependent's
@@ -232,7 +233,7 @@ buildLibArtifacts lb = runResult $ do
       depConfId d
         | isBootLib d = d ++ "-" ++ intercalate "." (map show (depVersion d))
         | otherwise = d
-  liftIO $ writeFile macrosHeader $
+  liftIO $ writeFileIfChanged macrosHeader $
     emitCabalMacros ((lbName lb, versionInts (lbVersion lb)) : [(d, depVersion d) | d <- compDepends comp])
   let srcDirs = if null (compSourceDirs comp) then ["."] else compSourceDirs comp
       -- nub so a package that already lists Paths_<pkg> in its (other-)modules
@@ -275,6 +276,15 @@ buildLibArtifacts lb = runResult $ do
   -- re-register it without recompiling.
   liftIO $ writeFile (lbDistDir lb </> "package.conf") confText
   pure confText
+
+-- | Write @content@ to @path@ only if it differs from the current contents,
+-- preserving the mtime when unchanged so ghc --make does not needlessly
+-- recompile modules that depend on a regenerated autogen file (Paths_/macros).
+writeFileIfChanged :: FilePath -> String -> IO ()
+writeFileIfChanged path content = do
+  exists <- doesFileExist path
+  same <- if exists then (== content) <$> readFile path else pure False
+  unless same (writeFile path content)
 
 -- | Recursively list object files under a directory.
 findObjs :: FilePath -> IO [FilePath]
