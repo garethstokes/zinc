@@ -108,8 +108,8 @@ testMain ts = case testInterface ts of
 
 fromLibrary :: Library -> Component
 fromLibrary lib =
-  (fromBuildInfo Library "lib" (libBuildInfo lib))
-    { compExposedModules = map prettyShow (exposedModules lib) }
+  let c = fromBuildInfo Library "lib" (libBuildInfo lib)
+   in c {compModules = map prettyShow (exposedModules lib) ++ compModules c}
 
 -- | The fields common to every component, pulled from a 'BuildInfo'.
 fromBuildInfo :: ComponentKind -> String -> BuildInfo -> Component
@@ -118,8 +118,7 @@ fromBuildInfo kind name bi =
     { compKind = kind
     , compName = name
     , compSourceDirs = map getSymbolicPath (hsSourceDirs bi)
-    , compExposedModules = []
-    , compOtherModules = map prettyShow (otherModules bi)
+    , compModules = map prettyShow (otherModules bi)
     , compMain = Nothing
     , compExtensions = map prettyShow (defaultExtensions bi)
     , compGhcOptions = hcOptions GHC bi

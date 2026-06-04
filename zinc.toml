@@ -11,14 +11,7 @@ version = "0.1.0.0"
 
 [build.lib]
 source-dirs = ["src"]
-exposed-modules = [
-  "Zinc.Add", "Zinc.Build", "Zinc.CLI", "Zinc.Cabal", "Zinc.Cache",
-  "Zinc.Diagnostic", "Zinc.Docker", "Zinc.Doctor", "Zinc.Env", "Zinc.Except", "Zinc.Fetch", "Zinc.GC", "Zinc.Git", "Zinc.Hackage",
-  "Zinc.Introspect", "Zinc.Json", "Zinc.Metrics",
-  "Zinc.Lock", "Zinc.Macros", "Zinc.Manifest", "Zinc.Nix", "Zinc.Orchestrate", "Zinc.Perf", "Zinc.Prime",
-  "Zinc.Paths", "Zinc.Report", "Zinc.Resolve", "Zinc.Scaffold", "Zinc.Store",
-  "Zinc.SysLibs", "Zinc.TOML", "Zinc.Version"
-]
+# Modules are auto-discovered from source-dirs (spec §4, no module hiding).
 depends = [
   "base", "Cabal", "SHA", "bytestring", "containers", "directory",
   "filepath", "optparse-applicative", "process", "time", "toml-parser", "transformers"
@@ -28,7 +21,8 @@ depends = [
 source-dirs = ["app"]
 main = "Main.hs"
 ghc-options = ["-threaded", "-rtsopts", "-with-rtsopts=-N"]
-depends = ["base", "zinc"]
+# process: Main execs `zinc run` via System.Process (inherited stdio).
+depends = ["base", "process", "zinc"]
 
 [build.test.spec]
 source-dirs = ["test"]

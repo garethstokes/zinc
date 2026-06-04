@@ -17,6 +17,7 @@ module Zinc.Build
   , buildLib
   , buildLibArtifacts
   , writeFileIfChanged
+  , discoverModules
   , initPackageDb
   , installedVersions
   ) where
@@ -26,7 +27,7 @@ import Control.Monad (unless, when)
 import Data.List (find, intercalate, isInfixOf, isPrefixOf, nub)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getModificationTime, listDirectory)
 import System.Exit (ExitCode (..))
-import System.FilePath (takeDirectory, takeExtension, (-<.>), (<.>), (</>))
+import System.FilePath (dropExtension, makeRelative, takeDirectory, takeExtension, (-<.>), (<.>), (</>))
 import System.IO (readFile')
 import System.Process (readProcessWithExitCode)
 import Zinc.Diagnostic (ZincError)
@@ -243,9 +244,17 @@ buildLibArtifacts lb = runResult $ do
   _ <- liftIO $ writeFileIfChanged macrosHeader $
     emitCabalMacros ((lbName lb, versionInts (lbVersion lb)) : [(d, depVersion d) | d <- compDepends comp])
   let srcDirs = if null (compSourceDirs comp) then ["."] else compSourceDirs comp
-      -- nub so a package that already lists Paths_<pkg> in its (other-)modules
-      -- doesn't collide with the Paths_ module zinc synthesizes.
-      modules = nub (compExposedModules comp ++ compOtherModules comp ++ [pathsMod])
+  -- A library's modules: the explicit list, or auto-discovered by walking its
+  -- source dirs (spec §4 "no module hiding" — zinc-native packages list none;
+  -- cabal deps carry their .cabal module list). Every discovered module is
+  -- exposed.
+  discovered <-
+    if null (compModules comp)
+      then liftIO (discoverModules [lbMemberDir lb </> d | d <- srcDirs])
+      else pure (compModules comp)
+  -- nub so a package that already lists Paths_<pkg> doesn't collide with the
+  -- Paths_ module zinc synthesizes.
+  let modules = nub (discovered ++ [pathsMod])
       compileArgs =
         ["--make", "-j", "-hide-all-packages", "-package-db", lbPackageDb lb]
           ++ packageFlags (compDepends comp)
@@ -276,7 +285,7 @@ buildLibArtifacts lb = runResult $ do
             { confName = lbName lb
             , confVersion = lbVersion lb
             , confId = unitId
-            , confExposedModules = compExposedModules comp
+            , confExposedModules = discovered
             , confImportDirs = [lbDistDir lb]
             , confLibraryDirs = [lbDistDir lb]
             , confHsLibraries = ["HS" ++ unitId]
@@ -289,6 +298,35 @@ buildLibArtifacts lb = runResult $ do
   -- re-registration on the persisted db.
   confChanged <- liftIO (writeFileIfChanged (lbDistDir lb </> "package.conf") confText)
   pure (confText, confChanged)
+
+-- | Discover a library's modules by walking its source dirs: every
+-- @.hs\/.lhs\/.hsc\/.x\/.y@ file becomes a dotted module name (its path under the
+-- source dir, @\/@ -> @.@, extension dropped), excluding @Main@. This backs the
+-- "no module hiding" model (spec §4): a zinc-native package lists no modules and
+-- every one it ships is compiled and exposed.
+discoverModules :: [FilePath] -> IO [String]
+discoverModules dirs = nub . concat <$> mapM fromDir dirs
+  where
+    fromDir dir = do
+      exists <- doesDirectoryExist dir
+      if not exists
+        then pure []
+        else do
+          files <- listFilesRec dir
+          pure
+            [ m
+            | f <- files
+            , takeExtension f `elem` [".hs", ".lhs", ".hsc", ".x", ".y"]
+            , let m = toModule (makeRelative dir f)
+            , m /= "Main"
+            ]
+    toModule = map (\c -> if c == '/' then '.' else c) . dropExtension
+
+-- | Recursively list the files under a directory (relative paths joined to it).
+listFilesRec :: FilePath -> IO [FilePath]
+listFilesRec dir = do
+  entries <- listDirectory dir
+  fmap concat $ mapM (\e -> let p = dir </> e in doesDirectoryExist p >>= \isDir -> if isDir then listFilesRec p else pure [p]) entries
 
 -- | Write @content@ to @path@ only if it differs from the current contents,
 -- preserving the mtime when unchanged so ghc --make does not needlessly
@@ -379,7 +417,7 @@ replArgs packageDb memberDir comp =
     srcDirs = if null (compSourceDirs comp) then ["."] else compSourceDirs comp
     targets = case compMain comp of
       Just m  -> [memberDir </> head srcDirs </> m]
-      Nothing -> compExposedModules comp
+      Nothing -> compModules comp
 
 -- | Parse a dotted version string into integer components (non-numeric -> 0).
 versionInts :: String -> [Int]

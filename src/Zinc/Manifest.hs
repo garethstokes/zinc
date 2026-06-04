@@ -55,8 +55,7 @@ data Component = Component
   { compKind           :: ComponentKind
   , compName           :: String       -- ^ @"lib"@, or the exe/test name
   , compSourceDirs     :: [String]
-  , compExposedModules :: [String]     -- ^ library only
-  , compOtherModules   :: [String]
+  , compModules        :: [String]     -- ^ explicit modules; empty = auto-discover from source-dirs (spec §4, no module hiding)
   , compMain           :: Maybe String -- ^ executable/test entrypoint
   , compExtensions     :: [String]
   , compGhcOptions     :: [String]
@@ -106,8 +105,7 @@ mkComponent kind name t =
     { compKind = kind
     , compName = name
     , compSourceDirs = strs "source-dirs"
-    , compExposedModules = strs "exposed-modules"
-    , compOtherModules = strs "other-modules"
+    , compModules = strs "modules"
     , compMain = str "main"
     , compExtensions = strs "extensions"
     , compGhcOptions = strs "ghc-options"

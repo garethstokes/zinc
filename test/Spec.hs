@@ -739,8 +739,7 @@ main = hspec $ do
             , ""
             , "[build.lib]"
             , "source-dirs = [\"src\"]"
-            , "exposed-modules = [\"Myapp\", \"Myapp.Core\"]"
-            , "other-modules = [\"Myapp.Internal\"]"
+            , "modules = [\"Myapp\", \"Myapp.Core\", \"Myapp.Internal\"]"
             , "extensions = [\"OverloadedStrings\"]"
             , "ghc-options = [\"-Wall\"]"
             , "depends = [\"aeson\"]"
@@ -766,8 +765,7 @@ main = hspec $ do
             { compKind = Library
             , compName = "lib"
             , compSourceDirs = ["src"]
-            , compExposedModules = ["Myapp", "Myapp.Core"]
-            , compOtherModules = ["Myapp.Internal"]
+            , compModules = ["Myapp", "Myapp.Core", "Myapp.Internal"]
             , compMain = Nothing
             , compExtensions = ["OverloadedStrings"]
             , compGhcOptions = ["-Wall"]
@@ -1057,8 +1055,7 @@ main = hspec $ do
             { compKind = Library
             , compName = "lib"
             , compSourceDirs = ["src"]
-            , compExposedModules = ["Demo", "Demo.Core"]
-            , compOtherModules = ["Demo.Internal"]
+            , compModules = ["Demo", "Demo.Core", "Demo.Internal"]
             , compMain = Nothing
             , compExtensions = ["OverloadedStrings"]
             , compGhcOptions = ["-Wall"]
@@ -1418,8 +1415,7 @@ main = hspec $ do
               { compKind = Executable
               , compName = "demo"
               , compSourceDirs = ["app"]
-              , compExposedModules = []
-              , compOtherModules = []
+              , compModules = []
               , compMain = Just "Main.hs"
               , compExtensions = []
               , compGhcOptions = []
@@ -1452,7 +1448,7 @@ main = hspec $ do
   describe "orderMembers" $
     it "orders a member after the siblings it depends on" $ do
       let comp deps =
-            Component Library "x" [] [] [] Nothing [] [] deps [] []
+            Component Library "x" [] [] Nothing [] [] deps [] []
           core = ("packages/core", MemberManifest "core" "1.0" [comp []])
           app = ("packages/app", MemberManifest "app" "1.0" [comp ["core"]])
       map (pkgName . snd) (orderMembers [app, core]) `shouldBe` ["core", "app"]
@@ -1533,7 +1529,7 @@ main = hspec $ do
 
   describe "replArgs" $ do
     let exeComp =
-          Component Executable "app" ["app"] [] [] (Just "Main.hs") [] [] [] [] []
+          Component Executable "app" ["app"] [] (Just "Main.hs") [] [] [] [] []
 
     it "builds ghci args loading the member's main" $
       replArgs (Just "/db") "/m" exeComp
@@ -1546,7 +1542,7 @@ main = hspec $ do
       createDirectoryIfMissing True dir
       materialize dir (scaffoldNew "demo")
       let memberDir = dir ++ "/packages/demo"
-          comp = Component Executable "demo" ["app"] [] [] (Just "Main.hs") [] [] [] [] []
+          comp = Component Executable "demo" ["app"] [] (Just "Main.hs") [] [] [] [] []
       out <- readProcess "ghci" (replArgs Nothing memberDir comp ++ ["-e", "main"]) ""
       out `shouldBe` "Hello from demo!\n"
 
@@ -1580,8 +1576,8 @@ main = hspec $ do
               , "    other-modules: NewGhc"
               ]
           libFor v = either (const Nothing) (find ((== "lib") . compName)) (parseCabalComponentsForGhc v c)
-      (compOtherModules <$> libFor "9.8.2", compOtherModules <$> libFor "9.6.5")
-        `shouldBe` (Just ["NewGhc"], Just [])
+      (compModules <$> libFor "9.8.2", compModules <$> libFor "9.6.5")
+        `shouldBe` (Just ["M", "NewGhc"], Just ["M"])
 
   describe "git dependency build from .cabal (end-to-end)" $
     it "builds a non-zinc-native git dep (only a .cabal) and links a member" $ do
