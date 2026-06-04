@@ -198,6 +198,12 @@ main = hspec $ do
       renderJson (envelope "build" True (Just (JObject [("built", JInt 1)])) Nothing [])
         `shouldBe` "{\"zinc\":\"0.1.0.0\",\"command\":\"build\",\"ok\":true,\"data\":{\"built\":1},\"diagnostics\":[]}"
 
+    it "renders the toolchain-missing guidance (gtv.2 preflight)" $ do
+      let d = toDiagnostic (ToolchainMissing "ghc")
+      diagCode d `shouldBe` "ZINC_TOOLCHAIN_MISSING"
+      exitCodeFor (ToolchainMissing "ghc") `shouldBe` ExitFailure 5
+      diagNextAction d `shouldSatisfy` maybe False (isInfixOf "nix develop")
+
     it "assigns stable exit codes per category" $ do
       exitCodeFor (NoZincToml ".") `shouldBe` ExitFailure 2
       exitCodeFor (DepNoGitRepo "colour") `shouldBe` ExitFailure 3

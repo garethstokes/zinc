@@ -38,6 +38,7 @@ data ZincError
   | AmbiguousTarget [String]          -- ^ candidate exe names
   | ManifestParse String String       -- ^ file, detail
   | NixAbsent
+  | ToolchainMissing String            -- ^ a required build tool (e.g. ghc) is not on PATH
   | NoZincToml String                 -- ^ directory
   | NoRepoInRegistry String String    -- ^ name, requiring parent
   | OtherError String                 -- ^ escape hatch for not-yet-migrated messages
@@ -72,6 +73,7 @@ errorCode e = case e of
   AmbiguousTarget {}     -> "ZINC_AMBIGUOUS_TARGET"
   ManifestParse {}       -> "ZINC_MANIFEST_PARSE"
   NixAbsent              -> "ZINC_NIX_ABSENT"
+  ToolchainMissing {}    -> "ZINC_TOOLCHAIN_MISSING"
   NoZincToml {}          -> "ZINC_NO_ZINC_TOML"
   NoRepoInRegistry {}    -> "ZINC_NO_REPO_IN_REGISTRY"
   OtherError {}          -> "ZINC_ERROR"
@@ -121,6 +123,9 @@ toDiagnostic e =
       NixAbsent ->
         ( "Nix is not available", Nothing, Nothing, Nothing
         , Just "install Nix (flakes enabled) or enter the dev shell with `nix develop`" )
+      ToolchainMissing tool ->
+        ( "required toolchain not found", Just (tool ++ " is not on PATH"), Nothing, Nothing
+        , Just "enter the dev shell with `nix develop` (it provides GHC), or install GHC onto PATH" )
       NoZincToml dir ->
         ( "no zinc.toml found", Just ("expected a workspace manifest in " ++ dir), Nothing, Nothing
         , Just "run `zinc new <name>` to scaffold a workspace, or cd into one" )
@@ -154,6 +159,7 @@ exitCodeFor e = ExitFailure $ case e of
   GhcCompile {}          -> 4
   BuildTypeCustom {}     -> 4
   NixAbsent              -> 5
+  ToolchainMissing {}    -> 5
   ContentHashMismatch {} -> 6
   OtherError {}          -> 1
 

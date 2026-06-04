@@ -33,8 +33,8 @@ import Data.Bifunctor (first)
 import Data.Char (isHexDigit)
 import Data.List (stripPrefix)
 import qualified Data.Map as Map
-import Data.Maybe (fromMaybe, mapMaybe)
-import System.Directory (doesDirectoryExist, doesFileExist, listDirectory, makeAbsolute, removeDirectoryRecursive)
+import Data.Maybe (fromMaybe, isNothing, mapMaybe)
+import System.Directory (doesDirectoryExist, doesFileExist, findExecutable, listDirectory, makeAbsolute, removeDirectoryRecursive)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeExtension, takeFileName, (</>))
 import System.Process (callProcess, readProcess, readProcessWithExitCode)
@@ -54,7 +54,7 @@ import Zinc.Manifest
   , parseWorkspace
   , parseBuildOptions
   )
-import Zinc.Diagnostic (ZincError (AmbiguousTarget, ContentHashMismatch, NoZincToml, OtherError))
+import Zinc.Diagnostic (ZincError (AmbiguousTarget, ContentHashMismatch, NoZincToml, OtherError, ToolchainMissing))
 import Zinc.Except (Result, failWith, failWithError, liftEither, liftEitherE, liftIO, orFail, orFailE, runResult)
 import Zinc.Report (BuildOutcome (..), PackageReport (..), PackageStatus (..), Timing (..), cacheStatsOf)
 import Zinc.Resolve (ResolvedDep (..), topoLevels)
@@ -64,6 +64,16 @@ import Zinc.Store (contentHash, resolveStoreRoot, storeSrcPath, withStoreLock)
 -- component whose kind satisfies @keep@, returned as built executable paths.
 -- @target@ (when 'Just') restricts which member's @keep@-components are built;
 -- libraries are always built so dependencies remain available.
+-- | Fail with a clear, categorized diagnostic if the GHC toolchain zinc shells
+-- out to is not on PATH (spec §4.2: detect + guide before invoking it), rather
+-- than a raw "ghc: command not found". zinc never installs a toolchain — it
+-- points the user at `nix develop`. Guards build/run/test/repl (via
+-- 'buildWorkspaceReport') and warm.
+ensureToolchain :: Result ()
+ensureToolchain = do
+  ghc <- liftIO (findExecutable "ghc")
+  when (isNothing ghc) (failWithError (ToolchainMissing "ghc"))
+
 buildWorkspace :: FilePath -> Maybe String -> (ComponentKind -> Bool) -> IO (Either ZincError [FilePath])
 buildWorkspace wsDir target keep = fmap (fmap (boExes . fst)) (buildWorkspaceReport wsDir target keep)
 
@@ -72,6 +82,7 @@ buildWorkspace wsDir target keep = fmap (fmap (boExes . fst)) (buildWorkspaceRep
 -- @--json@ surface. 'buildWorkspace' is the thin exes-only projection.
 buildWorkspaceReport :: FilePath -> Maybe String -> (ComponentKind -> Bool) -> IO (Either ZincError (BuildOutcome, [(String, Int)]))
 buildWorkspaceReport wsDir target keep = runResult $ do
+  ensureToolchain
   let wsFile = wsDir </> "zinc.toml"
   present <- liftIO (doesFileExist wsFile)
   when (not present) $ failWithError (NoZincToml wsDir)
@@ -129,6 +140,7 @@ runBuildMember wsDir target = buildWorkspace wsDir target (== Executable)
 -- closure report.
 runWarm :: FilePath -> IO (Either ZincError [PackageReport])
 runWarm wsDir = runResult $ do
+  ensureToolchain
   let wsFile = wsDir </> "zinc.toml"
   present <- liftIO (doesFileExist wsFile)
   when (not present) $ failWithError (NoZincToml wsDir)
