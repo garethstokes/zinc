@@ -226,7 +226,9 @@ buildLibArtifacts lb = do
   writeFile macrosHeader $
     emitCabalMacros ((lbName lb, versionInts (lbVersion lb)) : [(d, depVersion d) | d <- compDepends comp])
   let srcDirs = if null (compSourceDirs comp) then ["."] else compSourceDirs comp
-      modules = compExposedModules comp ++ compOtherModules comp ++ [pathsMod]
+      -- nub so a package that already lists Paths_<pkg> in its (other-)modules
+      -- doesn't collide with the Paths_ module zinc synthesizes.
+      modules = nub (compExposedModules comp ++ compOtherModules comp ++ [pathsMod])
       compileArgs =
         ["--make", "-hide-all-packages", "-package-db", lbPackageDb lb]
           ++ packageFlags (compDepends comp)

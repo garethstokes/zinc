@@ -1,0 +1,62 @@
+# zinc's self-host manifest: zinc described as a single-member workspace so
+# 'zinc build' builds zinc itself (the MVP definition of done). The [workspace]
+# and [package]/[build] sections coexist in one file (member ".").
+[workspace]
+members = ["."]
+ghc = "9.6.5"
+
+[package]
+name = "zinc"
+version = "0.1.0.0"
+
+[build.lib]
+source-dirs = ["src"]
+exposed-modules = [
+  "Zinc.Add", "Zinc.Build", "Zinc.CLI", "Zinc.Cabal", "Zinc.Cache",
+  "Zinc.Env", "Zinc.Fetch", "Zinc.GC", "Zinc.Git", "Zinc.Hackage",
+  "Zinc.Lock", "Zinc.Macros", "Zinc.Manifest", "Zinc.Nix", "Zinc.Orchestrate",
+  "Zinc.Paths", "Zinc.Report", "Zinc.Resolve", "Zinc.Scaffold", "Zinc.Store",
+  "Zinc.SysLibs", "Zinc.TOML", "Zinc.Version"
+]
+depends = [
+  "base", "Cabal", "SHA", "bytestring", "containers", "directory",
+  "filepath", "optparse-applicative", "process", "toml-parser"
+]
+
+[build.exe.zinc]
+source-dirs = ["app"]
+main = "Main.hs"
+ghc-options = ["-threaded", "-rtsopts", "-with-rtsopts=-N"]
+depends = ["base", "zinc"]
+
+# Whole non-boot closure pinned by rev to the versions GHC/Nix ships zinc
+# against (so zinc's own source compiles). Boot libs incl. Cabal come from GHC.
+[dependencies]
+SHA = { rev = "9653669162f411b0250e83ddbdb375ff0a63e6eb" }
+optparse-applicative = { rev = "270a626f7a7225cdce9b025b427eb0c4378c39c7" }   # 0.18.1
+toml-parser = { rev = "3f02aa375c4decfa7de6d4841974919697cfb54a" }           # 1.3.2.0
+prettyprinter = { rev = "7f9af88c37a511c1bca1af6836bf250319817926" }          # 1.7.1
+prettyprinter-ansi-terminal = { rev = "7f9af88c37a511c1bca1af6836bf250319817926" } # 1.1.3
+ansi-terminal = { rev = "0f22df579e543f0b05da15ffbb913edeb646a954" }          # 1.0.2
+ansi-terminal-types = { rev = "2a4a6d89980801ae353fb573753d6205f90115e7" }    # 0.11.5
+colour = { rev = "a291db24d299b90f6eda344fe40cbc1453507f95" }                 # 2.3.6 (vendored)
+transformers-compat = { rev = "879dc486166d3a9e653695572f9c28d88af7e2d7" }    # 0.7.2
+
+# Per-project decentralized registry: a git repo (optionally #subdir) for every
+# non-boot transitive dep, since real upstreams carry no zinc registry.
+[registry]
+SHA = "https://github.com/GaloisInc/SHA.git"
+optparse-applicative = "https://github.com/pcapriotti/optparse-applicative.git"
+toml-parser = "https://github.com/glguy/toml-parser.git"
+prettyprinter = "https://github.com/quchen/prettyprinter.git#prettyprinter"
+prettyprinter-ansi-terminal = "https://github.com/quchen/prettyprinter.git#prettyprinter-ansi-terminal"
+ansi-terminal = "https://github.com/UnkindPartition/ansi-terminal.git#ansi-terminal"
+ansi-terminal-types = "https://github.com/UnkindPartition/ansi-terminal.git#ansi-terminal-types"
+transformers-compat = "https://github.com/ekmett/transformers-compat.git"
+# colour has no upstream git repo (darcs-era); vendored into a git mirror per
+# the project decision. TODO(zinc-576.11): host this mirror at a stable URL for
+# clean-checkout self-host; currently a local vendored clone.
+colour = "/tmp/zinc-vendor/colour"
+
+[build-options]
+colour = ["-XSafe"]

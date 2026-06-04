@@ -1528,7 +1528,7 @@ main = hspec $ do
       r <- buildAndRun ws []
       r `shouldSatisfy` either (isInfixOf "content hash mismatch") (const False)
 
-  describe "dependency build with Paths_ (end-to-end)" $
+  describe "dependency build with Paths_ (end-to-end)" $ do
     it "synthesizes Paths_<pkg> so a dep importing it builds + links" $ do
       let base = "/tmp/zinc-paths-dep-ws"
           dep = base ++ "/greet-repo"
@@ -1550,6 +1550,30 @@ main = hspec $ do
       writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Greet (hello)\nmain :: IO ()\nmain = putStrLn hello\n"
       r <- buildAndRun ws []
       r `shouldBe` Right "greet 1.2\n"
+
+    it "does not double-define Paths_<pkg> when the dep also lists it as a module" $ do
+      let base = "/tmp/zinc-paths-dup-ws"
+          dep = base ++ "/greet-repo"
+          ws = base ++ "/ws"
+      stale <- doesDirectoryExist base
+      when stale $ removeDirectoryRecursive base
+      -- the dep explicitly lists Paths_greet in other-modules (as cabal
+      -- autogen-modules do) — zinc must not collide with its synthesized copy
+      writeFileIn (dep ++ "/zinc.toml") (unlines ["[package]", "name = \"greet\"", "version = \"2.0\"", "[build.lib]", "source-dirs = [\"src\"]", "exposed-modules = [\"Greet\"]", "other-modules = [\"Paths_greet\"]"])
+      writeFileIn (dep ++ "/src/Greet.hs") "module Greet (hello) where\nimport Paths_greet (version)\nimport Data.Version (showVersion)\nhello :: String\nhello = \"greet \" ++ showVersion version\n"
+      let git args = readProcess "git" ("-C" : dep : args) ""
+      _ <- git ["init", "--quiet"]
+      _ <- git ["config", "user.email", "t@example.com"]
+      _ <- git ["config", "user.name", "Test"]
+      _ <- git ["add", "."]
+      _ <- git ["commit", "--quiet", "-m", "greet"]
+      rev <- trimStr <$> git ["rev-parse", "HEAD"]
+      writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "greet" (Rev rev)] [("greet", dep)]))
+      writeFileIn (ws ++ "/zinc.lock") (renderLock [LockedPackage "greet" dep rev "sha256:x" []])
+      writeFileIn (ws ++ "/packages/app/zinc.toml") (unlines ["[package]", "name = \"app\"", "version = \"1.0\"", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "depends = [\"greet\"]"])
+      writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Greet (hello)\nmain :: IO ()\nmain = putStrLn hello\n"
+      r <- buildAndRun ws []
+      r `shouldBe` Right "greet 2.0\n"
 
   describe "deep closure + artifact cache (end-to-end)" $
     it "builds a 2-level git-dep closure, then rebuilds from cache after sources are gone" $ do

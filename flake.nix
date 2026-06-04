@@ -21,9 +21,11 @@
           ]);
         in {
           default = pkgs.mkShell {
+            # No cabal-install: zinc is built and tested with ghc/runghc directly
+            # and, ultimately, by zinc itself (self-hosting). Nix provides only the
+            # compiler, git, and the source preprocessors zinc shells out to.
             packages = [
               ghc
-              pkgs.cabal-install   # convenience only; the test loop uses ghc/runghc directly
               pkgs.git
               # Source preprocessors zinc runs for dependencies that ship .x/.y
               # (e.g. toml-parser's alex/happy lexer+parser). hsc2hs ships with GHC.
