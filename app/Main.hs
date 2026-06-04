@@ -15,6 +15,7 @@ import Zinc.Json (Json, renderJson)
 import Zinc.Metrics (recordBuild)
 import Zinc.Orchestrate (buildAndRun, checkLockDrift, runBuildReport, runClean, runRepl, runTests)
 import Zinc.Perf (perfSummaryJson, renderPerf, runPerf)
+import Zinc.Prime (runOnboard, runPrime)
 import Zinc.Report (boExes, buildDataJson, timingJson)
 import Zinc.Scaffold (materialize, scaffoldNew)
 
@@ -110,3 +111,7 @@ dispatch (Graph json) =
   runGraph "." >>= emitIntrospection "graph" json graphJson renderGraph
 dispatch (Explain pkg json) =
   runExplain "." >>= emitIntrospection "explain" json (explainJson pkg) (renderExplain pkg)
+dispatch Prime =
+  runPrime "." >>= either (failCmd "zinc prime") putStr
+dispatch Onboard =
+  runOnboard "." >>= either (failCmd "zinc onboard") putStr

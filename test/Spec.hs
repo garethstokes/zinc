@@ -23,6 +23,7 @@ import Zinc.CLI (Command (..), parseArgs)
 import Zinc.Diagnostic (Diagnostic (..), Severity (..), ZincError (..), diagnosticJson, envelope, errorCode, exitCodeFor, renderError, toDiagnostic)
 import Zinc.Doctor (doctorJson, doctorOk, flakesOffDiagnostic, lockDriftDiagnostic, renderDoctor, runDoctor)
 import Zinc.Introspect (DepStatus (..), explainJson, graphJson, statusJson)
+import Zinc.Prime (onboardText, primeText)
 import Zinc.Json (Json (..), parseJson, renderJson)
 import Zinc.Git (cloneAt, gitEnv, listTags, splitRepoSubdir)
 import Zinc.Hackage (hackageCabalUrl, sourceRepoOf)
@@ -258,6 +259,19 @@ main = hspec $ do
       parseJson "[1,2" `shouldSatisfy` isLeft
       parseJson "tru" `shouldSatisfy` isLeft
       parseJson "{\"k\" 1}" `shouldSatisfy` isLeft
+
+  describe "context priming (rdy.5)" $ do
+    it "parses prime / onboard" $ do
+      parseArgs ["prime"] `shouldBe` Right Prime
+      parseArgs ["onboard"] `shouldBe` Right Onboard
+
+    it "prime reflects toolchain, members, and the no-cabal gotcha" $ do
+      let t = primeText (WorkspaceManifest ["packages/app"] "9.6.5" [] [])
+      all (`isInfixOf` t) ["GHC 9.6.5", "packages/app", "zinc build", "Do NOT use cabal"] `shouldBe` True
+
+    it "onboard is a paste-ready AGENTS.md snippet" $ do
+      let t = onboardText (WorkspaceManifest [] "9.6.5" [] [])
+      all (`isInfixOf` t) ["## Building (zinc)", "zinc build", "9.6.5"] `shouldBe` True
 
   describe "introspection (rdy.4)" $ do
     it "parses status / graph / explain (+ --json)" $ do

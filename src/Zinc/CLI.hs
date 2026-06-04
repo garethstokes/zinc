@@ -22,6 +22,8 @@ data Command
   | Status Bool           -- ^ workspace status overview; Bool = --json
   | Graph Bool            -- ^ the closure build DAG; Bool = --json
   | Explain String Bool   -- ^ why a package is in the build; Bool = --json
+  | Prime                 -- ^ AI-optimized orientation for this workspace
+  | Onboard               -- ^ minimal AGENTS.md/CLAUDE.md snippet
   deriving (Eq, Show)
 
 -- | Pure, testable entry point: parse argv into a 'Command'.
@@ -57,6 +59,8 @@ commandParser =
       , sub "status" "Show workspace status (members, closure, drift)" (Status <$> jsonFlag)
       , sub "graph"  "Show the closure build DAG"        (Graph <$> jsonFlag)
       , sub "explain" "Explain why a package is in the build" (Explain <$> strArgument (metavar "PKG") <*> jsonFlag)
+      , sub "prime"  "Print AI-optimized orientation for this workspace" (pure Prime)
+      , sub "onboard" "Print an AGENTS.md/CLAUDE.md snippet" (pure Onboard)
       ]
   where
     sub name desc p = command name (info (p <**> helper) (progDesc desc))
