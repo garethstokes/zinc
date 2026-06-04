@@ -1,0 +1,50 @@
+# Changelog
+
+All notable changes to zinc are documented here. zinc follows
+[semantic versioning](https://semver.org/).
+
+## [0.1.0.0] — unreleased
+
+The first self-hosting, agent-first release.
+
+### Build model
+
+- Git-native dependencies pinned by content hash in `zinc.lock`, mapped via a
+  per-project decentralized `[registry]`; resolver walks the transitive closure
+  and freezes exact commits + sha256.
+- Drives `ghc --make` directly (no cabal/stack); content-addressed build store
+  shared at `~/.zinc/store` (relocatable via `ZINC_STORE`), with incremental
+  inner-loop rebuilds and bounded-concurrency closure builds.
+- **Self-hosting**: zinc builds zinc from its own `zinc.toml`.
+- Reads non-zinc dependencies from their `.cabal` (build-depends, extensions,
+  ghc-options, include-dirs, **cpp-options, c-sources**); auto-discovers a
+  library's modules from its source-dirs (no `exposed`/`other` lists).
+- Concurrency-safe shared store (per-key advisory lock) for parallel
+  agents/worktrees.
+
+### Agent-native DevEx
+
+- Machine-readable `--json` on every command: a `{ zinc, command, ok, data,
+  timing?, diagnostics }` envelope.
+- Structured error taxonomy (`ZINC_*` codes) with a `nextAction` and stable
+  category exit codes (2 usage · 3 resolution · 4 build · 5 environment ·
+  6 integrity).
+- Introspection: `status`, `graph`, `explain`. Diagnostics: `doctor` (env +
+  project health), `perf` (latency p50/p95, cache hit-rate, regressions over a
+  rolling baseline). Orientation: `prime`, `onboard`, `dockerfile`.
+- Non-interactive contract: never prompts; `--yes` accepted; git runs with
+  terminal prompts disabled so missing auth fails fast.
+- `zinc run [TARGET] [-- ARGS]` selects an executable target and execs it with
+  inherited stdio + exit-code propagation.
+
+### Performance tracking
+
+- A `timing` block (total, per-phase, cache stats, per-package `timeMs`) in the
+  build envelope; per-invocation records persisted to `.zinc/metrics.jsonl`
+  (survives `zinc clean`); `zinc perf` analyzes the history.
+
+### Distribution
+
+- Nix flake exports `packages.default`, `apps.default`
+  (`nix run github:garethstokes/zinc`), and `overlays.default`, alongside the
+  dev shell.
