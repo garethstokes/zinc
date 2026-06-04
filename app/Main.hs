@@ -8,6 +8,7 @@ import System.IO (hPutStrLn, stderr)
 import System.Process (CreateProcess (std_err, std_in, std_out), StdStream (Inherit), createProcess, proc, waitForProcess)
 import Zinc.Add (addInWorkspace, updateInWorkspace)
 import Zinc.CLI (Command (..), parseArgs)
+import Zinc.Closure (closureReportJson, renderClosure, runClosure)
 import Zinc.Diagnostic (ZincError, envelope, exitCodeFor, renderError, toDiagnostic)
 import Zinc.Docker (runDockerfile)
 import Zinc.Doctor (doctorJson, doctorOk, renderDoctor, runDoctor)
@@ -142,6 +143,8 @@ dispatch Onboard =
   runOnboard "." >>= either (failCmd "zinc onboard") putStr
 dispatch Dockerfile =
   runDockerfile "." >>= either (failCmd "zinc dockerfile") putStr
+dispatch (Closure pkg json) =
+  runClosure pkg >>= emitIntrospection "closure" json closureReportJson renderClosure
 dispatch (Fmt check) =
   runFmt check "." >>= \r -> case r of
     Left e -> failCmd "zinc fmt" e

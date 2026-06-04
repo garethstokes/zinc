@@ -24,6 +24,7 @@ import Test.Hspec
 import System.Exit (ExitCode (..))
 import Zinc.CLI (Command (..), parseArgs)
 import Zinc.Diagnostic (Diagnostic (..), Severity (..), ZincError (..), diagnosticJson, envelope, errorCode, exitCodeFor, renderError, toDiagnostic)
+import Zinc.Closure (discoverRepos, parseDependsField, pkgNameOf)
 import Zinc.Docker (dockerfileText)
 import Zinc.Fmt (canonicalizeManifest)
 import Zinc.Doctor (doctorJson, doctorOk, flakesOffDiagnostic, lockDriftDiagnostic, renderDoctor, runDoctor)
@@ -293,6 +294,27 @@ main = hspec $ do
 
     it "lists candidates for an unknown target" $
       either errorCode (const "ok") (resolveTarget (Just "ghost") [("a", "/a")]) `shouldBe` "ZINC_AMBIGUOUS_TARGET"
+
+  describe "closure discovery (49o)" $ do
+    it "parses the `closure` subcommand (+ --json)" $ do
+      parseArgs ["closure", "aeson"] `shouldBe` Right (Closure "aeson" False)
+      parseArgs ["closure", "aeson", "--json"] `shouldBe` Right (Closure "aeson" True)
+
+    it "extracts the package name from an installed unit-id" $ do
+      pkgNameOf "aeson-2.2.3.0-abc123" `shouldBe` "aeson"
+      pkgNameOf "data-default-class-0.1.2.0" `shouldBe` "data-default-class"
+      pkgNameOf "base-4.18.2.1" `shouldBe` "base"
+      pkgNameOf "rts" `shouldBe` "rts"
+
+    it "parses ghc-pkg `depends` output (multi-line) into unit-ids" $
+      parseDependsField "depends: array-0.5.6.0 base-4.18.2.1\n         bytestring-0.11.5.3"
+        `shouldBe` ["array-0.5.6.0", "base-4.18.2.1", "bytestring-0.11.5.3"]
+
+    it "partitions a closure into discovered repos and needs-vendoring" $ do
+      let discover n = pure (if n == "colour" then Nothing else Just ("https://example/" ++ n))
+      (found, missing) <- discoverRepos discover ["aeson", "colour", "scientific"]
+      found `shouldBe` [("aeson", "https://example/aeson"), ("scientific", "https://example/scientific")]
+      missing `shouldBe` ["colour"]
 
   describe "zinc fmt (8n6.3)" $ do
     it "parses fmt and fmt --check" $ do
