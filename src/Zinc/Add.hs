@@ -6,16 +6,18 @@ module Zinc.Add
   , freezeClosure
   , runAdd
   , addInWorkspace
+  , enrichWithRepos
   , runUpdate
   , updateInWorkspace
   ) where
 
 import Control.Monad (when)
 import Data.Bifunctor (first)
-import Data.List (find)
+import Data.List (find, intercalate)
 import System.Directory (doesDirectoryExist, doesFileExist, removeDirectoryRecursive)
 import System.FilePath (takeDirectory, (</>))
-import Zinc.Diagnostic (ZincError (NoRepoInRegistry, NoZincToml))
+import Zinc.Closure (ClosureReport (crMembers, crNeedsVendoring), runClosure)
+import Zinc.Diagnostic (ZincError (DepNoGitRepo, NoZincToml))
 import Zinc.Except (Result, failWithError, liftEither, liftIO, orFail, orFailE, runResult)
 import Zinc.Fetch (gitFetchManifest, resolveRef)
 import Zinc.Git (cloneAt)
@@ -83,9 +85,11 @@ runAdd wsFile storeRoot name ref repo = runResult $ do
   liftIO $ writeFile wsFile (renderWorkspace ws')
   pure res
 
--- | CLI entry: @zinc add \<name\>@ in the current workspace. Resolves the repo
--- from the workspace @[registry]@ (Hackage discovery for unknown packages is
--- tracked separately) and stores builds under @~\/.zinc\/store@.
+-- | CLI entry: @zinc add \<name\>@ in the current workspace. If the package's
+-- repo is already pinned in the manifest, freezes it directly; otherwise
+-- deterministically discovers its non-boot closure + repos (ghc-pkg + Hackage,
+-- via 'runClosure'), refuses if any member needs vendoring, then pre-populates
+-- the manifest and freezes (spec §9 / zinc-49o).
 addInWorkspace :: String -> IO (Either ZincError String)
 addInWorkspace name = runResult $ do
   let wsFile = "zinc.toml"
@@ -93,13 +97,33 @@ addInWorkspace name = runResult $ do
   when (not present) $ failWithError (NoZincToml ".")
   src <- liftIO (readFile wsFile)
   ws <- liftEither (parseWorkspace src)
+  storeRoot <- liftIO resolveStoreRoot
   case lookup name (depRepos ws) of
-    Nothing ->
-      failWithError (NoRepoInRegistry name "<workspace>")
+    -- Repo already pinned in the manifest: freeze it directly (offline).
     Just repo -> do
       let ref = maybe Latest depRef (find ((== name) . depName) (wsDependencies ws))
-      storeRoot <- liftIO resolveStoreRoot
       orFailE (runAdd wsFile storeRoot name ref repo)
+    -- Unknown repo: deterministically discover the package's non-boot closure
+    -- (ghc-pkg) + each member's repo (Hackage), refuse if any needs vendoring,
+    -- then pre-populate the manifest and freeze (zinc-49o part 4).
+    Nothing -> do
+      rep <- orFailE (runClosure name)
+      when (not (null (crNeedsVendoring rep))) $
+        failWithError (DepNoGitRepo (intercalate ", " (crNeedsVendoring rep)))
+      let found = [(m, r) | (m, Just r) <- crMembers rep]
+          enriched = enrichWithRepos ws found
+      liftIO (writeFile wsFile (renderWorkspace enriched))
+      freezeWorkspace wsFile storeRoot enriched
+
+-- | Fold discovered @(name, repo)@ pairs into a workspace as pinned
+-- dependencies, preserving any ref already declared (else 'Latest') and any
+-- repo already declared — so a hand-supplied override (e.g. a monorepo
+-- @url#subdir@ that Hackage's metadata omits) wins over discovery.
+enrichWithRepos :: WorkspaceManifest -> [(String, String)] -> WorkspaceManifest
+enrichWithRepos = foldr add
+  where
+    add (m, discovered) w = addDep w m (refFor w m) (maybe discovered id (lookup m (depRepos w)))
+    refFor w m = maybe Latest depRef (find ((== m) . depName) (wsDependencies w))
 
 -- | Re-resolve the workspace's dependencies (bumping Latest refs) and rewrite
 -- the lockfile. Like 'runAdd' but without adding a new dependency.

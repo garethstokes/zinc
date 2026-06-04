@@ -10,14 +10,17 @@ module Zinc.Hackage
 
 import qualified Data.ByteString.Char8 as BS
 import Data.Maybe (listToMaybe)
+import Data.List (stripPrefix)
 import Distribution.PackageDescription (packageDescription, sourceRepos)
 import Distribution.PackageDescription.Parsec (parseGenericPackageDescription, runParseResult)
-import Distribution.Types.SourceRepo (RepoKind (RepoHead), SourceRepo (repoKind, repoLocation))
+import Distribution.Types.SourceRepo (RepoKind (RepoHead), SourceRepo (repoKind, repoLocation, repoSubdir))
 import System.Exit (ExitCode (..))
 import System.Process (readProcessWithExitCode)
 
 -- | Extract a git repo URL from @.cabal@ source: the @source-repository head@
--- location, falling back to any declared repo. 'Nothing' if none / unparseable.
+-- location, falling back to any declared repo. A @subdir@ (monorepo packages
+-- like prettyprinter) is appended as zinc's @url#subdir@ spec so the package is
+-- read from the right directory. 'Nothing' if none / unparseable.
 sourceRepoOf :: String -> Maybe String
 sourceRepoOf src =
   case snd (runParseResult (parseGenericPackageDescription (BS.pack src))) of
@@ -25,8 +28,13 @@ sourceRepoOf src =
     Right gpd -> listToMaybe (heads ++ others)
       where
         repos = sourceRepos (packageDescription gpd)
-        heads = [loc | r <- repos, repoKind r == RepoHead, Just loc <- [repoLocation r]]
-        others = [loc | r <- repos, Just loc <- [repoLocation r]]
+        heads = [withSub r (normalize loc) | r <- repos, repoKind r == RepoHead, Just loc <- [repoLocation r]]
+        others = [withSub r (normalize loc) | r <- repos, Just loc <- [repoLocation r]]
+        withSub r loc = case repoSubdir r of
+          Just s | not (null s) && s /= "." -> loc ++ "#" ++ s
+          _ -> loc
+        -- git:// is deprecated (GitHub no longer serves it); use https.
+        normalize u = maybe u ("https://" ++) (stripPrefix "git://" u)
 
 -- | URL of a package's @.cabal@ on Hackage.
 hackageCabalUrl :: String -> String

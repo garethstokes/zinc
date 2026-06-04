@@ -51,7 +51,7 @@ import Zinc.Manifest
   )
 import Zinc.Fetch (gitFetchManifest)
 import Zinc.GC (GCRoot (..), gcStore, runGc)
-import Zinc.Add (freezeClosure, lockEntry, runAdd, runUpdate)
+import Zinc.Add (enrichWithRepos, freezeClosure, lockEntry, runAdd, runUpdate)
 import Zinc.Build (GhcInvocation (..), MemberBuild (..), PackageConf (..), archiveArgs, buildMember, ghcMakeArgs, installedVersions, preprocessorFor, registerPackage, renderConf, replArgs, runPreprocessor, writeFileIfChanged)
 import Zinc.Cache (BuildKey (..), buildCacheKey, cacheHit, storeConfPath, storePkgPath, writeCachedConf)
 import Zinc.Cabal (cabalBuildType, cabalVersion, parseCabalComponents, parseCabalComponentsForGhc)
@@ -315,6 +315,15 @@ main = hspec $ do
       (found, missing) <- discoverRepos discover ["aeson", "colour", "scientific"]
       found `shouldBe` [("aeson", "https://example/aeson"), ("scientific", "https://example/scientific")]
       missing `shouldBe` ["colour"]
+
+    it "enrichWithRepos pins discovered repos but a hand-supplied override wins" $ do
+      let ws0 = WorkspaceManifest [] "9.6.5" [Dependency "aeson" (Tag "v2") Nothing [], Dependency "pp" Latest (Just "r/mono#pp") []]
+          ws1 = enrichWithRepos ws0 [("aeson", "r/aeson"), ("pp", "r/mono"), ("scientific", "r/sci")]
+      wsDependencies ws1
+        `shouldBe` [ Dependency "aeson" (Tag "v2") (Just "r/aeson") [] -- discovered (no prior repo)
+                   , Dependency "pp" Latest (Just "r/mono#pp") []      -- override kept (not clobbered by "r/mono")
+                   , Dependency "scientific" Latest (Just "r/sci") []  -- discovered
+                   ]
 
   describe "zinc fmt (8n6.3)" $ do
     it "parses fmt and fmt --check" $ do
@@ -1469,6 +1478,12 @@ main = hspec $ do
 
     it "returns Nothing when there is no source-repository" $
       sourceRepoOf "cabal-version: 2.4\nname: demo\nversion: 0.1\n" `shouldBe` Nothing
+
+    it "normalizes git:// to https and appends a monorepo subdir (49o)" $ do
+      sourceRepoOf (unlines ["name: x", "version: 1", "source-repository head", "  type: git", "  location: git://github.com/o/r"])
+        `shouldBe` Just "https://github.com/o/r"
+      sourceRepoOf (unlines ["name: x", "version: 1", "source-repository head", "  type: git", "  location: https://github.com/o/mono", "  subdir: pkg"])
+        `shouldBe` Just "https://github.com/o/mono#pkg"
 
     it "builds the Hackage .cabal URL" $
       hackageCabalUrl "aeson" `shouldBe` "https://hackage.haskell.org/package/aeson/aeson.cabal"
