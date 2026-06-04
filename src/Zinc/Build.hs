@@ -146,6 +146,18 @@ data MemberBuild = MemberBuild
   , mbComponent :: Component
   }
 
+-- | @-package@ flags for a component's dependencies (plus the always-present
+-- base). zinc-built deps are pinned by their exact unit-id via @-package-id@
+-- (their unit-id is the bare package name), so a same-named package in GHC's
+-- global db — e.g. a Nix-provided @ansi-terminal-types@ — cannot shadow the
+-- version zinc actually built. Boot libs resolve from the global db by name.
+packageFlags :: [String] -> [String]
+packageFlags deps = concatMap flag (nub ("base" : deps))
+  where
+    flag d
+      | isBootLib d = ["-package", d]
+      | otherwise = ["-package-id", d]
+
 -- | Compile + link a member executable with @ghc --make@, returning the
 -- executable path. Isolation via @-hide-all-packages@ + explicit @-package@
 -- (base is always available).
@@ -160,7 +172,7 @@ buildMember mb = do
         ["--make"]
           ++ maybe [] (\db -> ["-package-db", db]) (mbPackageDb mb)
           ++ ["-hide-all-packages"]
-          ++ concatMap (\p -> ["-package", p]) (nub ("base" : compDepends comp))
+          ++ packageFlags (compDepends comp)
           ++ map (\d -> "-i" ++ (mbMemberDir mb </> d)) srcDirs
           ++ map ("-X" ++) (compExtensions comp)
           ++ compGhcOptions comp
@@ -217,7 +229,7 @@ buildLibArtifacts lb = do
       modules = compExposedModules comp ++ compOtherModules comp ++ [pathsMod]
       compileArgs =
         ["--make", "-hide-all-packages", "-package-db", lbPackageDb lb]
-          ++ concatMap (\p -> ["-package", p]) (nub ("base" : compDepends comp))
+          ++ packageFlags (compDepends comp)
           ++ map (\d -> "-i" ++ (lbMemberDir lb </> d)) srcDirs
           ++ ["-i" ++ gen, "-optP-include", "-optP" ++ macrosHeader]
           -- C-header search dirs (cabal include-dirs) so CPP #include of the
@@ -300,7 +312,7 @@ replArgs :: Maybe FilePath -> FilePath -> Component -> [String]
 replArgs packageDb memberDir comp =
   maybe [] (\db -> ["-package-db", db]) packageDb
     ++ ["-hide-all-packages"]
-    ++ concatMap (\p -> ["-package", p]) (nub ("base" : compDepends comp))
+    ++ packageFlags (compDepends comp)
     ++ map (\d -> "-i" ++ (memberDir </> d)) srcDirs
     ++ map ("-X" ++) (compExtensions comp)
     ++ compGhcOptions comp
