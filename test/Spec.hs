@@ -24,6 +24,7 @@ import Test.Hspec
 import System.Exit (ExitCode (..))
 import Zinc.CLI (Command (..), parseArgs)
 import Zinc.Diagnostic (Diagnostic (..), Severity (..), ZincError (..), diagnosticJson, envelope, errorCode, exitCodeFor, renderError, toDiagnostic)
+import Zinc.Docker (dockerfileText)
 import Zinc.Doctor (doctorJson, doctorOk, flakesOffDiagnostic, lockDriftDiagnostic, renderDoctor, runDoctor)
 import Zinc.Introspect (DepStatus (..), explainJson, graphJson, statusJson)
 import Zinc.Prime (onboardText, primeText)
@@ -281,6 +282,22 @@ main = hspec $ do
 
     it "lists candidates for an unknown target" $
       either errorCode (const "ok") (resolveTarget (Just "ghost") [("a", "/a")]) `shouldBe` "ZINC_AMBIGUOUS_TARGET"
+
+  describe "dockerfile recipe (vwn.2)" $ do
+    it "parses the `dockerfile` subcommand" $
+      parseArgs ["dockerfile"] `shouldBe` Right Dockerfile
+
+    it "emits the multi-stage closure-cached recipe" $ do
+      let t = dockerfileText "9.6.5"
+      all (`isInfixOf` t)
+        [ "GHC 9.6.5"
+        , "ZINC_STORE"
+        , "COPY flake.nix flake.lock* zinc.toml zinc.lock"
+        , "zinc build --deps-only"
+        , "--mount=type=cache,target=/zinc-store"
+        , "zinc build"
+        ]
+        `shouldBe` True
 
   describe "warm / build --deps-only (vwn.1)" $ do
     it "parses warm and build --deps-only to the same closure-only command" $ do

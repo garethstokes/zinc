@@ -9,6 +9,7 @@ import System.Process (CreateProcess (std_err, std_in, std_out), StdStream (Inhe
 import Zinc.Add (addInWorkspace, updateInWorkspace)
 import Zinc.CLI (Command (..), parseArgs)
 import Zinc.Diagnostic (ZincError, envelope, exitCodeFor, renderError, toDiagnostic)
+import Zinc.Docker (runDockerfile)
 import Zinc.Doctor (doctorJson, doctorOk, renderDoctor, runDoctor)
 import Zinc.GC (runGc)
 import Zinc.Introspect (explainJson, graphJson, renderExplain, renderGraph, renderStatus, runExplain, runGraph, runStatus, statusJson)
@@ -138,3 +139,5 @@ dispatch Prime =
   runPrime "." >>= either (failCmd "zinc prime") putStr
 dispatch Onboard =
   runOnboard "." >>= either (failCmd "zinc onboard") putStr
+dispatch Dockerfile =
+  runDockerfile "." >>= either (failCmd "zinc dockerfile") putStr

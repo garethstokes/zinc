@@ -25,6 +25,7 @@ data Command
   | Prime                 -- ^ AI-optimized orientation for this workspace
   | Onboard               -- ^ minimal AGENTS.md/CLAUDE.md snippet
   | Warm Bool             -- ^ build only the dependency closure; Bool = --json
+  | Dockerfile            -- ^ emit a multi-stage Docker build recipe
   deriving (Eq, Show)
 
 -- | Pure, testable entry point: parse argv into a 'Command'.
@@ -63,6 +64,7 @@ commandParser =
       , sub "explain" "Explain why a package is in the build" (Explain <$> strArgument (metavar "PKG") <*> jsonFlag)
       , sub "prime"  "Print AI-optimized orientation for this workspace" (pure Prime)
       , sub "onboard" "Print an AGENTS.md/CLAUDE.md snippet" (pure Onboard)
+      , sub "dockerfile" "Emit a multi-stage Docker build recipe" (pure Dockerfile)
       ]
   where
     sub name desc p = command name (info (p <**> helper) (progDesc desc))
