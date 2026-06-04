@@ -29,7 +29,7 @@ import Zinc.Diagnostic (ZincError (NoZincToml))
 import Zinc.Except (Result, failWithError, liftEither, liftIO, runResult)
 import Zinc.Json (Json (..))
 import Zinc.Lock (LockedPackage (..), parseLock)
-import Zinc.Manifest (Ref (Latest), WorkspaceManifest (wsDependencies, wsGhc, wsMembers), depName, parseBuildOptions, parseWorkspace)
+import Zinc.Manifest (Ref (Latest), WorkspaceManifest (wsDependencies, wsGhc, wsMembers), depName, depGhcOptionsOf, parseWorkspace)
 import Zinc.Resolve (ResolvedDep (..), topoLevels)
 import Zinc.Store (resolveStoreRoot)
 
@@ -76,10 +76,10 @@ driftOf ws locks =
 -- Returns the pieces so the caller can render either JSON or human text.
 runStatus :: FilePath -> IO (Either ZincError (String, [String], [DepStatus], [String]))
 runStatus wsDir = runResult $ do
-  (src, ws) <- loadWorkspace wsDir
+  (_, ws) <- loadWorkspace wsDir
   locks <- liftIO (loadLocks wsDir)
   storeRoot <- liftIO resolveStoreRoot
-  let opts = parseBuildOptions src
+  let opts = depGhcOptionsOf ws
   deps <- liftIO (mapM (depStatus storeRoot (wsGhc ws) opts) locks)
   pure (wsGhc ws, wsMembers ws, deps, driftOf ws locks)
   where

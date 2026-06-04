@@ -57,7 +57,7 @@ cabalManifest name ghcVersion pkgDir = runResult $ do
         failWithError (BuildTypeCustom name)
       comps <- liftEither (first ((name ++ ": ") ++) (parseCabalComponentsForGhc ghcVersion src))
       let libDeps = nub (concat [compDepends c | c <- comps, compKind c == Library])
-      pure (DepManifest [Dependency d Latest | d <- libDeps] [])
+      pure (DepManifest [Dependency d Latest Nothing [] | d <- libDeps] [])
 
 -- | The git checkout target for a ref. 'Latest' is resolved to the repo's
 -- newest release tag.

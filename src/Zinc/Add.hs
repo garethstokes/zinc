@@ -23,7 +23,8 @@ import Zinc.Lock (LockedPackage (..), renderLock)
 import Zinc.Manifest
   ( Dependency (depName, depRef)
   , Ref (Latest)
-  , WorkspaceManifest (wsDependencies, wsGhc, wsRegistry)
+  , WorkspaceManifest (wsDependencies, wsGhc)
+  , depRepos
   , addDep
   , parseWorkspace
   , renderWorkspace
@@ -65,7 +66,7 @@ freezeClosure storeRoot = runResult . traverse freezeOne
 -- 'runAdd' and 'runUpdate'.
 freezeWorkspace :: FilePath -> FilePath -> WorkspaceManifest -> Result String
 freezeWorkspace wsFile storeRoot ws = do
-  closure <- orFailE (resolve isBootLib (gitFetchManifest storeRoot (wsGhc ws)) (wsDependencies ws) (wsRegistry ws))
+  closure <- orFailE (resolve isBootLib (gitFetchManifest storeRoot (wsGhc ws)) (wsDependencies ws) (depRepos ws))
   locks <- orFailE (freezeClosure storeRoot closure)
   liftIO $ writeFile (takeDirectory wsFile </> "zinc.lock") (renderLock locks)
   pure (renderResolution closure)
@@ -92,7 +93,7 @@ addInWorkspace name = runResult $ do
   when (not present) $ failWithError (NoZincToml ".")
   src <- liftIO (readFile wsFile)
   ws <- liftEither (parseWorkspace src)
-  case lookup name (wsRegistry ws) of
+  case lookup name (depRepos ws) of
     Nothing ->
       failWithError (NoRepoInRegistry name "<workspace>")
     Just repo -> do

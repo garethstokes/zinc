@@ -5,10 +5,11 @@ module Zinc.Manifest
   , ComponentKind (..)
   , Dependency (..)
   , Ref (..)
+  , depRepos
+  , depGhcOptionsOf
   , parseWorkspace
   , parseMember
   , parseDependencies
-  , parseBuildOptions
   , renderWorkspace
   , addDep
   ) where
@@ -29,10 +30,15 @@ data Ref
   | Latest         -- ^ @"*"@ — latest release tag, resolved at @add@ time
   deriving (Eq, Show)
 
--- | A direct dependency: a package name plus how it is pinned.
+-- | A direct dependency, vertically: a name, how it is pinned, and (optionally)
+-- its repo override and extra ghc flags — all of a dependency's facets in one
+-- place (spec: vertical config). @depRepo@ is 'Nothing' when the repo is left to
+-- @add@-time discovery + the lock; it is the explicit override/pin otherwise.
 data Dependency = Dependency
-  { depName :: String
-  , depRef  :: Ref
+  { depName       :: String
+  , depRef        :: Ref
+  , depRepo       :: Maybe String -- ^ optional repo override/pin (was @[registry]@)
+  , depGhcOptions :: [String]     -- ^ optional extra ghc flags (was @[build-options]@)
   }
   deriving (Eq, Show)
 
@@ -42,9 +48,18 @@ data WorkspaceManifest = WorkspaceManifest
   { wsMembers      :: [FilePath]
   , wsGhc          :: String
   , wsDependencies :: [Dependency]
-  , wsRegistry     :: [(String, String)] -- ^ package name → git repo URL
   }
   deriving (Eq, Show)
+
+-- | The repos a workspace pins, keyed by dependency name — the resolver's view,
+-- derived from each dependency's @repo@ (replaces the old @[registry]@ table).
+depRepos :: WorkspaceManifest -> [(String, String)]
+depRepos ws = [(depName d, r) | d <- wsDependencies ws, Just r <- [depRepo d]]
+
+-- | Per-dependency extra ghc flags, keyed by name (derived from each
+-- dependency's @ghc-options@; replaces the old @[build-options]@ table).
+depGhcOptionsOf :: WorkspaceManifest -> [(String, [String])]
+depGhcOptionsOf ws = [(depName d, depGhcOptions d) | d <- wsDependencies ws, not (null (depGhcOptions d))]
 
 -- | A buildable component within a member package (spec §4).
 data ComponentKind = Library | Executable | TestSuite
@@ -130,56 +145,46 @@ parseWorkspace src = do
   wsTbl    <- tableField "workspace" top
   members  <- stringArrayField "members" wsTbl
   ghc      <- stringField "ghc" wsTbl
-  let (deps, reg) = depsAndRegistry top
   pure
     WorkspaceManifest
       { wsMembers      = members
       , wsGhc          = ghc
-      , wsDependencies = deps
-      , wsRegistry     = reg
+      , wsDependencies = parseDeps (subTable "dependencies" top)
       }
 
--- | Read just @[dependencies]@ + @[registry]@ from any package manifest
--- (no @[workspace]@ required). This is what the resolver reads from each
--- fetched dependency to discover the self-describing graph (spec §2).
+-- | Read just @[dependencies]@ from any package manifest (no @[workspace]@
+-- required) — what the resolver reads from each fetched dependency to discover
+-- the self-describing graph. Returns the deps plus their repos (derived from
+-- each dependency's @repo@) for the resolver's registry view.
 parseDependencies :: String -> Either String ([Dependency], [(String, String)])
-parseDependencies src = depsAndRegistry <$> Toml.parse src
+parseDependencies src = (\deps -> (deps, [(depName d, r) | d <- deps, Just r <- [depRepo d]])) . parseDeps . subTable "dependencies" <$> Toml.parse src
 
-depsAndRegistry :: Map String Value -> ([Dependency], [(String, String)])
-depsAndRegistry top =
-  (parseDeps (subTable "dependencies" top), parseRegistry (subTable "registry" top))
-
+-- | Parse the @[dependencies]@ table: each entry is either a bare-string
+-- shorthand (@name = "v1.2.3"@ → a tag; @"*"@ → latest) or a sub-table
+-- (@[dependencies.name]@) with one of @tag@/@branch@/@rev@, an optional @repo@
+-- override, and optional @ghc-options@.
 parseDeps :: Map String Value -> [Dependency]
-parseDeps = map (\(name, val) -> Dependency name (refOf val)) . Map.toList
+parseDeps = map dep . Map.toList
   where
-    refOf (Table t)
+    dep (name, Table t) = Dependency name (refOf t) (strOf "repo" t) (arrOf "ghc-options" t)
+    dep (name, String "*") = Dependency name Latest Nothing []
+    dep (name, String s) = Dependency name (Tag s) Nothing []
+    dep (name, _) = Dependency name Latest Nothing []
+
+    refOf t
+      | Just (String "*") <- Map.lookup "tag" t  = Latest -- canonical sub-table form of Latest
       | Just (String s) <- Map.lookup "tag" t    = Tag s
       | Just (String s) <- Map.lookup "branch" t = Branch s
       | Just (String s) <- Map.lookup "rev" t    = Rev s
-    refOf _ = Latest -- bare "*" (or anything unrecognised) → latest
+      | otherwise                                = Latest
+    strOf k t = case Map.lookup k t of Just (String s) -> Just s; _ -> Nothing
+    arrOf k t = case Map.lookup k t of Just (Array xs) -> [s | String s <- xs]; _ -> []
 
-parseRegistry :: Map String Value -> [(String, String)]
-parseRegistry = foldr keep [] . Map.toList
-  where
-    keep (name, String url) acc = (name, url) : acc
-    keep _                  acc = acc
-
--- | Read the optional @[build-options]@ table: per-dependency extra GHC flags
--- (e.g. @colour = ["-XSafe"]@) applied when zinc builds that dependency from
--- source. Lets a workspace pin compiler flags for fiddly upstreams (such as a
--- dep whose newtype deriving is inferred GND-unsafe by Safe Haskell). Returns
--- @[]@ on a parse error or a missing table.
-parseBuildOptions :: String -> [(String, [String])]
-parseBuildOptions src = case Toml.parse src of
-  Left _    -> []
-  Right top -> foldr keep [] (Map.toList (subTable "build-options" top))
-  where
-    keep (name, Array xs) acc = (name, [s | String s <- xs]) : acc
-    keep _                acc = acc
-
--- | Render a workspace-root manifest back to TOML. The root holds only
--- @[workspace]@/@[dependencies]@/@[registry]@ (members live in their own
--- files), so this round-trips with 'parseWorkspace'.
+-- | The canonical workspace-manifest writer (spec §3): @[workspace]@ then
+-- @[dependencies]@, deps sorted by name, each rendered as a one-line shorthand
+-- when it has only a ref, or a @[dependencies.name]@ sub-table (stable key
+-- order: ref, repo, ghc-options) when it has a repo or ghc flags. Idempotent;
+-- shared by @zinc add@/@update@ and @zinc fmt@. Round-trips with 'parseWorkspace'.
 renderWorkspace :: WorkspaceManifest -> String
 renderWorkspace w =
   unlines $
@@ -189,25 +194,34 @@ renderWorkspace w =
     , ""
     , "[dependencies]"
     ]
-      ++ map depLine (wsDependencies w)
-      ++ ["", "[registry]"]
-      ++ map regLine (wsRegistry w)
+      ++ concatMap renderDep (sortOn depName (wsDependencies w))
   where
     quote s = "\"" ++ s ++ "\""
-    depLine (Dependency n r) = n ++ " = " ++ refToml r
-    refToml (Tag t)    = "{ tag = " ++ quote t ++ " }"
-    refToml (Branch b) = "{ branch = " ++ quote b ++ " }"
-    refToml (Rev v)    = "{ rev = " ++ quote v ++ " }"
-    refToml Latest     = quote "*"
-    regLine (n, url) = n ++ " = " ++ quote url
+    refStr (Tag t)    = ("tag", t)
+    refStr (Branch b) = ("branch", b)
+    refStr (Rev v)    = ("rev", v)
+    refStr Latest     = ("tag", "*")
+    -- A dep with no repo override and no ghc flags renders as one-line shorthand
+    -- (the bare ref string); otherwise a [dependencies.name] sub-table.
+    renderDep d
+      | Nothing <- depRepo d, null (depGhcOptions d) =
+          [depName d ++ " = " ++ quote (snd (refStr (depRef d)))]
+      | otherwise =
+          let (k, v) = refStr (depRef d)
+           in [ ""
+              , "[dependencies." ++ depName d ++ "]"
+              , k ++ " = " ++ quote v
+              ]
+                ++ maybe [] (\r -> ["repo = " ++ quote r]) (depRepo d)
+                ++ [ "ghc-options = [" ++ intercalate ", " (map quote (depGhcOptions d)) ++ "]"
+                   | not (null (depGhcOptions d))
+                   ]
 
--- | Add (or replace) a direct dependency and its registry repo, keeping both
--- lists sorted by name for stable output.
+-- | Add (or replace) a direct dependency with its repo override, keeping the
+-- list sorted by name (the canonical writer re-sorts anyway).
 addDep :: WorkspaceManifest -> String -> Ref -> String -> WorkspaceManifest
 addDep w name ref repo =
   w
     { wsDependencies =
-        sortOn depName (Dependency name ref : filter ((/= name) . depName) (wsDependencies w))
-    , wsRegistry =
-        sortOn fst ((name, repo) : filter ((/= name) . fst) (wsRegistry w))
+        sortOn depName (Dependency name ref (Just repo) [] : filter ((/= name) . depName) (wsDependencies w))
     }

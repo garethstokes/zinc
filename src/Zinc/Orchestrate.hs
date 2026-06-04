@@ -52,7 +52,7 @@ import Zinc.Manifest
   , WorkspaceManifest (wsDependencies, wsGhc, wsMembers)
   , parseMember
   , parseWorkspace
-  , parseBuildOptions
+  , depGhcOptionsOf
   )
 import Zinc.Diagnostic (ZincError (AmbiguousTarget, ContentHashMismatch, NoZincToml, OtherError, ToolchainMissing))
 import Zinc.Except (Result, failWith, failWithError, liftEither, liftEitherE, liftIO, orFail, orFailE, runResult)
@@ -98,7 +98,7 @@ buildWorkspaceReport wsDir target keep = runResult $ do
   -- Coarse phases (perf spec §2): the dependency-closure build (fetch + compile
   -- + register of deps) and the workspace-member build (compile + link). Finer
   -- breakdown (resolve/provision/fetch/register/link split) is a follow-up.
-  (pkgs, closureMs) <- timed (orFailE (buildClosure wsDir storeRoot wsDb (wsGhc ws) (parseBuildOptions wsSrc)))
+  (pkgs, closureMs) <- timed (orFailE (buildClosure wsDir storeRoot wsDb (wsGhc ws) (depGhcOptionsOf ws)))
   (exes, memberMs) <- timed (concat <$> traverse (buildMemberAll wsDb) (orderMembers members))
   pure (BuildOutcome exes pkgs, [("closure", closureMs), ("member", memberMs)])
   where
@@ -149,7 +149,7 @@ runWarm wsDir = runResult $ do
   let wsDb = wsDir </> ".zinc" </> "pkgdb"
   orFail (initPackageDb wsDb)
   storeRoot <- liftIO resolveStoreRoot
-  orFailE (buildClosure wsDir storeRoot wsDb (wsGhc ws) (parseBuildOptions wsSrc))
+  orFailE (buildClosure wsDir storeRoot wsDb (wsGhc ws) (depGhcOptionsOf ws))
 
 -- | @zinc build [member] --json@: build, returning the structured outcome
 -- (executables + per-package closure report) and the 'Timing' block (total

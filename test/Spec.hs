@@ -40,7 +40,8 @@ import Zinc.Manifest
   , Ref (..)
   , WorkspaceManifest (..)
   , addDep
-  , parseBuildOptions
+  , depRepos
+  , depGhcOptionsOf
   , parseDependencies
   , parseMember
   , parseWorkspace
@@ -134,10 +135,9 @@ setupDepRepo = do
         [ "[package]"
         , "name = \"dep\""
         , "version = \"1\""
-        , "[dependencies]"
-        , "aeson = { tag = \"v2\" }"
-        , "[registry]"
-        , "aeson = \"r/aeson\""
+        , "[dependencies.aeson]"
+        , "tag = \"v2\""
+        , "repo = \"r/aeson\""
         ]
     )
   _ <- git ["add", "."]
@@ -168,7 +168,7 @@ setupAddFixture = do
   createDirectoryIfMissing True wsDir
   writeFile
     wsFile
-    (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "leaf" (Tag "v1")] [("leaf", leaf)]))
+    (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "leaf" (Tag "v1") (Just leaf) []]))
   pure (wsFile, baseD ++ "/store", leaf)
 
 -- | A throwaway store shared by the build end-to-end tests, kept out of the
@@ -319,7 +319,7 @@ main = hspec $ do
     it "builds the closure only (empty for a depless workspace)" $ do
       let d = "/tmp/zinc-warm-test"
       createDirectoryIfMissing True d
-      writeFileIn (d </> "zinc.toml") (renderWorkspace (WorkspaceManifest [] "9.6.5" [] []))
+      writeFileIn (d </> "zinc.toml") (renderWorkspace (WorkspaceManifest [] "9.6.5" []))
       r <- runWarm d
       r `shouldBe` Right []
 
@@ -386,11 +386,11 @@ main = hspec $ do
       parseArgs ["onboard"] `shouldBe` Right Onboard
 
     it "prime reflects toolchain, members, and the no-cabal gotcha" $ do
-      let t = primeText (WorkspaceManifest ["packages/app"] "9.6.5" [] [])
+      let t = primeText (WorkspaceManifest ["packages/app"] "9.6.5" [])
       all (`isInfixOf` t) ["GHC 9.6.5", "packages/app", "zinc build", "Do NOT use cabal"] `shouldBe` True
 
     it "onboard is a paste-ready AGENTS.md snippet" $ do
-      let t = onboardText (WorkspaceManifest [] "9.6.5" [] [])
+      let t = onboardText (WorkspaceManifest [] "9.6.5" [])
       all (`isInfixOf` t) ["## Building (zinc)", "zinc build", "9.6.5"] `shouldBe` True
 
   describe "introspection (rdy.4)" $ do
@@ -587,11 +587,11 @@ main = hspec $ do
             , "ghc = \"9.6.5\""
             , ""
             , "[dependencies]"
-            , "aeson = { tag = \"v2.2.3.0\" }"
             , "hspec = \"*\""
             , ""
-            , "[registry]"
-            , "aeson = \"https://github.com/haskell/aeson\""
+            , "[dependencies.aeson]"
+            , "tag = \"v2.2.3.0\""
+            , "repo = \"https://github.com/haskell/aeson\""
             ]
         parsed = parseWorkspace sample
         refOf name = lookup name . map (\d -> (depName d, depRef d)) . wsDependencies
@@ -608,20 +608,20 @@ main = hspec $ do
     it "reads a `*` dependency as Latest" $
       (refOf "hspec" <$> parsed) `shouldBe` Right (Just Latest)
 
-    it "reads registry entries" $
-      ((lookup "aeson" . wsRegistry) <$> parsed)
+    it "derives a dependency's repo from its `repo` key" $
+      ((lookup "aeson" . depRepos) <$> parsed)
         `shouldBe` Right (Just "https://github.com/haskell/aeson")
 
     it "fails on a missing [workspace] table" $
       parseWorkspace "[dependencies]\n" `shouldSatisfy` isLeft
 
-  describe "parseBuildOptions" $ do
-    it "reads per-dependency extra ghc flags from [build-options]" $
-      sort (parseBuildOptions (unlines ["[build-options]", "colour = [\"-XSafe\"]", "foo = [\"-O2\", \"-XCPP\"]"]))
-        `shouldBe` [("colour", ["-XSafe"]), ("foo", ["-O2", "-XCPP"])]
+  describe "dependency ghc-options (vertical schema)" $ do
+    it "reads per-dependency extra ghc flags from each dep's ghc-options" $ do
+      let src = unlines ["[workspace]", "members = []", "ghc = \"9.6.5\"", "[dependencies.colour]", "tag = \"v1\"", "ghc-options = [\"-XSafe\"]"]
+      (sort . depGhcOptionsOf <$> parseWorkspace src) `shouldBe` Right [("colour", ["-XSafe"])]
 
-    it "is empty when there is no [build-options] table" $
-      parseBuildOptions "[workspace]\nmembers = []\nghc = \"9.6.5\"\n" `shouldBe` []
+    it "is empty when no dependency sets ghc-options" $
+      (depGhcOptionsOf <$> parseWorkspace "[workspace]\nmembers = []\nghc = \"9.6.5\"\n") `shouldBe` Right []
 
   describe "parseMember" $ do
     let sample =
@@ -810,7 +810,7 @@ main = hspec $ do
         `shouldBe` Right []
 
   describe "resolve (graph walk)" $ do
-    let dep n r = Dependency n r
+    let dep n r = Dependency n r Nothing []
         boot = (`elem` ["base", "text", "bytestring", "containers"])
         fetchFrom fix n _ _ = pure (maybe (Left (OtherError ("missing: " ++ n))) Right (lookup n fix))
         run fix deps reg =
@@ -929,22 +929,21 @@ main = hspec $ do
       r `shouldBe` [Right 1, Left (OtherError "bad 2"), Right 3, Left (OtherError "bad 4")]
 
   describe "parseDependencies" $ do
-    it "reads [dependencies] and [registry] without requiring [workspace]" $
+    it "reads vertical [dependencies.<name>] (ref + repo) without requiring [workspace]" $
       parseDependencies
         ( unlines
             [ "[package]"
             , "name = \"foo\""
             , "version = \"1\""
-            , "[dependencies]"
-            , "aeson = { tag = \"v2\" }"
-            , "scientific = \"*\""
-            , "[registry]"
-            , "aeson = \"r/aeson\""
-            , "scientific = \"r/sci\""
+            , "[dependencies.aeson]"
+            , "tag = \"v2\""
+            , "repo = \"r/aeson\""
+            , "[dependencies.scientific]"
+            , "repo = \"r/sci\""
             ]
         )
         `shouldBe` Right
-          ( [Dependency "aeson" (Tag "v2"), Dependency "scientific" Latest]
+          ( [Dependency "aeson" (Tag "v2") (Just "r/aeson") [], Dependency "scientific" Latest (Just "r/sci") []]
           , [("aeson", "r/aeson"), ("scientific", "r/sci")]
           )
 
@@ -956,11 +955,11 @@ main = hspec $ do
 
     it "clones a dep at a ref and parses its manifest" $ do
       r <- gitFetchManifest "/tmp/zinc-fetch-store" "9.6.5" "dep" repo (Tag "v1")
-      r `shouldBe` Right (DepManifest [Dependency "aeson" (Tag "v2")] [("aeson", "r/aeson")])
+      r `shouldBe` Right (DepManifest [Dependency "aeson" (Tag "v2") (Just "r/aeson") []] [("aeson", "r/aeson")])
 
     it "resolves a Latest ref to the newest tag and parses its manifest" $ do
       r <- gitFetchManifest "/tmp/zinc-fetch-store" "9.6.5" "dep" repo Latest
-      r `shouldBe` Right (DepManifest [Dependency "aeson" (Tag "v2")] [("aeson", "r/aeson")])
+      r `shouldBe` Right (DepManifest [Dependency "aeson" (Tag "v2") (Just "r/aeson") []] [("aeson", "r/aeson")])
 
     it "derives deps from a .cabal when a real upstream has no zinc.toml" $ do
       let cabalRepo = "/tmp/zinc-fetch-cabal-dep"
@@ -976,7 +975,7 @@ main = hspec $ do
       rev <- trimStr <$> git ["rev-parse", "HEAD"]
       r <- gitFetchManifest "/tmp/zinc-fetch-store" "9.6.5" "up" cabalRepo (Rev rev)
       -- repos come from the root registry, so the derived manifest carries none
-      r `shouldBe` Right (DepManifest [Dependency "base" Latest, Dependency "containers" Latest, Dependency "prettyprinter" Latest] [])
+      r `shouldBe` Right (DepManifest [Dependency "base" Latest Nothing [], Dependency "containers" Latest Nothing [], Dependency "prettyprinter" Latest Nothing []] [])
 
   describe "newestTag" $ do
     it "picks the highest semver tag (numeric, not lexical)" $
@@ -1365,28 +1364,34 @@ main = hspec $ do
       conf <- readFile (storeConfPath root key)
       (miss, hit, conf) `shouldBe` (False, True, "name: demo\n")
 
-  describe "workspace write-back" $ do
+  describe "workspace write-back (vertical schema)" $ do
     let ws =
           WorkspaceManifest
             { wsMembers = ["packages/a", "packages/b"]
             , wsGhc = "9.6.5"
-            , wsDependencies = [Dependency "aeson" (Tag "v2"), Dependency "hspec" Latest]
-            , wsRegistry = [("aeson", "r/aeson"), ("hspec", "r/hspec")]
+            , wsDependencies =
+                [ Dependency "aeson" (Tag "v2") (Just "r/aeson") []
+                , Dependency "hspec" Latest (Just "r/hspec") ["-XSafe"]
+                ]
             }
 
     it "renderWorkspace round-trips through parseWorkspace" $
       parseWorkspace (renderWorkspace ws) `shouldBe` Right ws
 
-    it "addDep inserts a new dependency + registry entry (sorted)" $
-      let w = addDep (WorkspaceManifest ["packages/a"] "9.6.5" [] []) "aeson" (Tag "v2") "r/aeson"
-       in (wsDependencies w, wsRegistry w)
-            `shouldBe` ([Dependency "aeson" (Tag "v2")], [("aeson", "r/aeson")])
+    it "renders a simple (ref-only) dependency as one-line shorthand" $ do
+      let simple = WorkspaceManifest [] "9.6.5" [Dependency "text" (Tag "v2.1") Nothing []]
+      ("text = \"v2.1\"" `isInfixOf` renderWorkspace simple) `shouldBe` True
+
+    it "addDep inserts a new dependency with its repo (sorted, fmt-clean)" $
+      let w = addDep (WorkspaceManifest ["packages/a"] "9.6.5" []) "aeson" (Tag "v2") "r/aeson"
+       in (wsDependencies w, depRepos w)
+            `shouldBe` ([Dependency "aeson" (Tag "v2") (Just "r/aeson") []], [("aeson", "r/aeson")])
 
     it "addDep replaces an existing dependency in place" $
-      let w0 = addDep (WorkspaceManifest [] "9.6.5" [] []) "aeson" (Tag "v2") "r/aeson"
+      let w0 = addDep (WorkspaceManifest [] "9.6.5" []) "aeson" (Tag "v2") "r/aeson"
           w1 = addDep w0 "aeson" Latest "r/aeson2"
-       in (wsDependencies w1, wsRegistry w1)
-            `shouldBe` ([Dependency "aeson" Latest], [("aeson", "r/aeson2")])
+       in (wsDependencies w1, depRepos w1)
+            `shouldBe` ([Dependency "aeson" Latest (Just "r/aeson2") []], [("aeson", "r/aeson2")])
 
   describe "isBootLib" $ do
     it "recognises GHC boot libraries" $
@@ -1485,7 +1490,7 @@ main = hspec $ do
       let d = "/tmp/zinc-sibling-ws"
       stale <- doesDirectoryExist d
       when stale $ removeDirectoryRecursive d
-      writeFileIn (d ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/core", "packages/app"] "9.6.5" [] []))
+      writeFileIn (d ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/core", "packages/app"] "9.6.5" []))
       writeFileIn (d ++ "/packages/core/zinc.toml") (unlines ["[package]", "name = \"core\"", "version = \"1.0\"", "[build.lib]", "source-dirs = [\"src\"]", "exposed-modules = [\"Core\"]"])
       writeFileIn (d ++ "/packages/core/src/Core.hs") "module Core (greeting) where\ngreeting :: String\ngreeting = \"hi from core\"\n"
       writeFileIn (d ++ "/packages/app/zinc.toml") (unlines ["[package]", "name = \"app\"", "version = \"1.0\"", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "depends = [\"core\"]"])
@@ -1513,7 +1518,7 @@ main = hspec $ do
       let dir = "/tmp/zinc-test-test"
       stale <- doesDirectoryExist dir
       when stale $ removeDirectoryRecursive dir
-      writeFileIn (dir ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/t"] "9.6.5" [] []))
+      writeFileIn (dir ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/t"] "9.6.5" []))
       writeFileIn (dir ++ "/packages/t/zinc.toml") (unlines ["[package]", "name = \"t\"", "version = \"1.0\"", "[build.test.spec]", "source-dirs = [\"test\"]", "main = \"Spec.hs\""])
       writeFileIn (dir ++ "/packages/t/test/Spec.hs") "module Main where\nmain :: IO ()\nmain = putStrLn \"tests ok\"\n"
       r <- runTests dir
@@ -1537,7 +1542,7 @@ main = hspec $ do
       _ <- git ["commit", "--quiet", "-m", "greet"]
       rev <- trimStr <$> git ["rev-parse", "HEAD"]
       -- workspace whose member depends on the git dep
-      writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "greet" (Rev rev)] [("greet", greet)]))
+      writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "greet" (Rev rev) (Just greet) []]))
       writeFileIn (ws ++ "/zinc.lock") (renderLock [LockedPackage "greet" greet rev "sha256:x" []])
       writeFileIn (ws ++ "/packages/app/zinc.toml") (unlines ["[package]", "name = \"app\"", "version = \"1.0\"", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "depends = [\"greet\"]"])
       writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Greet (hello)\nmain :: IO ()\nmain = putStrLn hello\n"
@@ -1545,7 +1550,7 @@ main = hspec $ do
       r `shouldBe` Right "hi from greet\n"
 
   describe "lockDrift" $ do
-    let ws = WorkspaceManifest [] "9.6.5" [Dependency "aeson" (Tag "v2"), Dependency "hspec" Latest] []
+    let ws = WorkspaceManifest [] "9.6.5" [Dependency "aeson" (Tag "v2") Nothing [], Dependency "hspec" Latest Nothing []]
         lk n = LockedPackage n "r" "rev" "sha" []
 
     it "reports manifest deps missing from the lock" $
@@ -1578,7 +1583,7 @@ main = hspec $ do
       let d = "/tmp/zinc-target-ws"
       stale <- doesDirectoryExist d
       when stale $ removeDirectoryRecursive d
-      writeFileIn (d ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/a", "packages/b"] "9.6.5" [] []))
+      writeFileIn (d ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/a", "packages/b"] "9.6.5" []))
       let member n =
             do
               writeFileIn (d ++ "/packages/" ++ n ++ "/zinc.toml") (unlines ["[package]", "name = \"" ++ n ++ "\"", "version = \"1.0\"", "[build.exe." ++ n ++ "]", "source-dirs = [\"app\"]", "main = \"Main.hs\""])
@@ -1639,7 +1644,7 @@ main = hspec $ do
       _ <- git ["add", "."]
       _ <- git ["commit", "--quiet", "-m", "greet"]
       rev <- trimStr <$> git ["rev-parse", "HEAD"]
-      writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "greet" (Rev rev)] [("greet", dep)]))
+      writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "greet" (Rev rev) (Just dep) []]))
       writeFileIn (ws ++ "/zinc.lock") (renderLock [LockedPackage "greet" dep rev "sha256:x" []])
       writeFileIn (ws ++ "/packages/app/zinc.toml") (unlines ["[package]", "name = \"app\"", "version = \"1.0\"", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "depends = [\"greet\"]"])
       writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Greet (hello)\nmain :: IO ()\nmain = putStrLn hello\n"
@@ -1664,7 +1669,7 @@ main = hspec $ do
       _ <- git ["add", "."]
       _ <- git ["commit", "--quiet", "-m", "boxed"]
       rev <- trimStr <$> git ["rev-parse", "HEAD"]
-      writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "boxed" (Rev rev)] [("boxed", dep)]))
+      writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "boxed" (Rev rev) (Just dep) []]))
       writeFileIn (ws ++ "/zinc.lock") (renderLock [LockedPackage "boxed" dep rev "sha256:x" []])
       writeFileIn (ws ++ "/packages/app/zinc.toml") (unlines ["[package]", "name = \"app\"", "version = \"1.0\"", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "depends = [\"boxed\"]"])
       writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Boxed (firstElem)\nmain :: IO ()\nmain = print firstElem\n"
@@ -1701,7 +1706,7 @@ main = hspec $ do
       _ <- git ["add", "."]
       _ <- git ["commit", "--quiet", "-m", "lexdep"]
       rev <- trimStr <$> git ["rev-parse", "HEAD"]
-      writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "lexdep" (Rev rev)] [("lexdep", dep)]))
+      writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "lexdep" (Rev rev) (Just dep) []]))
       writeFileIn (ws ++ "/zinc.lock") (renderLock [LockedPackage "lexdep" dep rev "sha256:x" []])
       writeFileIn (ws ++ "/packages/app/zinc.toml") (unlines ["[package]", "name = \"app\"", "version = \"1.0\"", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "depends = [\"lexdep\"]"])
       writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Lexer (firstWord)\nmain :: IO ()\nmain = putStrLn firstWord\n"
@@ -1727,7 +1732,7 @@ main = hspec $ do
       _ <- git ["commit", "--quiet", "-m", "extdep"]
       rev <- trimStr <$> git ["rev-parse", "HEAD"]
       -- workspace manifest hand-written so it can carry a [build-options] table
-      writeFileIn (ws ++ "/zinc.toml") (unlines ["[workspace]", "members = [\"packages/app\"]", "ghc = \"9.6.5\"", "[dependencies]", "extdep = { rev = \"" ++ rev ++ "\" }", "[registry]", "extdep = \"" ++ dep ++ "\"", "[build-options]", "extdep = [\"-XTupleSections\"]"])
+      writeFileIn (ws ++ "/zinc.toml") (unlines ["[workspace]", "members = [\"packages/app\"]", "ghc = \"9.6.5\"", "[dependencies.extdep]", "rev = \"" ++ rev ++ "\"", "repo = \"" ++ dep ++ "\"", "ghc-options = [\"-XTupleSections\"]"])
       writeFileIn (ws ++ "/zinc.lock") (renderLock [LockedPackage "extdep" dep rev "sha256:x" []])
       writeFileIn (ws ++ "/packages/app/zinc.toml") (unlines ["[package]", "name = \"app\"", "version = \"1.0\"", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "depends = [\"extdep\"]"])
       writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Ext (tag)\nmain :: IO ()\nmain = print (fst (tag \"x\"))\n"
@@ -1763,7 +1768,7 @@ main = hspec $ do
       _ <- git ["commit", "--quiet", "-m", "mono"]
       rev <- trimStr <$> git ["rev-parse", "HEAD"]
       let repoSpec = repo ++ "#pkgs/greet"
-      writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "greet" (Rev rev)] [("greet", repoSpec)]))
+      writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "greet" (Rev rev) (Just repoSpec) []]))
       writeFileIn (ws ++ "/zinc.lock") (renderLock [LockedPackage "greet" repoSpec rev "sha256:x" []])
       writeFileIn (ws ++ "/packages/app/zinc.toml") (unlines ["[package]", "name = \"app\"", "version = \"1.0\"", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "depends = [\"greet\"]"])
       writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Greet (hi)\nmain :: IO ()\nmain = putStrLn hi\n"
@@ -1787,7 +1792,7 @@ main = hspec $ do
       _ <- git ["add", "."]
       _ <- git ["commit", "--quiet", "-m", "hdrdep"]
       rev <- trimStr <$> git ["rev-parse", "HEAD"]
-      writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "hdrdep" (Rev rev)] [("hdrdep", dep)]))
+      writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "hdrdep" (Rev rev) (Just dep) []]))
       writeFileIn (ws ++ "/zinc.lock") (renderLock [LockedPackage "hdrdep" dep rev "sha256:x" []])
       writeFileIn (ws ++ "/packages/app/zinc.toml") (unlines ["[package]", "name = \"app\"", "version = \"1.0\"", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "depends = [\"hdrdep\"]"])
       writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Hdr (val)\nmain :: IO ()\nmain = print val\n"
@@ -1812,7 +1817,7 @@ main = hspec $ do
           createDirectoryIfMissing True base
           _ <- readProcess "git" ["clone", "--depth", "1", "https://github.com/Bodigrim/integer-logarithms.git", dep] ""
           rev <- trimStr <$> readProcess "git" ["-C", dep, "rev-parse", "HEAD"] ""
-          writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "integer-logarithms" (Rev rev)] [("integer-logarithms", dep)]))
+          writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "integer-logarithms" (Rev rev) (Just dep) []]))
           writeFileIn (ws ++ "/zinc.lock") (renderLock [LockedPackage "integer-logarithms" dep rev "sha256:x" []])
           writeFileIn (ws ++ "/packages/app/zinc.toml") (unlines ["[package]", "name = \"app\"", "version = \"1.0\"", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "depends = [\"integer-logarithms\"]"])
           writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Math.NumberTheory.Logarithms (integerLog2)\nmain :: IO ()\nmain = putStrLn (\"log2(1000)=\" ++ show (integerLog2 1000))\n"
@@ -1840,7 +1845,7 @@ main = hspec $ do
           tRev <- trimStr <$> readProcess "git" ["-C", tomlDep, "rev-parse", "HEAD"] ""
           pRev <- trimStr <$> readProcess "git" ["-C", ppDep, "rev-parse", "HEAD"] ""
           let ppSpec = ppDep ++ "#prettyprinter"
-          writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "toml-parser" (Rev tRev)] [("toml-parser", tomlDep), ("prettyprinter", ppSpec)]))
+          writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "toml-parser" (Rev tRev) (Just tomlDep) [], Dependency "prettyprinter" Latest (Just ppSpec) []]))
           writeFileIn (ws ++ "/zinc.lock") (renderLock [LockedPackage "prettyprinter" ppSpec pRev "sha256:x" [], LockedPackage "toml-parser" tomlDep tRev "sha256:x" ["prettyprinter"]])
           writeFileIn (ws ++ "/packages/app/zinc.toml") (unlines ["[package]", "name = \"app\"", "version = \"1.0\"", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "depends = [\"toml-parser\"]"])
           writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Toml (parse)\nmain :: IO ()\nmain = putStrLn (either (const \"err\") (const \"parsed-ok\") (parse \"x = 1\\n\"))\n"
@@ -1869,7 +1874,7 @@ main = hspec $ do
           _ <- readProcess "git" ["clone", "--depth", "1", "https://github.com/quchen/prettyprinter.git", ppDep] ""
           tRev <- trimStr <$> readProcess "git" ["-C", tomlDep, "rev-parse", "HEAD"] ""
           pRev <- trimStr <$> readProcess "git" ["-C", ppDep, "rev-parse", "HEAD"] ""
-          writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "toml-parser" (Rev tRev), Dependency "prettyprinter" (Rev pRev)] [("toml-parser", tomlDep), ("prettyprinter", ppDep ++ "#prettyprinter")]))
+          writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "toml-parser" (Rev tRev) (Just tomlDep) [], Dependency "prettyprinter" (Rev pRev) (Just (ppDep ++ "#prettyprinter")) []]))
           writeFileIn (ws ++ "/packages/app/zinc.toml") (unlines ["[package]", "name = \"app\"", "version = \"1.0\"", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "depends = [\"toml-parser\"]"])
           writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Toml (parse)\nmain :: IO ()\nmain = putStrLn (either (const \"err\") (const \"parsed-ok\") (parse \"x = 1\\n\"))\n"
           -- zinc resolves the real closure (.cabal + registry) and freezes a lock
@@ -1898,7 +1903,7 @@ main = hspec $ do
       rev <- trimStr <$> git ["rev-parse", "HEAD"]
       -- a real-shaped sha256 that deliberately does NOT match the source tree
       let wrongSha = "sha256:" ++ replicate 64 '0'
-      writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "greet" (Rev rev)] [("greet", dep)]))
+      writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "greet" (Rev rev) (Just dep) []]))
       writeFileIn (ws ++ "/zinc.lock") (renderLock [LockedPackage "greet" dep rev wrongSha []])
       writeFileIn (ws ++ "/packages/app/zinc.toml") (unlines ["[package]", "name = \"app\"", "version = \"1.0\"", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "depends = [\"greet\"]"])
       writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Greet (hello)\nmain :: IO ()\nmain = putStrLn hello\n"
@@ -1921,7 +1926,7 @@ main = hspec $ do
       _ <- git ["add", "."]
       _ <- git ["commit", "--quiet", "-m", "greet"]
       rev <- trimStr <$> git ["rev-parse", "HEAD"]
-      writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "greet" (Rev rev)] [("greet", dep)]))
+      writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "greet" (Rev rev) (Just dep) []]))
       writeFileIn (ws ++ "/zinc.lock") (renderLock [LockedPackage "greet" dep rev "sha256:x" []])
       writeFileIn (ws ++ "/packages/app/zinc.toml") (unlines ["[package]", "name = \"app\"", "version = \"1.0\"", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "depends = [\"greet\"]"])
       writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Greet (hello)\nmain :: IO ()\nmain = putStrLn hello\n"
@@ -1945,7 +1950,7 @@ main = hspec $ do
       _ <- git ["add", "."]
       _ <- git ["commit", "--quiet", "-m", "greet"]
       rev <- trimStr <$> git ["rev-parse", "HEAD"]
-      writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "greet" (Rev rev)] [("greet", dep)]))
+      writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "greet" (Rev rev) (Just dep) []]))
       writeFileIn (ws ++ "/zinc.lock") (renderLock [LockedPackage "greet" dep rev "sha256:x" []])
       writeFileIn (ws ++ "/packages/app/zinc.toml") (unlines ["[package]", "name = \"app\"", "version = \"1.0\"", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "depends = [\"greet\"]"])
       writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Greet (hello)\nmain :: IO ()\nmain = putStrLn hello\n"
@@ -1977,7 +1982,7 @@ main = hspec $ do
         [ ("zinc.toml", unlines ["[package]", "name = \"a\"", "version = \"1.0\"", "[build.lib]", "source-dirs = [\"src\"]", "exposed-modules = [\"AMod\"]", "depends = [\"b\"]"])
         , ("src/AMod.hs", "module AMod (va) where\nimport BMod (vb)\nva :: String\nva = \"A+\" ++ vb\n")
         ]
-      writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "a" (Rev revA)] [("a", repoA), ("b", repoB)]))
+      writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "a" (Rev revA) (Just repoA) [], Dependency "b" Latest (Just repoB) []]))
       writeFileIn (ws ++ "/zinc.lock") (renderLock [LockedPackage "a" repoA revA "sha256:a" ["b"], LockedPackage "b" repoB revB "sha256:b" []])
       writeFileIn (ws ++ "/packages/app/zinc.toml") (unlines ["[package]", "name = \"app\"", "version = \"1.0\"", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "depends = [\"a\"]"])
       writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport AMod (va)\nmain :: IO ()\nmain = putStrLn va\n"
@@ -2008,7 +2013,7 @@ main = hspec $ do
       let d = "/tmp/zinc-clean-test"
       stale <- doesDirectoryExist d
       when stale $ removeDirectoryRecursive d
-      writeFileIn (d ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/a"] "9.6.5" [] []))
+      writeFileIn (d ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/a"] "9.6.5" []))
       writeFileIn (d ++ "/packages/a/zinc.toml") "[package]\nname = \"a\"\nversion = \"1.0\"\n"
       writeFileIn (d ++ "/.zinc/store/keep.txt") "cached"
       writeFileIn (d ++ "/.zinc/metrics.jsonl") "{\"command\":\"build\"}\n"
@@ -2051,7 +2056,7 @@ main = hspec $ do
           deadKey = buildCacheKey (BuildKey "rev-z" ghc [] [])
       mapM_ (\p -> doesDirectoryExist p >>= \e -> when e (removeDirectoryRecursive p)) [dir, gcRoot]
       setEnv "ZINC_STORE" gcRoot
-      writeFileIn (dir ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] ghc [Dependency "a" (Rev "rev-a")] [("a", "r/a")]))
+      writeFileIn (dir ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] ghc [Dependency "a" (Rev "rev-a") (Just "r/a") []]))
       writeFileIn (dir ++ "/zinc.lock") (renderLock [LockedPackage "a" "r/a" "rev-a" "sha256:x" []])
       writeFileIn (gcRoot ++ "/pkg/" ++ liveKey ++ "/package.conf") "live"
       writeFileIn (gcRoot ++ "/pkg/" ++ deadKey ++ "/package.conf") "dead"
@@ -2108,7 +2113,7 @@ main = hspec $ do
       _ <- git ["add", "."]
       _ <- git ["commit", "--quiet", "-m", "c"]
       rev <- trimStr <$> git ["rev-parse", "HEAD"]
-      writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "greet" (Rev rev)] [("greet", dep)]))
+      writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "greet" (Rev rev) (Just dep) []]))
       writeFileIn (ws ++ "/zinc.lock") (renderLock [LockedPackage "greet" dep rev "sha256:x" []])
       writeFileIn (ws ++ "/packages/app/zinc.toml") (unlines ["[package]", "name = \"app\"", "version = \"1.0\"", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "depends = [\"greet\"]"])
       writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Greet (hello)\nmain :: IO ()\nmain = putStrLn hello\n"
