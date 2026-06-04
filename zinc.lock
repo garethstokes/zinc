@@ -1,0 +1,62 @@
+[[locked]]
+name = "SHA"
+repo = "https://github.com/GaloisInc/SHA.git"
+rev = "9653669162f411b0250e83ddbdb375ff0a63e6eb"
+sha256 = "sha256:91285ddcf7170a4566ff8e7b647ed6a62ab30b8b497e423ee0576b95cdfae796"
+depends = []
+
+[[locked]]
+name = "ansi-terminal"
+repo = "https://github.com/UnkindPartition/ansi-terminal.git#ansi-terminal"
+rev = "0f22df579e543f0b05da15ffbb913edeb646a954"
+sha256 = "sha256:d503336b9109bdbbec86d2aae89bf90ac108d6fc709d53777809d477a83200e8"
+depends = ["ansi-terminal-types", "colour"]
+
+[[locked]]
+name = "ansi-terminal-types"
+repo = "https://github.com/UnkindPartition/ansi-terminal.git#ansi-terminal-types"
+rev = "2a4a6d89980801ae353fb573753d6205f90115e7"
+sha256 = "sha256:d382318642831365d9e431d4a2c1c3805bd95e1472077843394640e3d21d52b4"
+depends = ["colour"]
+
+[[locked]]
+name = "colour"
+repo = "https://github.com/garethstokes/color.git"
+rev = "a291db24d299b90f6eda344fe40cbc1453507f95"
+sha256 = "sha256:0593b267dda0b49a14282788f3d7876f45639f8bd6265e2ed9292dc2bbd58231"
+depends = []
+
+[[locked]]
+name = "optparse-applicative"
+repo = "https://github.com/pcapriotti/optparse-applicative.git"
+rev = "270a626f7a7225cdce9b025b427eb0c4378c39c7"
+sha256 = "sha256:860824854e5246359e45eef74c23e046df7fb0a558f1a2be8afb032e8b0d92b2"
+depends = ["prettyprinter", "prettyprinter-ansi-terminal", "transformers-compat"]
+
+[[locked]]
+name = "prettyprinter"
+repo = "https://github.com/quchen/prettyprinter.git#prettyprinter"
+rev = "7f9af88c37a511c1bca1af6836bf250319817926"
+sha256 = "sha256:ad4eb12a5799011abc244bd7284d1bc415c991dfa1b3d175056d8685a8c3acf3"
+depends = []
+
+[[locked]]
+name = "prettyprinter-ansi-terminal"
+repo = "https://github.com/quchen/prettyprinter.git#prettyprinter-ansi-terminal"
+rev = "7f9af88c37a511c1bca1af6836bf250319817926"
+sha256 = "sha256:ad4eb12a5799011abc244bd7284d1bc415c991dfa1b3d175056d8685a8c3acf3"
+depends = ["ansi-terminal", "prettyprinter"]
+
+[[locked]]
+name = "toml-parser"
+repo = "https://github.com/glguy/toml-parser.git"
+rev = "3f02aa375c4decfa7de6d4841974919697cfb54a"
+sha256 = "sha256:23ddb2192d8eff059fe1c30d302b78532e81e7a1f32b1cc4bfc9de7a868cfcc6"
+depends = ["prettyprinter"]
+
+[[locked]]
+name = "transformers-compat"
+repo = "https://github.com/ekmett/transformers-compat.git"
+rev = "879dc486166d3a9e653695572f9c28d88af7e2d7"
+sha256 = "sha256:64ea5b05b5935feffbd60a5996d31ccf64b9368b382bed2fe924c1e60dde2cbd"
+depends = []

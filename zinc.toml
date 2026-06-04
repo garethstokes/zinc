@@ -53,10 +53,9 @@ prettyprinter-ansi-terminal = "https://github.com/quchen/prettyprinter.git#prett
 ansi-terminal = "https://github.com/UnkindPartition/ansi-terminal.git#ansi-terminal"
 ansi-terminal-types = "https://github.com/UnkindPartition/ansi-terminal.git#ansi-terminal-types"
 transformers-compat = "https://github.com/ekmett/transformers-compat.git"
-# colour has no upstream git repo (darcs-era); vendored into a git mirror per
-# the project decision. TODO(zinc-576.11): host this mirror at a stable URL for
-# clean-checkout self-host; currently a local vendored clone.
-colour = "/tmp/zinc-vendor/colour"
+# colour has no upstream git repo (darcs-era); vendored into a git mirror
+# (Hackage colour-2.3.6 tarball) per the project decision.
+colour = "https://github.com/garethstokes/color.git"
 
 [build-options]
 colour = ["-XSafe"]
