@@ -178,7 +178,7 @@ buildMember mb = do
       exe = mbBuildDir mb </> compName comp
       mainFile = mbMemberDir mb </> head srcDirs </> maybe "Main.hs" id (compMain comp)
       args =
-        ["--make"]
+        ["--make", "-j"]
           ++ maybe [] (\db -> ["-package-db", db]) (mbPackageDb mb)
           ++ ["-hide-all-packages"]
           ++ packageFlags (compDepends comp)
@@ -244,7 +244,7 @@ buildLibArtifacts lb = runResult $ do
       -- doesn't collide with the Paths_ module zinc synthesizes.
       modules = nub (compExposedModules comp ++ compOtherModules comp ++ [pathsMod])
       compileArgs =
-        ["--make", "-hide-all-packages", "-package-db", lbPackageDb lb]
+        ["--make", "-j", "-hide-all-packages", "-package-db", lbPackageDb lb]
           ++ packageFlags (compDepends comp)
           ++ map (\d -> "-i" ++ (lbMemberDir lb </> d)) srcDirs
           ++ ["-i" ++ gen, "-optP-include", "-optP" ++ macrosHeader]
