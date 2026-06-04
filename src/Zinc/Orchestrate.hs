@@ -309,15 +309,24 @@ buildClosure wsDir storeRoot wsDb ghcVersion buildOpts = runResult $ do
         then reuseCached l key
         else withStoreLock storeRoot key $ do
           nowCached <- doesFileExist confPath
-          if nowCached then reuseCached l key else runResult (buildNode l key)
+          if nowCached
+            then reuseCached l key
+            else do
+              -- Per-package wall-clock build time (perf spec §3.2). Stamped onto
+              -- whatever report buildNode produces (built or skipped).
+              t0 <- getMonotonicTime
+              r <- runResult (buildNode l key)
+              t1 <- getMonotonicTime
+              let ms = round ((t1 - t0) * 1000) :: Int
+              pure (fmap (\(rep, m) -> (rep {prTimeMs = Just ms}, m)) r)
 
     reuseCached l key = do
       conf <- readFile (storeConfPath storeRoot key)
-      pure (Right (PackageReport (lockName l) (lockRev l) Cached, Just (lockName l, storePkgPath storeRoot key, conf)))
+      pure (Right (PackageReport (lockName l) (lockRev l) Cached (Just 0), Just (lockName l, storePkgPath storeRoot key, conf)))
 
     buildNode l key = do
       let pkgOut = storePkgPath storeRoot key
-          report st = PackageReport (lockName l) (lockRev l) st
+          report st = PackageReport (lockName l) (lockRev l) st Nothing
           dest = storeSrcPath storeRoot (lockName l) (lockRev l)
       exists <- liftIO (doesDirectoryExist dest)
       when (not exists) $

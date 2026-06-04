@@ -34,6 +34,7 @@ data PackageReport = PackageReport
   { prName   :: String
   , prRef    :: String
   , prStatus :: PackageStatus
+  , prTimeMs :: Maybe Int -- ^ wall-clock build time (ms); 'Nothing' if unmeasured
   }
   deriving (Eq, Show)
 
@@ -60,6 +61,7 @@ packageReportJson p =
     [ ("name", Just (JString (prName p)))
     , ("ref", Just (JString (prRef p)))
     , ("status", Just (JString (statusText (prStatus p))))
+    , ("timeMs", JInt <$> prTimeMs p)
     ]
 
 -- | The @data@ block for the build envelope: @{ executables, packages }@.

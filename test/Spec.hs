@@ -214,11 +214,15 @@ main = hspec $ do
         `shouldBe` ["cached", "built", "skipped", "failed"]
 
     it "renders a per-package report as JSON" $
-      renderJson (packageReportJson (PackageReport "colour" "a1b2c3" Cached))
+      renderJson (packageReportJson (PackageReport "colour" "a1b2c3" Cached Nothing))
         `shouldBe` "{\"name\":\"colour\",\"ref\":\"a1b2c3\",\"status\":\"cached\"}"
 
+    it "includes timeMs in a per-package report when measured" $
+      renderJson (packageReportJson (PackageReport "colour" "a1b2c3" Built (Just 1234)))
+        `shouldBe` "{\"name\":\"colour\",\"ref\":\"a1b2c3\",\"status\":\"built\",\"timeMs\":1234}"
+
     it "renders the build data block (executables + packages)" $
-      renderJson (buildDataJson (BuildOutcome ["/w/.zinc/build/app"] [PackageReport "colour" "a1b2c3" Built]))
+      renderJson (buildDataJson (BuildOutcome ["/w/.zinc/build/app"] [PackageReport "colour" "a1b2c3" Built Nothing]))
         `shouldBe` "{\"executables\":[\"/w/.zinc/build/app\"],\"packages\":[{\"name\":\"colour\",\"ref\":\"a1b2c3\",\"status\":\"built\"}]}"
 
     it "wraps a build outcome in the standard envelope" $
@@ -233,7 +237,7 @@ main = hspec $ do
 
   describe "command timing (hbv.1)" $ do
     it "derives cache stats from per-package statuses" $ do
-      let pkgs = [PackageReport "a" "r" Cached, PackageReport "b" "r" Built, PackageReport "c" "r" Cached, PackageReport "d" "r" Skipped]
+      let pkgs = [PackageReport "a" "r" Cached Nothing, PackageReport "b" "r" Built Nothing, PackageReport "c" "r" Cached Nothing, PackageReport "d" "r" Skipped Nothing]
           c = cacheStatsOf pkgs
       (csHits c, csMisses c, csPkgsBuilt c, csPkgsCached c) `shouldBe` (2, 1, 1, 2)
 
