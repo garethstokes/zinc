@@ -11,3 +11,7 @@ dist-newstyle/
 *.o
 result
 result-*
+
+# direnv / Nix dev-env cache
+.direnv/
+.envrc
