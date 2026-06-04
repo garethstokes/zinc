@@ -24,6 +24,7 @@ import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.QSem (newQSem, signalQSem, waitQSem)
 import Control.Exception (SomeException, finally, try)
 import Control.Monad (when)
+import Data.Bifunctor (first)
 import Data.Char (isHexDigit)
 import Data.List (stripPrefix)
 import qualified Data.Map as Map
@@ -48,6 +49,7 @@ import Zinc.Manifest
   , parseWorkspace
   , parseBuildOptions
   )
+import Zinc.Except (failWith, liftEither, liftIO, orFail, runResult)
 import Zinc.Resolve (ResolvedDep (..), topoLevels)
 import Zinc.Store (resolveStoreRoot, storeSrcPath, verifyContent)
 
@@ -56,64 +58,38 @@ import Zinc.Store (resolveStoreRoot, storeSrcPath, verifyContent)
 -- @target@ (when 'Just') restricts which member's @keep@-components are built;
 -- libraries are always built so dependencies remain available.
 buildWorkspace :: FilePath -> Maybe String -> (ComponentKind -> Bool) -> IO (Either String [FilePath])
-buildWorkspace wsDir target keep = do
-  wsSrc <- readFile (wsDir </> "zinc.toml")
-  case parseWorkspace wsSrc of
-    Left err -> pure (Left err)
-    Right ws -> do
-      loaded <- loadMembers [] (wsMembers ws)
-      case loaded of
-        Left err -> pure (Left err)
-        Right members -> do
-          let wsDb = wsDir </> ".zinc" </> "pkgdb"
-          -- Rebuild the workspace package db fresh each build so re-registering
-          -- closure/sibling libs (from cache) is conflict-free.
-          dbThere <- doesDirectoryExist wsDb
-          when dbThere $ removeDirectoryRecursive wsDb
-          ready <- initPackageDb wsDb
-          case ready of
-            Left err -> pure (Left err)
-            Right () -> do
-              storeRoot <- resolveStoreRoot
-              closure <- buildClosure wsDir storeRoot wsDb (wsGhc ws) (parseBuildOptions wsSrc)
-              case closure of
-                Left err -> pure (Left err)
-                Right () -> buildAll wsDb [] (orderMembers members)
+buildWorkspace wsDir target keep = runResult $ do
+  wsSrc <- liftIO $ readFile (wsDir </> "zinc.toml")
+  ws <- liftEither (parseWorkspace wsSrc)
+  members <- traverse loadMember (wsMembers ws)
+  let wsDb = wsDir </> ".zinc" </> "pkgdb"
+  -- Rebuild the workspace package db fresh each build so re-registering
+  -- closure/sibling libs (from cache) is conflict-free.
+  liftIO $ do
+    dbThere <- doesDirectoryExist wsDb
+    when dbThere $ removeDirectoryRecursive wsDb
+  orFail (initPackageDb wsDb)
+  storeRoot <- liftIO resolveStoreRoot
+  orFail (buildClosure wsDir storeRoot wsDb (wsGhc ws) (parseBuildOptions wsSrc))
+  concat <$> traverse (buildMemberAll wsDb) (orderMembers members)
   where
-    loadMembers acc [] = pure (Right (reverse acc))
-    loadMembers acc (member : rest) = do
+    loadMember member = do
       let dir = wsDir </> member
-      src <- readFile (dir </> "zinc.toml")
-      case parseMember src of
-        Left err -> pure (Left (member ++ ": " ++ err))
-        Right mem -> loadMembers ((dir, mem) : acc) rest
+      src <- liftIO $ readFile (dir </> "zinc.toml")
+      mem <- liftEither (first ((member ++ ": ") ++) (parseMember src))
+      pure (dir, mem)
 
-    buildAll _ acc [] = pure (Right acc)
-    buildAll wsDb acc ((dir, mem) : rest) = do
-      libResult <- buildMemberLib wsDb dir mem
-      case libResult of
-        Left err -> pure (Left err)
-        Right () -> do
-          exeResult <- buildComps wsDb dir [] (wanted mem)
-          case exeResult of
-            Left err    -> pure (Left err)
-            Right paths -> buildAll wsDb (acc ++ paths) rest
-
-    buildMemberLib wsDb dir mem =
+    -- Build a member's library (so siblings/exes can link it), then every
+    -- @keep@-selected component, returning the executable paths.
+    buildMemberAll wsDb (dir, mem) = do
       case filter ((== Library) . compKind) (pkgComponents mem) of
-        []        -> pure (Right ())
-        (lib : _) -> buildLib (LibBuild dir (dir </> ".zinc" </> "lib") wsDb (pkgName mem) (pkgVersion mem) lib)
+        []        -> pure ()
+        (lib : _) -> orFail (buildLib (LibBuild dir (dir </> ".zinc" </> "lib") wsDb (pkgName mem) (pkgVersion mem) lib))
+      traverse (\comp -> orFail (buildMember (MemberBuild dir (dir </> ".zinc" </> "build") (Just wsDb) comp))) (wanted mem)
 
     wanted mem
       | maybe True (== pkgName mem) target = filter (keep . compKind) (pkgComponents mem)
       | otherwise = []
-
-    buildComps _ _ acc [] = pure (Right (reverse acc))
-    buildComps wsDb dir acc (comp : rest) = do
-      result <- buildMember (MemberBuild dir (dir </> ".zinc" </> "build") (Just wsDb) comp)
-      case result of
-        Left err  -> pure (Left err)
-        Right exe -> buildComps wsDb dir (exe : acc) rest
 
 -- | @zinc build@: build every member's executables (libraries first).
 runBuild :: FilePath -> IO (Either String [FilePath])
@@ -126,28 +102,25 @@ runBuildMember wsDir target = buildWorkspace wsDir target (== Executable)
 -- | @zinc run@: build, then run the first executable with the given args,
 -- returning its stdout.
 buildAndRun :: FilePath -> [String] -> IO (Either String String)
-buildAndRun wsDir args = do
-  built <- runBuild wsDir
+buildAndRun wsDir args = runResult $ do
+  built <- orFail (runBuild wsDir)
   case built of
-    Left err        -> pure (Left err)
-    Right []        -> pure (Left "no executable to run")
-    Right (exe : _) -> Right <$> readProcess exe args ""
+    []        -> failWith "no executable to run"
+    (exe : _) -> liftIO (readProcess exe args "")
 
 -- | @zinc test@: build and run all test-suite components, returning how many
 -- passed. Fails on the first non-zero exit.
 runTests :: FilePath -> IO (Either String Int)
-runTests wsDir = do
-  built <- buildWorkspace wsDir Nothing (== TestSuite)
-  case built of
-    Left err   -> pure (Left err)
-    Right exes -> runEach 0 exes
+runTests wsDir = runResult $ do
+  exes <- orFail (buildWorkspace wsDir Nothing (== TestSuite))
+  mapM_ runOne exes
+  pure (length exes)
   where
-    runEach n [] = pure (Right n)
-    runEach n (exe : rest) = do
-      (code, _, _) <- readProcessWithExitCode exe [] ""
+    runOne exe = do
+      (code, _, _) <- liftIO (readProcessWithExitCode exe [] "")
       case code of
-        ExitSuccess   -> runEach (n + 1) rest
-        ExitFailure _ -> pure (Left (exe ++ ": test suite failed"))
+        ExitSuccess   -> pure ()
+        ExitFailure _ -> failWith (exe ++ ": test suite failed")
 
 -- | Topologically order members so a member is preceded by the sibling
 -- members it depends on (so their libraries are registered first).
@@ -195,21 +168,14 @@ parMapBounded n f xs = do
 -- with Setup.hs / Template Haskell / deep closures is a further follow-up;
 -- this handles zinc-native git library deps.)
 buildClosure :: FilePath -> FilePath -> FilePath -> String -> [(String, [String])] -> IO (Either String ())
-buildClosure wsDir storeRoot wsDb ghcVersion buildOpts = do
+buildClosure wsDir storeRoot wsDb ghcVersion buildOpts = runResult $ do
   let lockFile = wsDir </> "zinc.lock"
-  present <- doesFileExist lockFile
-  if not present
-    then pure (Right ())
-    else do
-      locked <- parseLock <$> readFile lockFile
-      case locked of
-        Left err -> pure (Left err)
-        Right [] -> pure (Right ())
-        Right locks -> case topoLevels (map toResolved locks) of
-          Left err -> pure (Left err)
-          Right levels ->
-            let byName = Map.fromList [(lockName l, l) | l <- locks]
-             in buildLevels (map (map ((byName Map.!) . rdName)) levels)
+  present <- liftIO (doesFileExist lockFile)
+  when present $ do
+    locks <- liftEither . parseLock =<< liftIO (readFile lockFile)
+    levels <- liftEither (topoLevels (map toResolved locks))
+    let byName = Map.fromList [(lockName l, l) | l <- locks]
+    mapM_ (buildLevel . map ((byName Map.!) . rdName)) levels
   where
     toResolved l = ResolvedDep (lockName l) (lockRepo l) Latest (lockDepends l)
 
@@ -220,18 +186,12 @@ buildClosure wsDir storeRoot wsDb ghcVersion buildOpts = do
     -- registered first. Concurrency is bounded by the capability count, so the
     -- non-threaded test harness stays correct-but-serial while the -threaded
     -- zinc binary actually overlaps the compiles.
-    buildLevels [] = pure (Right ())
-    buildLevels (level : rest) = do
-      n <- getNumCapabilities
-      produced <- parMapBounded n produceOne level
-      case sequence produced of
-        Left err -> pure (Left err)
-        Right confs ->
-          registerAll (catMaybes confs) >>= either (pure . Left) (const (buildLevels rest))
-
-    registerAll [] = pure (Right ())
-    registerAll (c : cs) =
-      registerPackage wsDb c >>= either (pure . Left) (const (registerAll cs))
+    -- Compile a level's nodes concurrently, then register their confs serially.
+    buildLevel level = do
+      n <- liftIO getNumCapabilities
+      produced <- liftIO (parMapBounded n produceOne level)
+      confs <- liftEither (sequence produced)
+      mapM_ (orFail . registerPackage wsDb) (catMaybes confs)
 
     -- Content-addressed cache key from data available without the source, so a
     -- cached build is reused without even fetching.
@@ -241,38 +201,31 @@ buildClosure wsDir storeRoot wsDb ghcVersion buildOpts = do
     -- text to register (@Just@), or @Nothing@ when the dep ships no library.
     -- No shared-state writes, so this is safe to run concurrently across the
     -- independent nodes of one level.
-    produceOne l = do
+    produceOne l = runResult $ do
       let key = cacheKeyOf l
           confPath = storeConfPath storeRoot key
-      cached <- doesFileExist confPath
+      cached <- liftIO (doesFileExist confPath)
       if cached
-        then Right . Just <$> readFile confPath -- cache hit: reuse conf, no fetch/compile
+        then Just <$> liftIO (readFile confPath) -- cache hit: reuse conf, no fetch/compile
         else do
           let dest = storeSrcPath storeRoot (lockName l) (lockRev l)
-          exists <- doesDirectoryExist dest
-          fetched <-
-            if exists then pure (Right (lockRev l)) else cloneAt (lockRepo l) (lockRev l) dest
-          case fetched of
-            Left err -> pure (Left ("fetch " ++ lockName l ++ ": " ++ err))
-            Right _ -> do
-              integrity <- verifyFetched l dest
-              case integrity of
-                Left err -> pure (Left err)
-                Right () -> do
-                  -- The package may live in a subdirectory of the repo
-                  -- (monorepo); read its manifest/sources from there.
-                  let pkgDir = maybe dest (dest </>) (snd (splitRepoSubdir (lockRepo l)))
-                  comps <- loadDepComponents pkgDir
-                  case comps of
-                    Left err -> pure (Left (lockName l ++ ": " ++ err))
-                    Right (version, components) -> case filter ((== Library) . compKind) components of
-                      []        -> pure (Right Nothing) -- no library to build
-                      (lib : _) ->
-                        -- Apply any per-dependency build overrides (extra ghc
-                        -- flags, e.g. -XSafe) from the workspace [build-options].
-                        let extra = fromMaybe [] (lookup (lockName l) buildOpts)
-                            lib' = lib {compGhcOptions = compGhcOptions lib ++ extra}
-                         in fmap (fmap Just) (buildLibArtifacts (LibBuild pkgDir (storePkgPath storeRoot key) wsDb (lockName l) version lib'))
+          exists <- liftIO (doesDirectoryExist dest)
+          when (not exists) $
+            orFail (first (("fetch " ++ lockName l ++ ": ") ++) <$> cloneAt (lockRepo l) (lockRev l) dest) >> pure ()
+          orFail (verifyFetched l dest)
+          -- The package may live in a subdirectory of the repo (monorepo);
+          -- read its manifest/sources from there.
+          let pkgDir = maybe dest (dest </>) (snd (splitRepoSubdir (lockRepo l)))
+          comps <- liftIO (loadDepComponents pkgDir)
+          (version, components) <- liftEither (first ((lockName l ++ ": ") ++) comps)
+          case filter ((== Library) . compKind) components of
+            []        -> pure Nothing -- no library to build
+            (lib : _) -> do
+              -- Apply any per-dependency build overrides (extra ghc flags,
+              -- e.g. -XSafe) from the workspace [build-options].
+              let extra = fromMaybe [] (lookup (lockName l) buildOpts)
+                  lib' = lib {compGhcOptions = compGhcOptions lib ++ extra}
+              Just <$> orFail (buildLibArtifacts (LibBuild pkgDir (storePkgPath storeRoot key) wsDb (lockName l) version lib'))
 
     -- Tamper detection (spec §8): a fetched tree's content hash must match the
     -- lock's recorded sha256. Only enforced for real-shaped hashes so that
@@ -337,26 +290,20 @@ checkLockDrift wsDir = do
 -- | @zinc repl@: build the workspace (so deps are registered), then launch an
 -- interactive ghci loading the first member's first component.
 runRepl :: FilePath -> IO (Either String ())
-runRepl wsDir = do
-  built <- runBuild wsDir
-  case built of
-    Left err -> pure (Left err)
-    Right _ -> do
-      wsSrc <- readFile (wsDir </> "zinc.toml")
-      case parseWorkspace wsSrc of
-        Left err -> pure (Left err)
-        Right ws -> case wsMembers ws of
-          [] -> pure (Left "no members to load")
-          (member : _) -> do
-            let dir = wsDir </> member
-            msrc <- readFile (dir </> "zinc.toml")
-            case parseMember msrc of
-              Left err -> pure (Left err)
-              Right mem -> case pkgComponents mem of
-                [] -> pure (Left (member ++ ": no components to load"))
-                (comp : _) -> do
-                  callProcess "ghci" (replArgs (Just (wsDir </> ".zinc" </> "pkgdb")) dir comp)
-                  pure (Right ())
+runRepl wsDir = runResult $ do
+  _ <- orFail (runBuild wsDir)
+  wsSrc <- liftIO $ readFile (wsDir </> "zinc.toml")
+  ws <- liftEither (parseWorkspace wsSrc)
+  case wsMembers ws of
+    [] -> failWith "no members to load"
+    (member : _) -> do
+      let dir = wsDir </> member
+      msrc <- liftIO $ readFile (dir </> "zinc.toml")
+      mem <- liftEither (parseMember msrc)
+      case pkgComponents mem of
+        [] -> failWith (member ++ ": no components to load")
+        (comp : _) ->
+          liftIO $ callProcess "ghci" (replArgs (Just (wsDir </> ".zinc" </> "pkgdb")) dir comp)
 
 -- | @zinc clean@: remove build artifacts (members' .zinc dirs + the workspace
 -- package db) while keeping the content-addressed store (spec §10).
