@@ -27,7 +27,7 @@ import Control.Monad (when)
 import Data.Char (isHexDigit)
 import Data.List (stripPrefix)
 import qualified Data.Map as Map
-import Data.Maybe (catMaybes)
+import Data.Maybe (catMaybes, fromMaybe)
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory, removeDirectoryRecursive)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeExtension, (</>))
@@ -38,7 +38,7 @@ import Zinc.Cache (BuildKey (..), buildCacheKey, storeConfPath, storePkgPath)
 import Zinc.Git (cloneAt, splitRepoSubdir)
 import Zinc.Lock (LockedPackage (..), parseLock)
 import Zinc.Manifest
-  ( Component (compDepends, compKind)
+  ( Component (compDepends, compGhcOptions, compKind)
   , ComponentKind (Executable, Library, TestSuite)
   , Dependency (depName)
   , MemberManifest (pkgComponents, pkgName, pkgVersion)
@@ -46,6 +46,7 @@ import Zinc.Manifest
   , WorkspaceManifest (wsDependencies, wsGhc, wsMembers)
   , parseMember
   , parseWorkspace
+  , parseBuildOptions
   )
 import Zinc.Resolve (ResolvedDep (..), topoLevels)
 import Zinc.Store (resolveStoreRoot, storeSrcPath, verifyContent)
@@ -74,7 +75,7 @@ buildWorkspace wsDir target keep = do
             Left err -> pure (Left err)
             Right () -> do
               storeRoot <- resolveStoreRoot
-              closure <- buildClosure wsDir storeRoot wsDb (wsGhc ws)
+              closure <- buildClosure wsDir storeRoot wsDb (wsGhc ws) (parseBuildOptions wsSrc)
               case closure of
                 Left err -> pure (Left err)
                 Right () -> buildAll wsDb [] (orderMembers members)
@@ -193,8 +194,8 @@ parMapBounded n f xs = do
 -- its library compiled + registered. (Compiling arbitrary upstream packages
 -- with Setup.hs / Template Haskell / deep closures is a further follow-up;
 -- this handles zinc-native git library deps.)
-buildClosure :: FilePath -> FilePath -> FilePath -> String -> IO (Either String ())
-buildClosure wsDir storeRoot wsDb ghcVersion = do
+buildClosure :: FilePath -> FilePath -> FilePath -> String -> [(String, [String])] -> IO (Either String ())
+buildClosure wsDir storeRoot wsDb ghcVersion buildOpts = do
   let lockFile = wsDir </> "zinc.lock"
   present <- doesFileExist lockFile
   if not present
@@ -266,7 +267,12 @@ buildClosure wsDir storeRoot wsDb ghcVersion = do
                     Left err -> pure (Left (lockName l ++ ": " ++ err))
                     Right (version, components) -> case filter ((== Library) . compKind) components of
                       []        -> pure (Right Nothing) -- no library to build
-                      (lib : _) -> fmap (fmap Just) (buildLibArtifacts (LibBuild pkgDir (storePkgPath storeRoot key) wsDb (lockName l) version lib))
+                      (lib : _) ->
+                        -- Apply any per-dependency build overrides (extra ghc
+                        -- flags, e.g. -XSafe) from the workspace [build-options].
+                        let extra = fromMaybe [] (lookup (lockName l) buildOpts)
+                            lib' = lib {compGhcOptions = compGhcOptions lib ++ extra}
+                         in fmap (fmap Just) (buildLibArtifacts (LibBuild pkgDir (storePkgPath storeRoot key) wsDb (lockName l) version lib'))
 
     -- Tamper detection (spec §8): a fetched tree's content hash must match the
     -- lock's recorded sha256. Only enforced for real-shaped hashes so that

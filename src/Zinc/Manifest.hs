@@ -8,6 +8,7 @@ module Zinc.Manifest
   , parseWorkspace
   , parseMember
   , parseDependencies
+  , parseBuildOptions
   , renderWorkspace
   , addDep
   ) where
@@ -160,6 +161,19 @@ parseRegistry = foldr keep [] . Map.toList
   where
     keep (name, String url) acc = (name, url) : acc
     keep _                  acc = acc
+
+-- | Read the optional @[build-options]@ table: per-dependency extra GHC flags
+-- (e.g. @colour = ["-XSafe"]@) applied when zinc builds that dependency from
+-- source. Lets a workspace pin compiler flags for fiddly upstreams (such as a
+-- dep whose newtype deriving is inferred GND-unsafe by Safe Haskell). Returns
+-- @[]@ on a parse error or a missing table.
+parseBuildOptions :: String -> [(String, [String])]
+parseBuildOptions src = case Toml.parse src of
+  Left _    -> []
+  Right top -> foldr keep [] (Map.toList (subTable "build-options" top))
+  where
+    keep (name, Array xs) acc = (name, [s | String s <- xs]) : acc
+    keep _                acc = acc
 
 -- | Render a workspace-root manifest back to TOML. The root holds only
 -- @[workspace]@/@[dependencies]@/@[registry]@ (members live in their own

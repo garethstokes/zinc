@@ -30,6 +30,7 @@ import Zinc.Manifest
   , Ref (..)
   , WorkspaceManifest (..)
   , addDep
+  , parseBuildOptions
   , parseDependencies
   , parseMember
   , parseWorkspace
@@ -257,6 +258,14 @@ main = hspec $ do
 
     it "fails on a missing [workspace] table" $
       parseWorkspace "[dependencies]\n" `shouldSatisfy` isLeft
+
+  describe "parseBuildOptions" $ do
+    it "reads per-dependency extra ghc flags from [build-options]" $
+      sort (parseBuildOptions (unlines ["[build-options]", "colour = [\"-XSafe\"]", "foo = [\"-O2\", \"-XCPP\"]"]))
+        `shouldBe` [("colour", ["-XSafe"]), ("foo", ["-O2", "-XCPP"])]
+
+    it "is empty when there is no [build-options] table" $
+      parseBuildOptions "[workspace]\nmembers = []\nghc = \"9.6.5\"\n" `shouldBe` []
 
   describe "parseMember" $ do
     let sample =
@@ -1321,6 +1330,32 @@ main = hspec $ do
       writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Lexer (firstWord)\nmain :: IO ()\nmain = putStrLn firstWord\n"
       r <- buildAndRun ws []
       r `shouldBe` Right "hello\n"
+
+  describe "per-dependency build overrides (end-to-end)" $
+    it "applies extra ghc flags from [build-options] to a closure dep" $ do
+      let base = "/tmp/zinc-override-ws"
+          dep = base ++ "/extdep-repo"
+          ws = base ++ "/ws"
+      stale <- doesDirectoryExist base
+      when stale $ removeDirectoryRecursive base
+      -- the dep's library uses a tuple section, which needs -XTupleSections —
+      -- supplied ONLY via the workspace [build-options], not the dep's manifest.
+      writeFileIn (dep ++ "/zinc.toml") (unlines ["[package]", "name = \"extdep\"", "version = \"1.0\"", "[build.lib]", "source-dirs = [\"src\"]", "exposed-modules = [\"Ext\"]"])
+      writeFileIn (dep ++ "/src/Ext.hs") "module Ext (tag) where\ntag :: a -> (Int, a)\ntag = (1,)\n"
+      let git args = readProcess "git" ("-C" : dep : args) ""
+      _ <- git ["init", "--quiet"]
+      _ <- git ["config", "user.email", "t@example.com"]
+      _ <- git ["config", "user.name", "Test"]
+      _ <- git ["add", "."]
+      _ <- git ["commit", "--quiet", "-m", "extdep"]
+      rev <- trimStr <$> git ["rev-parse", "HEAD"]
+      -- workspace manifest hand-written so it can carry a [build-options] table
+      writeFileIn (ws ++ "/zinc.toml") (unlines ["[workspace]", "members = [\"packages/app\"]", "ghc = \"9.6.5\"", "[dependencies]", "extdep = { rev = \"" ++ rev ++ "\" }", "[registry]", "extdep = \"" ++ dep ++ "\"", "[build-options]", "extdep = [\"-XTupleSections\"]"])
+      writeFileIn (ws ++ "/zinc.lock") (renderLock [LockedPackage "extdep" dep rev "sha256:x" []])
+      writeFileIn (ws ++ "/packages/app/zinc.toml") (unlines ["[package]", "name = \"app\"", "version = \"1.0\"", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "depends = [\"extdep\"]"])
+      writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Ext (tag)\nmain :: IO ()\nmain = print (fst (tag \"x\"))\n"
+      r <- buildAndRun ws []
+      r `shouldBe` Right "1\n"
 
   describe "splitRepoSubdir" $ do
     it "returns the whole spec and no subdir when there is no # suffix" $
