@@ -16,17 +16,23 @@ module Zinc.Orchestrate
   , checkLockDrift
   , runRepl
   , runClean
+  , parMapBounded
   ) where
 
+import Control.Concurrent (forkIO, getNumCapabilities)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
+import Control.Concurrent.QSem (newQSem, signalQSem, waitQSem)
+import Control.Exception (SomeException, finally, try)
 import Control.Monad (when)
 import Data.Char (isHexDigit)
 import Data.List (stripPrefix)
 import qualified Data.Map as Map
+import Data.Maybe (catMaybes)
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory, removeDirectoryRecursive)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeExtension, (</>))
 import System.Process (callProcess, readProcess, readProcessWithExitCode)
-import Zinc.Build (LibBuild (..), MemberBuild (..), buildLib, buildMember, initPackageDb, registerPackage, replArgs)
+import Zinc.Build (LibBuild (..), MemberBuild (..), buildLib, buildLibArtifacts, buildMember, initPackageDb, registerPackage, replArgs)
 import Zinc.Cabal (cabalBuildType, parseCabalComponentsForGhc)
 import Zinc.Cache (BuildKey (..), buildCacheKey, storeConfPath, storePkgPath)
 import Zinc.Git (cloneAt)
@@ -41,7 +47,7 @@ import Zinc.Manifest
   , parseMember
   , parseWorkspace
   )
-import Zinc.Resolve (ResolvedDep (..), topoSort)
+import Zinc.Resolve (ResolvedDep (..), topoLevels)
 import Zinc.Store (resolveStoreRoot, storeSrcPath, verifyContent)
 
 -- | Build a workspace: each member's library (so siblings can link) plus every
@@ -161,6 +167,26 @@ orderMembers members = map (byName Map.!) (reverse ordered)
           let (visited', order') = foldl visit (name : visited, order) (depsOf name)
            in (visited', name : order')
 
+-- | Map an effectful, fallible action over a list with bounded concurrency
+-- (at most @n@ in flight). Each task runs on its own thread, gated by a
+-- semaphore; results come back in input order. Exceptions are reflected as
+-- @Left@ rather than killing the batch. Under the non-threaded RTS this is
+-- effectively serial (capabilities = 1), which keeps behaviour identical to a
+-- sequential build; the -threaded zinc binary gets real overlap.
+parMapBounded :: Int -> (a -> IO (Either String b)) -> [a] -> IO [Either String b]
+parMapBounded n f xs = do
+  sem <- newQSem (max 1 n)
+  mvars <- mapM (spawn sem) xs
+  mapM takeMVar mvars
+  where
+    spawn sem x = do
+      mv <- newEmptyMVar
+      _ <- forkIO $ do
+        waitQSem sem
+        r <- try (f x) `finally` signalQSem sem
+        putMVar mv (either (\e -> Left (show (e :: SomeException))) id r)
+      pure mv
+
 -- | Build the resolved git-dependency closure (from @zinc.lock@) from source
 -- into the workspace package db, in dependency order, so members can link it.
 -- Each locked package is fetched at its exact commit, its zinc.toml read, and
@@ -178,31 +204,48 @@ buildClosure wsDir storeRoot wsDb ghcVersion = do
       case locked of
         Left err -> pure (Left err)
         Right [] -> pure (Right ())
-        Right locks -> case topoSort (map toResolved locks) of
+        Right locks -> case topoLevels (map toResolved locks) of
           Left err -> pure (Left err)
-          Right ordered ->
+          Right levels ->
             let byName = Map.fromList [(lockName l, l) | l <- locks]
-             in buildEach (map ((byName Map.!) . rdName) ordered)
+             in buildLevels (map (map ((byName Map.!) . rdName)) levels)
   where
     toResolved l = ResolvedDep (lockName l) (lockRepo l) Latest (lockDepends l)
 
-    buildEach [] = pure (Right ())
-    buildEach (l : rest) = do
-      one <- buildOne l
-      case one of
+    -- Build the closure level by level (spec §7). Nodes within a level are
+    -- mutually independent, so compile them concurrently; then register their
+    -- confs serially — ghc-pkg register on the shared wsDb is not
+    -- concurrency-safe, and the next level's compiles need this level
+    -- registered first. Concurrency is bounded by the capability count, so the
+    -- non-threaded test harness stays correct-but-serial while the -threaded
+    -- zinc binary actually overlaps the compiles.
+    buildLevels [] = pure (Right ())
+    buildLevels (level : rest) = do
+      n <- getNumCapabilities
+      produced <- parMapBounded n produceOne level
+      case sequence produced of
         Left err -> pure (Left err)
-        Right () -> buildEach rest
+        Right confs ->
+          registerAll (catMaybes confs) >>= either (pure . Left) (const (buildLevels rest))
+
+    registerAll [] = pure (Right ())
+    registerAll (c : cs) =
+      registerPackage wsDb c >>= either (pure . Left) (const (registerAll cs))
 
     -- Content-addressed cache key from data available without the source, so a
     -- cached build is reused without even fetching.
     cacheKeyOf l = buildCacheKey (BuildKey (lockRev l) ghcVersion (lockDepends l) [])
 
-    buildOne l = do
+    -- Produce a closure node's library WITHOUT registering it: returns the conf
+    -- text to register (@Just@), or @Nothing@ when the dep ships no library.
+    -- No shared-state writes, so this is safe to run concurrently across the
+    -- independent nodes of one level.
+    produceOne l = do
       let key = cacheKeyOf l
           confPath = storeConfPath storeRoot key
       cached <- doesFileExist confPath
       if cached
-        then readFile confPath >>= registerPackage wsDb -- cache hit: re-register, no fetch/compile
+        then Right . Just <$> readFile confPath -- cache hit: reuse conf, no fetch/compile
         else do
           let dest = storeSrcPath storeRoot (lockName l) (lockRev l)
           exists <- doesDirectoryExist dest
@@ -219,8 +262,8 @@ buildClosure wsDir storeRoot wsDb ghcVersion = do
                   case comps of
                     Left err -> pure (Left (lockName l ++ ": " ++ err))
                     Right (version, components) -> case filter ((== Library) . compKind) components of
-                      []        -> pure (Right ()) -- no library to build
-                      (lib : _) -> buildLib (LibBuild dest (storePkgPath storeRoot key) wsDb (lockName l) version lib)
+                      []        -> pure (Right Nothing) -- no library to build
+                      (lib : _) -> fmap (fmap Just) (buildLibArtifacts (LibBuild dest (storePkgPath storeRoot key) wsDb (lockName l) version lib))
 
     -- Tamper detection (spec §8): a fetched tree's content hash must match the
     -- lock's recorded sha256. Only enforced for real-shaped hashes so that

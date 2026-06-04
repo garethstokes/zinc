@@ -14,6 +14,7 @@ module Zinc.Build
   , replArgs
   , LibBuild (..)
   , buildLib
+  , buildLibArtifacts
   , initPackageDb
   , installedVersions
   ) where
@@ -180,7 +181,15 @@ data LibBuild = LibBuild
 -- | Compile a library component, archive it, and register it into the
 -- workspace package db so sibling members can @-package@ it.
 buildLib :: LibBuild -> IO (Either String ())
-buildLib lb = do
+buildLib lb = buildLibArtifacts lb >>= either (pure . Left) (registerPackage (lbPackageDb lb))
+
+-- | Compile and archive a library and persist its @package.conf@ into the
+-- store, returning the conf text — but /without/ registering it into the
+-- workspace db. Registration is split out so independent closure libraries can
+-- be compiled concurrently and then registered serially (ghc-pkg register on a
+-- shared db is not concurrency-safe).
+buildLibArtifacts :: LibBuild -> IO (Either String String)
+buildLibArtifacts lb = do
   createDirectoryIfMissing True (lbDistDir lb)
   -- Synthesize the Cabal-autogen files (Paths_<pkg>, cabal_macros.h) into a
   -- generated-source dir so the package's own modules can import/use them.
@@ -228,7 +237,7 @@ buildLib lb = do
       -- Persist the conf alongside the build so the artifact cache can
       -- re-register it without recompiling.
       writeFile (lbDistDir lb </> "package.conf") confText
-      registerPackage (lbPackageDb lb) confText
+      pure (Right confText)
   where
     chain act k = act >>= either (pure . Left) k
 

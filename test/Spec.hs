@@ -44,7 +44,7 @@ import Zinc.Cabal (cabalBuildType, parseCabalComponents, parseCabalComponentsFor
 import Zinc.Env (envCacheKey, nixPrintDevEnv, provisionEnv)
 import Zinc.Macros (emitCabalMacros)
 import Zinc.Nix (generateFlake)
-import Zinc.Orchestrate (buildAndRun, lockDrift, orderMembers, runBuild, runBuildMember, runClean, runTests)
+import Zinc.Orchestrate (buildAndRun, lockDrift, orderMembers, parMapBounded, runBuild, runBuildMember, runClean, runTests)
 import Zinc.Paths (pathsModuleName, synthesizePaths)
 import Zinc.Report (renderResolution)
 import Zinc.SysLibs (toNixpkgs)
@@ -538,6 +538,19 @@ main = hspec $ do
 
     it "handles an empty closure" $
       topoLevels [] `shouldBe` Right []
+
+  describe "parMapBounded (bounded-concurrency map)" $ do
+    it "returns results in input order regardless of bound" $ do
+      r <- parMapBounded 4 (\x -> pure (Right (x * 2 :: Int))) [1 .. 10 :: Int]
+      r `shouldBe` map (Right . (* 2)) [1 .. 10]
+
+    it "runs every task even when the bound is 1" $ do
+      r <- parMapBounded 1 (\x -> pure (Right x)) [1 .. 5 :: Int]
+      r `shouldBe` map Right [1 .. 5 :: Int]
+
+    it "surfaces a task's Left without dropping the others" $ do
+      r <- parMapBounded 3 (\x -> pure (if even x then Left ("bad " ++ show x) else Right x)) [1 .. 4 :: Int]
+      r `shouldBe` [Right 1, Left "bad 2", Right 3, Left "bad 4"]
 
   describe "parseDependencies" $ do
     it "reads [dependencies] and [registry] without requiring [workspace]" $
