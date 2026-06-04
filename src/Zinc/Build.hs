@@ -220,6 +220,9 @@ buildLibArtifacts lb = do
           ++ concatMap (\p -> ["-package", p]) (nub ("base" : compDepends comp))
           ++ map (\d -> "-i" ++ (lbMemberDir lb </> d)) srcDirs
           ++ ["-i" ++ gen, "-optP-include", "-optP" ++ macrosHeader]
+          -- C-header search dirs (cabal include-dirs) so CPP #include of the
+          -- package's own headers (e.g. version-compatibility-macros.h) resolves.
+          ++ concatMap (\d -> let p = lbMemberDir lb </> d in ["-I" ++ p, "-optP-I" ++ p]) (compIncludeDirs comp)
           ++ ["-this-unit-id", unitId, "-outputdir", lbDistDir lb]
           ++ map ("-X" ++) (compExtensions comp)
           ++ compGhcOptions comp

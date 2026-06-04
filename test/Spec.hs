@@ -429,6 +429,7 @@ main = hspec $ do
             , compGhcOptions = ["-Wall"]
             , compDepends = ["aeson"]
             , compSystemLibs = ["zlib"]
+            , compIncludeDirs = []
             }
 
     it "parses a named executable component" $
@@ -693,6 +694,7 @@ main = hspec $ do
             , compGhcOptions = ["-Wall"]
             , compDepends = ["aeson", "base"] -- finalizePD normalizes build-depends order
             , compSystemLibs = ["zlib"]
+            , compIncludeDirs = []
             }
 
     it "derives an executable component" $
@@ -1050,6 +1052,7 @@ main = hspec $ do
               , compGhcOptions = []
               , compDepends = []
               , compSystemLibs = []
+              , compIncludeDirs = []
               }
       r <- buildMember (MemberBuild dir (dir ++ "/build") Nothing comp)
       case r of
@@ -1076,7 +1079,7 @@ main = hspec $ do
   describe "orderMembers" $
     it "orders a member after the siblings it depends on" $ do
       let comp deps =
-            Component Library "x" [] [] [] Nothing [] [] deps []
+            Component Library "x" [] [] [] Nothing [] [] deps [] []
           core = ("packages/core", MemberManifest "core" "1.0" [comp []])
           app = ("packages/app", MemberManifest "app" "1.0" [comp ["core"]])
       map (pkgName . snd) (orderMembers [app, core]) `shouldBe` ["core", "app"]
@@ -1157,7 +1160,7 @@ main = hspec $ do
 
   describe "replArgs" $ do
     let exeComp =
-          Component Executable "app" ["app"] [] [] (Just "Main.hs") [] [] [] []
+          Component Executable "app" ["app"] [] [] (Just "Main.hs") [] [] [] [] []
 
     it "builds ghci args loading the member's main" $
       replArgs (Just "/db") "/m" exeComp
@@ -1170,7 +1173,7 @@ main = hspec $ do
       createDirectoryIfMissing True dir
       materialize dir (scaffoldNew "demo")
       let memberDir = dir ++ "/packages/demo"
-          comp = Component Executable "demo" ["app"] [] [] (Just "Main.hs") [] [] [] []
+          comp = Component Executable "demo" ["app"] [] [] (Just "Main.hs") [] [] [] [] []
       out <- readProcess "ghci" (replArgs Nothing memberDir comp ++ ["-e", "main"]) ""
       out `shouldBe` "Hello from demo!\n"
 
@@ -1328,6 +1331,30 @@ main = hspec $ do
       writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Greet (hi)\nmain :: IO ()\nmain = putStrLn hi\n"
       r <- buildAndRun ws []
       r `shouldBe` Right "hi from subdir\n"
+
+  describe "closure builder passes cabal include-dirs to CPP (end-to-end)" $
+    it "builds a dep whose module #includes a header from its include-dirs" $ do
+      let base = "/tmp/zinc-incdir-ws"
+          dep = base ++ "/hdrdep-repo"
+          ws = base ++ "/ws"
+      stale <- doesDirectoryExist base
+      when stale $ removeDirectoryRecursive base
+      writeFileIn (dep ++ "/zinc.toml") (unlines ["[package]", "name = \"hdrdep\"", "version = \"1.0\"", "[build.lib]", "source-dirs = [\"src\"]", "exposed-modules = [\"Hdr\"]", "include-dirs = [\"include\"]"])
+      writeFileIn (dep ++ "/include/myconst.h") "#define MY_CONST 7\n"
+      writeFileIn (dep ++ "/src/Hdr.hs") "{-# LANGUAGE CPP #-}\nmodule Hdr (val) where\n#include \"myconst.h\"\nval :: Int\nval = MY_CONST\n"
+      let git args = readProcess "git" ("-C" : dep : args) ""
+      _ <- git ["init", "--quiet"]
+      _ <- git ["config", "user.email", "t@example.com"]
+      _ <- git ["config", "user.name", "Test"]
+      _ <- git ["add", "."]
+      _ <- git ["commit", "--quiet", "-m", "hdrdep"]
+      rev <- trimStr <$> git ["rev-parse", "HEAD"]
+      writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "hdrdep" (Rev rev)] [("hdrdep", dep)]))
+      writeFileIn (ws ++ "/zinc.lock") (renderLock [LockedPackage "hdrdep" dep rev "sha256:x" []])
+      writeFileIn (ws ++ "/packages/app/zinc.toml") (unlines ["[package]", "name = \"app\"", "version = \"1.0\"", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "depends = [\"hdrdep\"]"])
+      writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Hdr (val)\nmain :: IO ()\nmain = print val\n"
+      r <- buildAndRun ws []
+      r `shouldBe` Right "7\n"
 
   -- Test ladder rung 2 (spec §12): a REAL Hackage leaf pulled from git and
   -- built via the Opt-2 .cabal reader. Network-gated so the default suite

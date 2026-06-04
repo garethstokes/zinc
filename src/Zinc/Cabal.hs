@@ -34,6 +34,7 @@ import Distribution.PackageDescription
   , extraLibs
   , hcOptions
   , hsSourceDirs
+  , includeDirs
   , libBuildInfo
   , otherModules
   , pkgconfigDepends
@@ -122,6 +123,7 @@ fromBuildInfo kind name bi =
     , compGhcOptions = hcOptions GHC bi
     , compDepends = map (unPackageName . depPkgName) (targetBuildDepends bi)
     , compSystemLibs = nub (mapMaybe toNixpkgs (extraLibs bi ++ pkgconfigNames bi))
+    , compIncludeDirs = includeDirs bi
     }
   where
     pkgconfigNames b = [unPkgconfigName n | PkgconfigDependency n _ <- pkgconfigDepends b]

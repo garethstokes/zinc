@@ -61,6 +61,7 @@ data Component = Component
   , compGhcOptions     :: [String]
   , compDepends        :: [String]
   , compSystemLibs     :: [String]     -- ^ nixpkgs attr names
+  , compIncludeDirs    :: [String]     -- ^ C-header search dirs for CPP, relative to the package
   }
   deriving (Eq, Show)
 
@@ -111,6 +112,7 @@ mkComponent kind name t =
     , compGhcOptions = strs "ghc-options"
     , compDepends = strs "depends"
     , compSystemLibs = strs "system-libs"
+    , compIncludeDirs = strs "include-dirs"
     }
   where
     strs k = either (const []) id (optStringArray k t)
