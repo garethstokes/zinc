@@ -50,7 +50,7 @@ import Zinc.Macros (emitCabalMacros)
 import Zinc.Nix (generateFlake)
 import Zinc.Orchestrate (buildAndRun, lockDrift, orderMembers, parMapBounded, runBuild, runBuildMember, runClean, runTests)
 import Zinc.Paths (pathsModuleName, synthesizePaths)
-import Zinc.Report (renderResolution)
+import Zinc.Report (BuildOutcome (..), PackageReport (..), PackageStatus (..), buildDataJson, packageReportJson, renderResolution, statusText)
 import Zinc.SysLibs (toNixpkgs)
 import Zinc.Resolve (DepManifest (..), ResolvedDep (..), isBootLib, resolve, topoLevels, topoSort)
 import Zinc.Version (newestTag)
@@ -199,6 +199,29 @@ main = hspec $ do
     it "escapes JSON strings" $
       renderJson (JString "a\"b\nc") `shouldBe` "\"a\\\"b\\nc\""
 
+  describe "build report (rdy.2)" $ do
+    it "maps each status to its stable wire string" $
+      map statusText [Cached, Built, Skipped, Failed]
+        `shouldBe` ["cached", "built", "skipped", "failed"]
+
+    it "renders a per-package report as JSON" $
+      renderJson (packageReportJson (PackageReport "colour" "a1b2c3" Cached))
+        `shouldBe` "{\"name\":\"colour\",\"ref\":\"a1b2c3\",\"status\":\"cached\"}"
+
+    it "renders the build data block (executables + packages)" $
+      renderJson (buildDataJson (BuildOutcome ["/w/.zinc/build/app"] [PackageReport "colour" "a1b2c3" Built]))
+        `shouldBe` "{\"executables\":[\"/w/.zinc/build/app\"],\"packages\":[{\"name\":\"colour\",\"ref\":\"a1b2c3\",\"status\":\"built\"}]}"
+
+    it "wraps a build outcome in the standard envelope" $
+      renderJson (envelope "build" True (Just (buildDataJson (BuildOutcome [] []))) [])
+        `shouldBe` "{\"zinc\":\"0.1.0.0\",\"command\":\"build\",\"ok\":true,\"data\":{\"executables\":[],\"packages\":[]},\"diagnostics\":[]}"
+
+    it "build in a non-workspace dir fails structurally (ZINC_NO_ZINC_TOML), not a crash" $ do
+      let d = "/tmp/zinc-test-noworkspace"
+      createDirectoryIfMissing True d
+      r <- runBuild d
+      either errorCode (const "built") r `shouldBe` "ZINC_NO_ZINC_TOML"
+
   describe "non-interactive contract (rdy.7)" $ do
     it "accepts (and ignores) --yes on add: zinc never prompts" $ do
       parseArgs ["add", "--yes", "aeson"] `shouldBe` Right (Add "aeson")
@@ -222,10 +245,14 @@ main = hspec $ do
     setEnv "ZINC_STORE" testStoreDir
   describe "parseArgs" $ do
     it "parses the `build` subcommand" $
-      parseArgs ["build"] `shouldBe` Right (Build Nothing)
+      parseArgs ["build"] `shouldBe` Right (Build Nothing False)
 
     it "parses `build <member>` with a target" $
-      parseArgs ["build", "mylib"] `shouldBe` Right (Build (Just "mylib"))
+      parseArgs ["build", "mylib"] `shouldBe` Right (Build (Just "mylib") False)
+
+    it "parses `build --json` (machine surface)" $ do
+      parseArgs ["build", "--json"] `shouldBe` Right (Build Nothing True)
+      parseArgs ["build", "mylib", "--json"] `shouldBe` Right (Build (Just "mylib") True)
 
     it "parses `new <name>` with its argument" $
       parseArgs ["new", "myapp"] `shouldBe` Right (New "myapp")

@@ -9,7 +9,8 @@ import Options.Applicative
 data Command
   = New String            -- ^ scaffold a new workspace
   | Add String            -- ^ resolve a dependency closure and freeze it
-  | Build (Maybe String)  -- ^ build the workspace, or a single member
+  | Build (Maybe String) Bool -- ^ build the workspace (or one member); Bool = --json
+
   | Run [String]          -- ^ build then run an executable, passing through args
   | Repl (Maybe String)   -- ^ ghci for an optional target
   | Test (Maybe String)   -- ^ build and run tests for an optional target
@@ -39,7 +40,7 @@ commandParser =
     mconcat
       [ sub "new"    "Scaffold a new workspace"       (New <$> strArgument (metavar "NAME"))
       , sub "add"    "Add a dependency"               (Add <$> (yesFlag *> strArgument (metavar "PKG")))
-      , sub "build"  "Build the workspace or a member" (Build <$> optional (strArgument (metavar "MEMBER")))
+      , sub "build"  "Build the workspace or a member" (Build <$> optional (strArgument (metavar "MEMBER")) <*> jsonFlag)
       , sub "run"    "Build then run an executable"   (Run <$> many (strArgument (metavar "ARGS")))
       , sub "repl"   "Open ghci for a target"         (Repl <$> optional (strArgument (metavar "TARGET")))
       , sub "test"   "Build and run tests"            (Test <$> optional (strArgument (metavar "TARGET")))
@@ -54,3 +55,7 @@ commandParser =
     -- otherwise ignored. Documents the never-prompt contract (spec §3.4).
     yesFlag =
       switch (long "yes" <> short 'y' <> help "Assume yes; never prompt (zinc is non-interactive by default)")
+    -- Machine-readable structured output (spec §3): the {zinc,command,ok,data,
+    -- diagnostics} envelope instead of human text.
+    jsonFlag =
+      switch (long "json" <> help "Emit a machine-readable JSON report")

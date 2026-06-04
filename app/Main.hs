@@ -7,9 +7,11 @@ import System.Exit (exitWith)
 import System.IO (hPutStrLn, stderr)
 import Zinc.Add (addInWorkspace, updateInWorkspace)
 import Zinc.CLI (Command (..), parseArgs)
-import Zinc.Diagnostic (ZincError, exitCodeFor, renderError)
+import Zinc.Diagnostic (ZincError, envelope, exitCodeFor, renderError, toDiagnostic)
 import Zinc.GC (runGc)
-import Zinc.Orchestrate (buildAndRun, checkLockDrift, runBuildMember, runClean, runRepl, runTests)
+import Zinc.Json (renderJson)
+import Zinc.Orchestrate (buildAndRun, checkLockDrift, runBuildMember, runBuildReport, runClean, runRepl, runTests)
+import Zinc.Report (buildDataJson)
 import Zinc.Scaffold (materialize, scaffoldNew)
 
 -- | Thin executable shim. Parsing/dispatch logic lives in (and is tested via)
@@ -36,15 +38,25 @@ dispatch (New name) = do
   putStrLn ("Created workspace member at ./packages/" ++ name)
 dispatch (Add name) =
   addInWorkspace name >>= either (failCmd "zinc add") putStr
-dispatch (Build target) = do
-  drift <- checkLockDrift "."
-  unless (null drift) $
-    putStrLn ("warning: zinc.lock is missing: " ++ intercalate ", " drift ++ " (run `zinc add`)")
-  runBuildMember "." target >>= \r -> case r of
-    Left e -> failCmd "zinc build" e
-    Right exes -> do
-      putStrLn ("Built " ++ show (length exes) ++ " executable(s):")
-      mapM_ (putStrLn . ("  " ++)) exes
+dispatch (Build target json)
+  | json =
+      -- Machine surface: a single JSON envelope, ok reflecting success; failures
+      -- carry the diagnostic and the category exit code. No human chatter.
+      runBuildReport "." target >>= \r -> case r of
+        Left e -> do
+          putStrLn (renderJson (envelope "build" False Nothing [toDiagnostic e]))
+          exitWith (exitCodeFor e)
+        Right outcome ->
+          putStrLn (renderJson (envelope "build" True (Just (buildDataJson outcome)) []))
+  | otherwise = do
+      drift <- checkLockDrift "."
+      unless (null drift) $
+        putStrLn ("warning: zinc.lock is missing: " ++ intercalate ", " drift ++ " (run `zinc add`)")
+      runBuildMember "." target >>= \r -> case r of
+        Left e -> failCmd "zinc build" e
+        Right exes -> do
+          putStrLn ("Built " ++ show (length exes) ++ " executable(s):")
+          mapM_ (putStrLn . ("  " ++)) exes
 dispatch (Run args) =
   buildAndRun "." args >>= either (failCmd "zinc run") putStr
 dispatch (Test _) =
