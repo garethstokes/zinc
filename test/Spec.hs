@@ -443,8 +443,8 @@ main = hspec $ do
     let dep n r = Dependency n r
         boot = (`elem` ["base", "text", "bytestring", "containers"])
         fetchFrom fix n _ _ = pure (maybe (Left ("missing: " ++ n)) Right (lookup n fix))
-        run fix rootDeps rootReg =
-          runIdentity (resolve boot (fetchFrom fix) rootDeps rootReg)
+        run fix deps reg =
+          runIdentity (resolve boot (fetchFrom fix) deps reg)
         findRD n r = either (const Nothing) (find ((== n) . rdName)) r
 
         fixture =
