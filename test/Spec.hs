@@ -21,7 +21,7 @@ import Test.Hspec
 import System.Exit (ExitCode (..))
 import Zinc.CLI (Command (..), parseArgs)
 import Zinc.Diagnostic (Diagnostic (..), ZincError (..), diagnosticJson, envelope, errorCode, exitCodeFor, renderError, toDiagnostic)
-import Zinc.Json (Json (..), renderJson)
+import Zinc.Json (Json (..), parseJson, renderJson)
 import Zinc.Git (cloneAt, gitEnv, listTags, splitRepoSubdir)
 import Zinc.Hackage (hackageCabalUrl, sourceRepoOf)
 import Zinc.Store (contentHash, resolveStoreRoot, storeSrcPath, verifyContent)
@@ -56,6 +56,7 @@ import Zinc.Resolve (DepManifest (..), ResolvedDep (..), isBootLib, resolve, top
 import Zinc.Version (newestTag)
 import Zinc.Lock (LockedPackage (..), parseLock, renderLock)
 import Zinc.Metrics (MetricsRecord (..), appendMetrics, metricsLine, metricsPath)
+import Zinc.Perf (CommandStats (..), PerfRecord (..), Regression (..), PerfSummary (..), decodeRecord, percentile, perfSummaryJson, renderPerf, summarize)
 import Zinc.Scaffold (FileSpec (..), materialize, scaffoldNew)
 
 -- | Body of the generated file at the given path, if present.
@@ -236,6 +237,53 @@ main = hspec $ do
     it "includes the timing block in the envelope when present" $
       renderJson (envelope "build" True (Just (buildDataJson (BuildOutcome [] []))) (Just (timingJson (Timing 5 [] (CacheStats 0 0 0 0)))) [])
         `shouldBe` "{\"zinc\":\"0.1.0.0\",\"command\":\"build\",\"ok\":true,\"data\":{\"executables\":[],\"packages\":[]},\"timing\":{\"totalMs\":5,\"phases\":{},\"cache\":{\"hits\":0,\"misses\":0,\"pkgsBuilt\":0,\"pkgsCached\":0}},\"diagnostics\":[]}"
+
+  describe "Zinc.Json parser (hbv.3)" $ do
+    it "round-trips every rendered value shape" $ do
+      let samples =
+            [ JNull, JBool True, JBool False, JInt 0, JInt (-7)
+            , JString "hi\n\"x\"\t/", JArray [JInt 1, JString "a", JBool False]
+            , JObject [("k", JInt 5), ("nested", JObject [("a", JArray [])])]
+            ]
+      map (parseJson . renderJson) samples `shouldBe` map Right samples
+
+    it "parses a nested metrics-shaped object (whitespace-tolerant)" $
+      parseJson "{ \"totalMs\": 7, \"phases\": {\"closure\": 4}, \"ok\": true }"
+        `shouldBe` Right (JObject [("totalMs", JInt 7), ("phases", JObject [("closure", JInt 4)]), ("ok", JBool True)])
+
+    it "rejects malformed input" $ do
+      parseJson "{" `shouldSatisfy` isLeft
+      parseJson "[1,2" `shouldSatisfy` isLeft
+      parseJson "tru" `shouldSatisfy` isLeft
+      parseJson "{\"k\" 1}" `shouldSatisfy` isLeft
+
+  describe "perf analyzer (hbv.3)" $ do
+    it "parses the `perf` subcommand (+ --json)" $ do
+      parseArgs ["perf"] `shouldBe` Right (Perf False)
+      parseArgs ["perf", "--json"] `shouldBe` Right (Perf True)
+
+    it "decodes a metrics record's analyzer-relevant fields" $ do
+      let j = either (error "parse") id (parseJson "{\"command\":\"build\",\"timing\":{\"totalMs\":42,\"cache\":{\"hits\":3,\"misses\":1}}}")
+      decodeRecord j `shouldBe` Just (PerfRecord "build" 42 3 1)
+
+    it "computes nearest-rank percentiles" $ do
+      percentile 50 [100, 110, 300] `shouldBe` 110
+      percentile 95 [100, 110, 300] `shouldBe` 300
+      percentile 50 ([] :: [Int]) `shouldBe` 0
+
+    it "summarizes latency, cache, and a regression vs the prior median" $ do
+      let s = summarize [PerfRecord "build" 100 1 0, PerfRecord "build" 110 2 1, PerfRecord "build" 300 0 1]
+      sumRecords s `shouldBe` 3
+      (sumCacheHits s, sumCacheMiss s) `shouldBe` (3, 2)
+      map (\c -> (csCommand c, csCount c, csP50Ms c, csP95Ms c)) (sumCommands s) `shouldBe` [("build", 3, 110, 300)]
+      sumRegression s `shouldBe` Just (Regression "build" 100 300 True)
+
+    it "renders empty history gracefully" $
+      renderPerf (summarize []) `shouldSatisfy` isInfixOf "No build metrics yet"
+
+    it "emits a JSON summary" $
+      renderJson (perfSummaryJson (summarize []))
+        `shouldBe` "{\"records\":0,\"commands\":[],\"cache\":{\"hits\":0,\"misses\":0,\"hitRatePct\":0},\"regression\":null}"
 
   describe "metrics persistence (hbv.2)" $ do
     it "renders a metrics record as one JSON line" $

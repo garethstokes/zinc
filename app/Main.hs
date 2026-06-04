@@ -12,6 +12,7 @@ import Zinc.GC (runGc)
 import Zinc.Json (renderJson)
 import Zinc.Metrics (recordBuild)
 import Zinc.Orchestrate (buildAndRun, checkLockDrift, runBuildReport, runClean, runRepl, runTests)
+import Zinc.Perf (perfSummaryJson, renderPerf, runPerf)
 import Zinc.Report (boExes, buildDataJson, timingJson)
 import Zinc.Scaffold (materialize, scaffoldNew)
 
@@ -78,3 +79,8 @@ dispatch Gc =
     Left e -> failCmd "zinc gc" e
     Right (pkgs, srcs) ->
       putStrLn ("Collected " ++ show (length pkgs) ++ " package(s) and " ++ show (length srcs) ++ " source(s) from the store.")
+dispatch (Perf json) =
+  runPerf "." >>= \s ->
+    if json
+      then putStrLn (renderJson (envelope "perf" True (Just (perfSummaryJson s)) Nothing []))
+      else putStr (renderPerf s)

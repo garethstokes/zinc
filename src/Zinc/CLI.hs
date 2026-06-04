@@ -17,6 +17,7 @@ data Command
   | Update (Maybe String) -- ^ bump refs for an optional package
   | Clean                 -- ^ remove build artifacts
   | Gc                    -- ^ garbage-collect the shared store
+  | Perf Bool             -- ^ analyze build performance history; Bool = --json
   deriving (Eq, Show)
 
 -- | Pure, testable entry point: parse argv into a 'Command'.
@@ -47,6 +48,7 @@ commandParser =
       , sub "update" "Bump dependency refs to latest" (Update <$> optional (strArgument (metavar "PKG")))
       , sub "clean"  "Remove build artifacts"         (pure Clean)
       , sub "gc"     "Garbage-collect the shared store" (pure Gc)
+      , sub "perf"   "Analyze build performance history" (Perf <$> jsonFlag)
       ]
   where
     sub name desc p = command name (info (p <**> helper) (progDesc desc))
