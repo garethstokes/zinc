@@ -18,6 +18,7 @@ data Command
   | Clean                 -- ^ remove build artifacts
   | Gc                    -- ^ garbage-collect the shared store
   | Perf Bool             -- ^ analyze build performance history; Bool = --json
+  | Doctor Bool           -- ^ diagnose env/project problems; Bool = --json
   deriving (Eq, Show)
 
 -- | Pure, testable entry point: parse argv into a 'Command'.
@@ -49,6 +50,7 @@ commandParser =
       , sub "clean"  "Remove build artifacts"         (pure Clean)
       , sub "gc"     "Garbage-collect the shared store" (pure Gc)
       , sub "perf"   "Analyze build performance history" (Perf <$> jsonFlag)
+      , sub "doctor" "Diagnose environment and project problems" (Doctor <$> jsonFlag)
       ]
   where
     sub name desc p = command name (info (p <**> helper) (progDesc desc))

@@ -3,11 +3,12 @@ module Main (main) where
 import Control.Monad (unless)
 import Data.List (intercalate)
 import System.Environment (getArgs)
-import System.Exit (exitWith)
+import System.Exit (ExitCode (ExitFailure), exitWith)
 import System.IO (hPutStrLn, stderr)
 import Zinc.Add (addInWorkspace, updateInWorkspace)
 import Zinc.CLI (Command (..), parseArgs)
 import Zinc.Diagnostic (ZincError, envelope, exitCodeFor, renderError, toDiagnostic)
+import Zinc.Doctor (doctorJson, doctorOk, renderDoctor, runDoctor)
 import Zinc.GC (runGc)
 import Zinc.Json (renderJson)
 import Zinc.Metrics (recordBuild)
@@ -84,3 +85,10 @@ dispatch (Perf json) =
     if json
       then putStrLn (renderJson (envelope "perf" True (Just (perfSummaryJson s)) Nothing []))
       else putStr (renderPerf s)
+dispatch (Doctor json) = do
+  diags <- runDoctor "."
+  if json
+    then putStrLn (renderJson (doctorJson diags))
+    else putStr (renderDoctor diags)
+  -- Exit non-zero on an error-severity finding so agents/CI can gate on health.
+  unless (doctorOk diags) (exitWith (ExitFailure 1))

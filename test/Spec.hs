@@ -20,7 +20,8 @@ import System.Process (readProcess)
 import Test.Hspec
 import System.Exit (ExitCode (..))
 import Zinc.CLI (Command (..), parseArgs)
-import Zinc.Diagnostic (Diagnostic (..), ZincError (..), diagnosticJson, envelope, errorCode, exitCodeFor, renderError, toDiagnostic)
+import Zinc.Diagnostic (Diagnostic (..), Severity (..), ZincError (..), diagnosticJson, envelope, errorCode, exitCodeFor, renderError, toDiagnostic)
+import Zinc.Doctor (doctorJson, doctorOk, flakesOffDiagnostic, lockDriftDiagnostic, renderDoctor, runDoctor)
 import Zinc.Json (Json (..), parseJson, renderJson)
 import Zinc.Git (cloneAt, gitEnv, listTags, splitRepoSubdir)
 import Zinc.Hackage (hackageCabalUrl, sourceRepoOf)
@@ -256,6 +257,34 @@ main = hspec $ do
       parseJson "[1,2" `shouldSatisfy` isLeft
       parseJson "tru" `shouldSatisfy` isLeft
       parseJson "{\"k\" 1}" `shouldSatisfy` isLeft
+
+  describe "doctor (rdy.6)" $ do
+    it "parses the `doctor` subcommand (+ --json)" $ do
+      parseArgs ["doctor"] `shouldBe` Right (Doctor False)
+      parseArgs ["doctor", "--json"] `shouldBe` Right (Doctor True)
+
+    it "reports lock drift as a warning with a nextAction" $ do
+      lockDriftDiagnostic [] `shouldBe` Nothing
+      let d = maybe (error "expected drift") id (lockDriftDiagnostic ["aeson", "text"])
+      (diagCode d, diagSeverity d) `shouldBe` ("ZINC_LOCK_DRIFT", SWarning)
+      diagNextAction d `shouldSatisfy` isJust
+
+    it "treats warnings as ok, error-severity findings as not-ok" $ do
+      doctorOk [flakesOffDiagnostic] `shouldBe` True
+      doctorOk [toDiagnostic (NoZincToml ".")] `shouldBe` False
+
+    it "renders a clean bill of health" $
+      renderDoctor [] `shouldSatisfy` isInfixOf "No problems found"
+
+    it "emits the doctor envelope with ok reflecting health" $
+      renderJson (doctorJson []) `shouldSatisfy` isInfixOf "\"command\":\"doctor\",\"ok\":true"
+
+    it "flags a missing workspace as a NoZincToml error (not-ok)" $ do
+      let d = "/tmp/zinc-doctor-nows"
+      createDirectoryIfMissing True d
+      diags <- runDoctor d
+      any ((== "ZINC_NO_ZINC_TOML") . diagCode) diags `shouldBe` True
+      doctorOk diags `shouldBe` False
 
   describe "perf analyzer (hbv.3)" $ do
     it "parses the `perf` subcommand (+ --json)" $ do
