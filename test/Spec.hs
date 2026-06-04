@@ -18,7 +18,10 @@ import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.FilePath (takeDirectory, (</>))
 import System.Process (readProcess)
 import Test.Hspec
+import System.Exit (ExitCode (..))
 import Zinc.CLI (Command (..), parseArgs)
+import Zinc.Diagnostic (Diagnostic (..), ZincError (..), diagnosticJson, envelope, errorCode, exitCodeFor, toDiagnostic)
+import Zinc.Json (Json (..), renderJson)
 import Zinc.Git (cloneAt, listTags, splitRepoSubdir)
 import Zinc.Hackage (hackageCabalUrl, sourceRepoOf)
 import Zinc.Store (contentHash, resolveStoreRoot, storeSrcPath, verifyContent)
@@ -166,6 +169,36 @@ testStoreDir = "/tmp/zinc-test-store"
 
 main :: IO ()
 main = hspec $ do
+  describe "diagnostic core (rdy.1)" $ do
+    it "maps each error to its stable taxonomy code" $ do
+      errorCode (DepNoGitRepo "colour") `shouldBe` "ZINC_DEP_NO_GIT_REPO"
+      errorCode NixAbsent `shouldBe` "ZINC_NIX_ABSENT"
+      errorCode (ContentHashMismatch "p" "a" "b") `shouldBe` "ZINC_CONTENT_HASH_MISMATCH"
+
+    it "toDiagnostic carries code, package, and an actionable nextAction" $ do
+      let d = toDiagnostic (DepNoGitRepo "colour")
+      diagCode d `shouldBe` "ZINC_DEP_NO_GIT_REPO"
+      diagPackage d `shouldBe` Just "colour"
+      diagNextAction d `shouldSatisfy` isJust
+
+    it "renders a Diagnostic to JSON, omitting absent optional fields" $
+      renderJson (diagnosticJson (toDiagnostic (ManifestParse "f.toml" "bad")))
+        `shouldBe` "{\"code\":\"ZINC_MANIFEST_PARSE\",\"severity\":\"error\",\"title\":\"manifest parse error\",\"detail\":\"bad\",\"location\":\"f.toml\",\"nextAction\":\"fix the TOML in the manifest\"}"
+
+    it "wraps output in the standard envelope" $
+      renderJson (envelope "build" True (Just (JObject [("built", JInt 1)])) [])
+        `shouldBe` "{\"zinc\":\"0.1.0.0\",\"command\":\"build\",\"ok\":true,\"data\":{\"built\":1},\"diagnostics\":[]}"
+
+    it "assigns stable exit codes per category" $ do
+      exitCodeFor (NoZincToml ".") `shouldBe` ExitFailure 2
+      exitCodeFor (DepNoGitRepo "colour") `shouldBe` ExitFailure 3
+      exitCodeFor (GhcCompile "p" "boom") `shouldBe` ExitFailure 4
+      exitCodeFor NixAbsent `shouldBe` ExitFailure 5
+      exitCodeFor (ContentHashMismatch "p" "a" "b") `shouldBe` ExitFailure 6
+
+    it "escapes JSON strings" $
+      renderJson (JString "a\"b\nc") `shouldBe` "\"a\\\"b\\nc\""
+
   -- Isolate every build end-to-end test from the real ~/.zinc by pointing the
   -- shared store at a throwaway dir (exercises the ZINC_STORE override).
   runIO $ do
