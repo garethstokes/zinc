@@ -22,7 +22,7 @@ import System.Exit (ExitCode (..))
 import Zinc.CLI (Command (..), parseArgs)
 import Zinc.Diagnostic (Diagnostic (..), ZincError (..), diagnosticJson, envelope, errorCode, exitCodeFor, renderError, toDiagnostic)
 import Zinc.Json (Json (..), renderJson)
-import Zinc.Git (cloneAt, listTags, splitRepoSubdir)
+import Zinc.Git (cloneAt, gitEnv, listTags, splitRepoSubdir)
 import Zinc.Hackage (hackageCabalUrl, sourceRepoOf)
 import Zinc.Store (contentHash, resolveStoreRoot, storeSrcPath, verifyContent)
 import Zinc.Manifest
@@ -198,6 +198,21 @@ main = hspec $ do
 
     it "escapes JSON strings" $
       renderJson (JString "a\"b\nc") `shouldBe` "\"a\\\"b\\nc\""
+
+  describe "non-interactive contract (rdy.7)" $ do
+    it "accepts (and ignores) --yes on add: zinc never prompts" $ do
+      parseArgs ["add", "--yes", "aeson"] `shouldBe` Right (Add "aeson")
+      parseArgs ["add", "-y", "aeson"] `shouldBe` Right (Add "aeson")
+
+    it "gitEnv sets the non-interactive guards so git can't block on a tty" $ do
+      let e = gitEnv [("PATH", "/usr/bin"), ("GIT_TERMINAL_PROMPT", "1")]
+      lookup "GIT_TERMINAL_PROMPT" e `shouldBe` Just "0"
+      lookup "GIT_SSH_COMMAND" e `shouldBe` Just "ssh -o BatchMode=yes"
+
+    it "gitEnv preserves the ambient environment (e.g. PATH) without duplicating overrides" $ do
+      let e = gitEnv [("PATH", "/usr/bin"), ("GIT_TERMINAL_PROMPT", "1")]
+      lookup "PATH" e `shouldBe` Just "/usr/bin"
+      length (filter ((== "GIT_TERMINAL_PROMPT") . fst) e) `shouldBe` 1
 
   -- Isolate every build end-to-end test from the real ~/.zinc by pointing the
   -- shared store at a throwaway dir (exercises the ZINC_STORE override).

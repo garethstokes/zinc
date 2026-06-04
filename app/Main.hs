@@ -3,9 +3,11 @@ module Main (main) where
 import Control.Monad (unless)
 import Data.List (intercalate)
 import System.Environment (getArgs)
+import System.Exit (exitWith)
+import System.IO (hPutStrLn, stderr)
 import Zinc.Add (addInWorkspace, updateInWorkspace)
 import Zinc.CLI (Command (..), parseArgs)
-import Zinc.Diagnostic (renderError)
+import Zinc.Diagnostic (ZincError, exitCodeFor, renderError)
 import Zinc.GC (runGc)
 import Zinc.Orchestrate (buildAndRun, checkLockDrift, runBuildMember, runClean, runRepl, runTests)
 import Zinc.Scaffold (materialize, scaffoldNew)
@@ -20,36 +22,44 @@ main = do
     Left err  -> putStrLn err
     Right cmd -> dispatch cmd
 
+-- | Report a failed command and exit with its category's stable code (spec §6),
+-- so an agent can branch on the exit status without parsing the message. The
+-- error goes to stderr; structured output (later: --json) stays on stdout.
+failCmd :: String -> ZincError -> IO ()
+failCmd cmd e = do
+  hPutStrLn stderr (cmd ++ ": " ++ renderError e)
+  exitWith (exitCodeFor e)
+
 dispatch :: Command -> IO ()
 dispatch (New name) = do
   materialize "." (scaffoldNew name)
   putStrLn ("Created workspace member at ./packages/" ++ name)
 dispatch (Add name) =
-  addInWorkspace name >>= either (\e -> putStrLn ("zinc add: " ++ renderError e)) putStr
+  addInWorkspace name >>= either (failCmd "zinc add") putStr
 dispatch (Build target) = do
   drift <- checkLockDrift "."
   unless (null drift) $
     putStrLn ("warning: zinc.lock is missing: " ++ intercalate ", " drift ++ " (run `zinc add`)")
   runBuildMember "." target >>= \r -> case r of
-    Left e -> putStrLn ("zinc build: " ++ renderError e)
+    Left e -> failCmd "zinc build" e
     Right exes -> do
       putStrLn ("Built " ++ show (length exes) ++ " executable(s):")
       mapM_ (putStrLn . ("  " ++)) exes
 dispatch (Run args) =
-  buildAndRun "." args >>= either (\e -> putStrLn ("zinc run: " ++ renderError e)) putStr
+  buildAndRun "." args >>= either (failCmd "zinc run") putStr
 dispatch (Test _) =
   runTests "." >>= \r -> case r of
-    Left e  -> putStrLn ("zinc test: " ++ renderError e)
+    Left e  -> failCmd "zinc test" e
     Right n -> putStrLn (show n ++ " test suite(s) passed")
 dispatch (Repl _) =
-  runRepl "." >>= either (\e -> putStrLn ("zinc repl: " ++ renderError e)) (const (pure ()))
+  runRepl "." >>= either (failCmd "zinc repl") (const (pure ()))
 dispatch (Update _) =
-  updateInWorkspace >>= either (\e -> putStrLn ("zinc update: " ++ renderError e)) putStr
+  updateInWorkspace >>= either (failCmd "zinc update") putStr
 dispatch Clean = do
   runClean "."
   putStrLn "Cleaned build artifacts (kept the store)."
 dispatch Gc =
   runGc "." >>= \r -> case r of
-    Left e -> putStrLn ("zinc gc: " ++ renderError e)
+    Left e -> failCmd "zinc gc" e
     Right (pkgs, srcs) ->
       putStrLn ("Collected " ++ show (length pkgs) ++ " package(s) and " ++ show (length srcs) ++ " source(s) from the store.")

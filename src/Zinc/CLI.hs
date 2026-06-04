@@ -38,7 +38,7 @@ commandParser =
   subparser $
     mconcat
       [ sub "new"    "Scaffold a new workspace"       (New <$> strArgument (metavar "NAME"))
-      , sub "add"    "Add a dependency"               (Add <$> strArgument (metavar "PKG"))
+      , sub "add"    "Add a dependency"               (Add <$> (yesFlag *> strArgument (metavar "PKG")))
       , sub "build"  "Build the workspace or a member" (Build <$> optional (strArgument (metavar "MEMBER")))
       , sub "run"    "Build then run an executable"   (Run <$> many (strArgument (metavar "ARGS")))
       , sub "repl"   "Open ghci for a target"         (Repl <$> optional (strArgument (metavar "TARGET")))
@@ -49,3 +49,8 @@ commandParser =
       ]
   where
     sub name desc p = command name (info (p <**> helper) (progDesc desc))
+    -- zinc never prompts (the confirm flow is a human nicety layered elsewhere),
+    -- so --yes is accepted for forward-compatible non-interactive scripting and
+    -- otherwise ignored. Documents the never-prompt contract (spec §3.4).
+    yesFlag =
+      switch (long "yes" <> short 'y' <> help "Assume yes; never prompt (zinc is non-interactive by default)")

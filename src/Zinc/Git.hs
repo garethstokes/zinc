@@ -5,12 +5,14 @@ module Zinc.Git
   ( cloneAt
   , listTags
   , splitRepoSubdir
+  , gitEnv
   ) where
 
 import Data.Char (isSpace)
 import Data.List (stripPrefix)
+import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
-import System.Process (readProcessWithExitCode)
+import System.Process (CreateProcess (env), proc, readCreateProcessWithExitCode)
 
 -- | Split a repo spec into its clone URL and an optional in-repo subdirectory,
 -- encoded as a @url#subdir@ suffix. This lets a dependency point at a package
@@ -47,10 +49,26 @@ step act k = act >>= either (pure . Left) k
 
 run :: String -> [String] -> IO (Either String String)
 run cmd args = do
-  (code, out, err) <- readProcessWithExitCode cmd args ""
+  env' <- gitEnv <$> getEnvironment
+  (code, out, err) <- readCreateProcessWithExitCode (proc cmd args) {env = Just env'} ""
   pure $ case code of
     ExitSuccess   -> Right out
     ExitFailure _ -> Left (trim (if null err then out else err))
+
+-- | Augment the ambient environment with non-interactive guards so @git@ can
+-- never block on a @\/dev\/tty@ credential or host-key prompt (fatal for
+-- headless agents and CI): missing auth fails fast instead. zinc still
+-- delegates authentication to the ambient git config (SSH agent, credential
+-- helper, @insteadOf@) — this only makes the failure mode non-blocking. The
+-- two guards override any inherited values; everything else (PATH, HOME, …) is
+-- preserved.
+gitEnv :: [(String, String)] -> [(String, String)]
+gitEnv parent = guards ++ filter ((`notElem` map fst guards) . fst) parent
+  where
+    guards =
+      [ ("GIT_TERMINAL_PROMPT", "0")
+      , ("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
+      ]
 
 trim :: String -> String
 trim = f . f where f = reverse . dropWhile isSpace
