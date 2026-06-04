@@ -7,6 +7,7 @@ module Zinc.Store
   , storeSrcPath
   , contentHash
   , verifyContent
+  , hashString
   ) where
 
 import qualified Data.ByteString.Lazy as BL
@@ -47,6 +48,11 @@ contentHash dir = do
 -- | Recompute a tree's content hash and compare to the expected value.
 verifyContent :: FilePath -> String -> IO Bool
 verifyContent dir expected = (== expected) <$> contentHash dir
+
+-- | A short, stable @sha256:@ digest of a string — used to fingerprint the
+-- lockfile so perf records correlate to a dependency set (perf spec §3.1).
+hashString :: String -> String
+hashString s = "sha256:" ++ take 16 (showDigest (sha256 (BL8.pack s)))
 
 -- | Recursively list files as relative paths, skipping any @.git@ directory.
 listFiles :: FilePath -> IO [FilePath]

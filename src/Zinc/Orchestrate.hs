@@ -368,7 +368,11 @@ runClean wsDir = do
     if hasWs
       then either (const []) wsMembers . parseWorkspace <$> readFile (wsDir </> "zinc.toml")
       else pure []
-  mapM_ (\m -> rm (wsDir </> m </> ".zinc")) members
+  -- Remove build artifacts only (each member's compiled output + the workspace
+  -- pkgdb), preserving the content-addressed store and .zinc/metrics.jsonl —
+  -- the latter must survive clean (perf spec §3.1). Targeting build/lib (not the
+  -- whole .zinc) keeps metrics even for a member="." workspace (zinc itself).
+  mapM_ (\m -> rm (wsDir </> m </> ".zinc" </> "build") >> rm (wsDir </> m </> ".zinc" </> "lib")) members
   rm (wsDir </> ".zinc" </> "pkgdb")
   where
     rm p = do

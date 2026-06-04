@@ -10,8 +10,9 @@ import Zinc.CLI (Command (..), parseArgs)
 import Zinc.Diagnostic (ZincError, envelope, exitCodeFor, renderError, toDiagnostic)
 import Zinc.GC (runGc)
 import Zinc.Json (renderJson)
-import Zinc.Orchestrate (buildAndRun, checkLockDrift, runBuildMember, runBuildReport, runClean, runRepl, runTests)
-import Zinc.Report (buildDataJson, timingJson)
+import Zinc.Metrics (recordBuild)
+import Zinc.Orchestrate (buildAndRun, checkLockDrift, runBuildReport, runClean, runRepl, runTests)
+import Zinc.Report (boExes, buildDataJson, timingJson)
 import Zinc.Scaffold (materialize, scaffoldNew)
 
 -- | Thin executable shim. Parsing/dispatch logic lives in (and is tested via)
@@ -38,25 +39,27 @@ dispatch (New name) = do
   putStrLn ("Created workspace member at ./packages/" ++ name)
 dispatch (Add name) =
   addInWorkspace name >>= either (failCmd "zinc add") putStr
-dispatch (Build target json)
-  | json =
-      -- Machine surface: a single JSON envelope, ok reflecting success; failures
-      -- carry the diagnostic and the category exit code. No human chatter.
-      runBuildReport "." target >>= \r -> case r of
-        Left e -> do
+dispatch (Build target json) = do
+  -- Human path shows the lock-drift hint up front; the machine envelope stays
+  -- pure JSON. Both paths run the report-bearing build and persist a metrics
+  -- record (perf spec §3.1) on success.
+  unless json $ do
+    drift <- checkLockDrift "."
+    unless (null drift) $
+      putStrLn ("warning: zinc.lock is missing: " ++ intercalate ", " drift ++ " (run `zinc add`)")
+  runBuildReport "." target >>= \r -> case r of
+    Left e
+      | json -> do
           putStrLn (renderJson (envelope "build" False Nothing Nothing [toDiagnostic e]))
           exitWith (exitCodeFor e)
-        Right (outcome, timing) ->
-          putStrLn (renderJson (envelope "build" True (Just (buildDataJson outcome)) (Just (timingJson timing)) []))
-  | otherwise = do
-      drift <- checkLockDrift "."
-      unless (null drift) $
-        putStrLn ("warning: zinc.lock is missing: " ++ intercalate ", " drift ++ " (run `zinc add`)")
-      runBuildMember "." target >>= \r -> case r of
-        Left e -> failCmd "zinc build" e
-        Right exes -> do
-          putStrLn ("Built " ++ show (length exes) ++ " executable(s):")
-          mapM_ (putStrLn . ("  " ++)) exes
+      | otherwise -> failCmd "zinc build" e
+    Right (outcome, timing) -> do
+      recordBuild "." "build" target timing
+      if json
+        then putStrLn (renderJson (envelope "build" True (Just (buildDataJson outcome)) (Just (timingJson timing)) []))
+        else do
+          putStrLn ("Built " ++ show (length (boExes outcome)) ++ " executable(s):")
+          mapM_ (putStrLn . ("  " ++)) (boExes outcome)
 dispatch (Run args) =
   buildAndRun "." args >>= either (failCmd "zinc run") putStr
 dispatch (Test _) =

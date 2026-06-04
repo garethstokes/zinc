@@ -55,6 +55,7 @@ import Zinc.SysLibs (toNixpkgs)
 import Zinc.Resolve (DepManifest (..), ResolvedDep (..), isBootLib, resolve, topoLevels, topoSort)
 import Zinc.Version (newestTag)
 import Zinc.Lock (LockedPackage (..), parseLock, renderLock)
+import Zinc.Metrics (MetricsRecord (..), appendMetrics, metricsLine, metricsPath)
 import Zinc.Scaffold (FileSpec (..), materialize, scaffoldNew)
 
 -- | Body of the generated file at the given path, if present.
@@ -235,6 +236,22 @@ main = hspec $ do
     it "includes the timing block in the envelope when present" $
       renderJson (envelope "build" True (Just (buildDataJson (BuildOutcome [] []))) (Just (timingJson (Timing 5 [] (CacheStats 0 0 0 0)))) [])
         `shouldBe` "{\"zinc\":\"0.1.0.0\",\"command\":\"build\",\"ok\":true,\"data\":{\"executables\":[],\"packages\":[]},\"timing\":{\"totalMs\":5,\"phases\":{},\"cache\":{\"hits\":0,\"misses\":0,\"pkgsBuilt\":0,\"pkgsCached\":0}},\"diagnostics\":[]}"
+
+  describe "metrics persistence (hbv.2)" $ do
+    it "renders a metrics record as one JSON line" $
+      metricsLine (MetricsRecord "build" "" "sha256:abc" "9.6.5" "2026-06-04T00:00:00Z" (Timing 7 [("closure", 4)] (CacheStats 1 0 0 1)))
+        `shouldBe` "{\"timestamp\":\"2026-06-04T00:00:00Z\",\"command\":\"build\",\"argsSummary\":\"\",\"lockHash\":\"sha256:abc\",\"ghcVersion\":\"9.6.5\",\"timing\":{\"totalMs\":7,\"phases\":{\"closure\":4},\"cache\":{\"hits\":1,\"misses\":0,\"pkgsBuilt\":0,\"pkgsCached\":1}}}\n"
+
+    it "appends (never rewrites) records to .zinc/metrics.jsonl" $ do
+      let d = "/tmp/zinc-metrics-test"
+          rec n = MetricsRecord "build" n "h" "9.6.5" "t" (Timing 1 [] (CacheStats 0 0 0 0))
+      stale <- doesDirectoryExist d
+      when stale $ removeDirectoryRecursive d
+      createDirectoryIfMissing True d
+      appendMetrics d (rec "one")
+      appendMetrics d (rec "two")
+      ls <- lines <$> readFile (metricsPath d)
+      length ls `shouldBe` 2
 
   describe "non-interactive contract (rdy.7)" $ do
     it "accepts (and ignores) --yes on add: zinc never prompts" $ do
@@ -1719,20 +1736,22 @@ main = hspec $ do
         `shouldBe` Right "2.3.6"
 
   describe "runClean" $
-    it "removes build artifacts but keeps the store" $ do
+    it "removes build artifacts but keeps the store and metrics" $ do
       let d = "/tmp/zinc-clean-test"
       stale <- doesDirectoryExist d
       when stale $ removeDirectoryRecursive d
       writeFileIn (d ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/a"] "9.6.5" [] []))
       writeFileIn (d ++ "/packages/a/zinc.toml") "[package]\nname = \"a\"\nversion = \"1.0\"\n"
       writeFileIn (d ++ "/.zinc/store/keep.txt") "cached"
+      writeFileIn (d ++ "/.zinc/metrics.jsonl") "{\"command\":\"build\"}\n"
       writeFileIn (d ++ "/.zinc/pkgdb/x") "db"
       writeFileIn (d ++ "/packages/a/.zinc/build/x.o") "obj"
       runClean d
       store <- doesDirectoryExist (d ++ "/.zinc/store")
       pkgdb <- doesDirectoryExist (d ++ "/.zinc/pkgdb")
-      memberZinc <- doesDirectoryExist (d ++ "/packages/a/.zinc")
-      (store, pkgdb, memberZinc) `shouldBe` (True, False, False)
+      metrics <- doesFileExist (d ++ "/.zinc/metrics.jsonl")
+      buildGone <- not <$> doesDirectoryExist (d ++ "/packages/a/.zinc/build")
+      (store, pkgdb, metrics, buildGone) `shouldBe` (True, False, True, True)
 
   describe "gcStore (store garbage collection)" $
     it "sweeps unreferenced pkg/ and src/ entries, keeping live ones" $ do
@@ -1794,7 +1813,7 @@ main = hspec $ do
       built <- runBuild d -- build
       ran <- buildAndRun d [] -- run
       runClean d -- clean
-      artifactsGone <- not <$> doesDirectoryExist (d ++ "/packages/demo/.zinc")
+      artifactsGone <- not <$> doesDirectoryExist (d ++ "/packages/demo/.zinc/build")
       (fmap length built, ran, artifactsGone)
         `shouldBe` (Right 1, Right "Hello from demo!\n", True)
 

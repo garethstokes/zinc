@@ -14,14 +14,14 @@ source-dirs = ["src"]
 exposed-modules = [
   "Zinc.Add", "Zinc.Build", "Zinc.CLI", "Zinc.Cabal", "Zinc.Cache",
   "Zinc.Diagnostic", "Zinc.Env", "Zinc.Except", "Zinc.Fetch", "Zinc.GC", "Zinc.Git", "Zinc.Hackage",
-  "Zinc.Json",
+  "Zinc.Json", "Zinc.Metrics",
   "Zinc.Lock", "Zinc.Macros", "Zinc.Manifest", "Zinc.Nix", "Zinc.Orchestrate",
   "Zinc.Paths", "Zinc.Report", "Zinc.Resolve", "Zinc.Scaffold", "Zinc.Store",
   "Zinc.SysLibs", "Zinc.TOML", "Zinc.Version"
 ]
 depends = [
   "base", "Cabal", "SHA", "bytestring", "containers", "directory",
-  "filepath", "optparse-applicative", "process", "toml-parser", "transformers"
+  "filepath", "optparse-applicative", "process", "time", "toml-parser", "transformers"
 ]
 
 [build.exe.zinc]
