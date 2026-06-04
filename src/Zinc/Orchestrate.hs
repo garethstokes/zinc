@@ -12,7 +12,7 @@ module Zinc.Orchestrate
   , runBuildReport
   , runWarm
   , buildAndRun
-  , runTarget
+  , resolveRunTarget
   , resolveTarget
   , runTests
   , orderMembers
@@ -185,14 +185,13 @@ resolveTarget (Just t) exes =
       (_, ':' : e) -> e -- member:exe -> exe
       _            -> s
 
--- | @zinc run [TARGET] [-- ARGS]@: build the workspace, resolve TARGET to a
--- single executable, and run it with ARGS, returning its stdout. (Proper exec
--- semantics — stdio inheritance + exit-code propagation — are refined in tci.2.)
-runTarget :: FilePath -> Maybe String -> [String] -> IO (Either ZincError String)
-runTarget wsDir target progArgs = runResult $ do
+-- | @zinc run [TARGET]@: build the workspace and resolve TARGET to a single
+-- executable path. The caller execs it (inheriting stdio, propagating the exit
+-- code) — building is separated from running so @run@ has live, interactive I/O.
+resolveRunTarget :: FilePath -> Maybe String -> IO (Either ZincError FilePath)
+resolveRunTarget wsDir target = runResult $ do
   exes <- orFailE (runBuild wsDir)
-  selected <- liftEitherE (resolveTarget target [(takeFileName e, e) | e <- exes])
-  liftIO (readProcess selected progArgs "")
+  liftEitherE (resolveTarget target [(takeFileName e, e) | e <- exes])
 
 -- | @zinc test@: build and run all test-suite components, returning how many
 -- passed. Fails on the first non-zero exit.

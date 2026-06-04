@@ -5,6 +5,7 @@ import Data.List (intercalate)
 import System.Environment (getArgs)
 import System.Exit (ExitCode (ExitFailure), exitWith)
 import System.IO (hPutStrLn, stderr)
+import System.Process (CreateProcess (std_err, std_in, std_out), StdStream (Inherit), createProcess, proc, waitForProcess)
 import Zinc.Add (addInWorkspace, updateInWorkspace)
 import Zinc.CLI (Command (..), parseArgs)
 import Zinc.Diagnostic (ZincError, envelope, exitCodeFor, renderError, toDiagnostic)
@@ -13,7 +14,7 @@ import Zinc.GC (runGc)
 import Zinc.Introspect (explainJson, graphJson, renderExplain, renderGraph, renderStatus, runExplain, runGraph, runStatus, statusJson)
 import Zinc.Json (Json (..), renderJson)
 import Zinc.Metrics (recordBuild)
-import Zinc.Orchestrate (checkLockDrift, runBuildReport, runClean, runRepl, runTarget, runTests, runWarm)
+import Zinc.Orchestrate (checkLockDrift, resolveRunTarget, runBuildReport, runClean, runRepl, runTests, runWarm)
 import Zinc.Perf (perfSummaryJson, renderPerf, runPerf)
 import Zinc.Prime (runOnboard, runPrime)
 import Zinc.Report (PackageReport, PackageStatus (Built, Cached), boExes, buildDataJson, packageReportJson, prStatus, timingJson)
@@ -84,7 +85,13 @@ dispatch (Build target json) = do
           putStrLn ("Built " ++ show (length (boExes outcome)) ++ " executable(s):")
           mapM_ (putStrLn . ("  " ++)) (boExes outcome)
 dispatch (Run target args) =
-  runTarget "." target args >>= either (failCmd "zinc run") putStr
+  resolveRunTarget "." target >>= \r -> case r of
+    Left e -> failCmd "zinc run" e
+    Right exe -> do
+      -- Exec the chosen program with live, inherited stdio (interactive, TTY,
+      -- colors, real stdin) and exit zinc with the child's exit code.
+      (_, _, _, ph) <- createProcess (proc exe args) {std_in = Inherit, std_out = Inherit, std_err = Inherit}
+      waitForProcess ph >>= exitWith
 dispatch (Test _) =
   runTests "." >>= \r -> case r of
     Left e  -> failCmd "zinc test" e
