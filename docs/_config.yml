@@ -1,0 +1,17 @@
+title: zinc
+description: Fast, reproducible Haskell builds that just work.
+remote_theme: just-the-docs/just-the-docs
+
+url: https://garethstokes.github.io
+baseurl: /zinc
+
+# Sidebar / search come from just-the-docs.
+search_enabled: true
+heading_anchors: true
+
+aux_links:
+  GitHub: https://github.com/garethstokes/zinc
+
+# The design/decision archive is kept in the repo but not published to the site.
+exclude:
+  - superpowers/
