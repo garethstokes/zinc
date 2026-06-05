@@ -23,7 +23,7 @@ import System.Process (readProcess)
 import Test.Hspec
 import System.Exit (ExitCode (..))
 import Zinc.CLI (Command (..), parseArgs)
-import Zinc.Diagnostic (Diagnostic (..), Severity (..), ZincError (..), diagnosticJson, envelope, errorCode, exitCodeFor, renderError, toDiagnostic)
+import Zinc.Diagnostic (Diagnostic (..), Severity (..), SourceLocation (..), ZincError (..), diagnosticJson, envelope, errorCode, exitCodeFor, ghcLocation, renderError, toDiagnostic, tomlLocation)
 import Control.Concurrent.STM (atomically, modifyTVar', newTVarIO, readTVarIO)
 import Zinc.Closure (discoverRepos, parseDependsField, pkgNameOf)
 import Zinc.Output (OutputEvent (..), OutputFlags (..), OutputMode (..), Sink (..), eventJson, nullSink, withRenderer)
@@ -196,7 +196,28 @@ main = hspec $ do
 
     it "renders a Diagnostic to JSON, omitting absent optional fields" $
       renderJson (diagnosticJson (toDiagnostic (ManifestParse "f.toml" "bad")))
-        `shouldBe` "{\"code\":\"ZINC_MANIFEST_PARSE\",\"severity\":\"error\",\"title\":\"manifest parse error\",\"detail\":\"bad\",\"location\":\"f.toml\",\"nextAction\":\"fix the TOML in the manifest\"}"
+        `shouldBe` "{\"code\":\"ZINC_MANIFEST_PARSE\",\"severity\":\"error\",\"title\":\"manifest parse error\",\"detail\":\"bad\",\"location\":{\"file\":\"f.toml\"},\"nextAction\":\"fix the TOML in the manifest\"}"
+
+    it "tomlLocation lifts a leading line:col position onto the known file (hw6.5)" $ do
+      tomlLocation "zinc.toml" "12:5: unexpected key"
+        `shouldBe` SourceLocation "zinc.toml" (Just 12) (Just 5) Nothing Nothing Nothing
+      -- No position in the detail -> degrade to a bare-file location.
+      tomlLocation "zinc.toml" "malformed" `shouldBe` SourceLocation "zinc.toml" Nothing Nothing Nothing Nothing Nothing
+
+    it "ghcLocation parses file:line:col, excerpt, and caret span from ghc stderr (hw6.5)" $ do
+      let stderr =
+            unlines
+              [ "src/Foo.hs:10:7: error: [GHC-83865]"
+              , "    Variable not in scope: bar"
+              , "   |"
+              , "10 |   foo = bar"
+              , "   |         ^^^"
+              ]
+      ghcLocation stderr
+        `shouldBe` Just (SourceLocation "src/Foo.hs" (Just 10) (Just 7) Nothing (Just 10) (Just "  foo = bar"))
+
+    it "ghcLocation returns Nothing when stderr has no recognizable location (hw6.5)" $
+      ghcLocation "ghc: panic! the impossible happened" `shouldBe` Nothing
 
     it "wraps output in the standard envelope (timing omitted when absent)" $
       renderJson (envelope "build" True (Just (JObject [("built", JInt 1)])) Nothing [])

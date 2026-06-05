@@ -7,6 +7,9 @@ module Zinc.Diagnostic
   ( ZincError (..)
   , Severity (..)
   , Diagnostic (..)
+  , SourceLocation (..)
+  , ghcLocation
+  , tomlLocation
   , toDiagnostic
   , renderError
   , errorCode
@@ -16,6 +19,9 @@ module Zinc.Diagnostic
   , zincVersion
   ) where
 
+import Data.Char (isDigit)
+import Data.List (find, isInfixOf, stripPrefix)
+import Data.Maybe (listToMaybe, mapMaybe)
 import System.Exit (ExitCode (..))
 import Zinc.Json (Json (..), object)
 
@@ -47,6 +53,75 @@ data ZincError
 data Severity = SError | SWarning | SInfo
   deriving (Eq, Show)
 
+-- | A structured source location for a diagnostic (hw6.5): enough to draw an
+-- elm-style caret under the offending span. Line/col/span/excerpt are all
+-- optional so a location can degrade to a bare file when a tool gives no
+-- position. Columns are 1-based, matching GHC and toml-parser.
+data SourceLocation = SourceLocation
+  { locFile    :: String
+  , locLine    :: Maybe Int
+  , locCol     :: Maybe Int
+  , locEndLine :: Maybe Int
+  , locEndCol  :: Maybe Int
+  , locExcerpt :: Maybe String  -- ^ the offending source line, for caret rendering
+  }
+  deriving (Eq, Show)
+
+-- | A bare-file location (no position), the graceful floor when a tool reports
+-- only which file failed.
+fileLocation :: String -> SourceLocation
+fileLocation f = SourceLocation f Nothing Nothing Nothing Nothing Nothing
+
+-- | Extract a 'SourceLocation' from GHC @--make@ stderr: the first
+-- @path:line:col:@ header, the matching @\<n\> | \<source\>@ gutter line as the
+-- excerpt, and the @^^^^@ caret run (when present) as the span end-column.
+-- Best-effort: 'Nothing' if no header is recognizable.
+ghcLocation :: String -> Maybe SourceLocation
+ghcLocation out = listToMaybe (mapMaybe header ls)
+  where
+    ls = lines out
+    header ln = do
+      (file, l, c) <- parseHeader ln
+      let excerpt = gutterFor l
+          endC = (\n -> c + n) <$> caretWidth
+      pure (SourceLocation file (Just l) (Just c) Nothing endC excerpt)
+    -- "path:line:col:" — path is everything up to the first ":<digit". Require a
+    -- non-empty, non-numeric path so a "1:8:" toml position isn't read as a file.
+    parseHeader ln = case break (== ':') ln of
+      (file, ':' : rest1)
+        | not (null file) && not (all isDigit file) ->
+            case spanDigits rest1 of
+              (l@(_ : _), ':' : rest2) ->
+                case spanDigits rest2 of
+                  (c@(_ : _), ':' : _) -> Just (file, read l, read c)
+                  _ -> Nothing
+              _ -> Nothing
+      _ -> Nothing
+    -- The "<n> | <source>" line GHC prints for line n; excerpt is <source>.
+    gutterFor n =
+      let pfx = show n ++ " | "
+       in stripPrefix pfx . dropWhile (== ' ') =<< find (isInfixOf pfx) ls
+    -- Width of the "^^^^" caret run GHC underlines the span with, if any.
+    caretWidth = case filter (\l -> '^' `elem` l && all (`elem` " |^") l) ls of
+      (l : _) -> Just (length (filter (== '^') l))
+      _       -> Nothing
+
+-- | Extract a 'SourceLocation' from a toml-parser error for a known file: the
+-- leading @line:col:@ position toml-parser prefixes its message with. Falls
+-- back to a bare-file location when no position is present.
+tomlLocation :: String -> String -> SourceLocation
+tomlLocation file detail =
+  case spanDigits (dropWhile (== ' ') detail) of
+    (l@(_ : _), ':' : rest) ->
+      case spanDigits rest of
+        (c@(_ : _), ':' : _) -> (fileLocation file) {locLine = Just (read l), locCol = Just (read c)}
+        _ -> fileLocation file
+    _ -> fileLocation file
+
+-- | Split a leading run of digits off a string (like 'span' 'isDigit').
+spanDigits :: String -> (String, String)
+spanDigits = span isDigit
+
 -- | The agent-facing shape of a rendered error (spec §3.1). Optional fields are
 -- omitted from JSON when absent.
 data Diagnostic = Diagnostic
@@ -54,7 +129,7 @@ data Diagnostic = Diagnostic
   , diagSeverity   :: Severity
   , diagTitle      :: String
   , diagDetail     :: Maybe String
-  , diagLocation   :: Maybe String
+  , diagLocation   :: Maybe SourceLocation
   , diagPackage    :: Maybe String
   , diagNextAction :: Maybe String
   }
@@ -112,13 +187,13 @@ toDiagnostic e =
         ( "Custom build-type is not supported", Just (name ++ " uses a Setup.hs (build-type: Custom)"), Nothing, Just name
         , Just "pin a version with build-type: Simple, or vendor a Simple-built variant" )
       GhcCompile pkg d ->
-        ( "compilation failed", Just d, Nothing, Just pkg
+        ( "compilation failed", Just d, ghcLocation d, Just pkg
         , Just "fix the reported compile error; for dep-specific flags use [build-options]" )
       AmbiguousTarget cands ->
         ( "ambiguous run target", Just ("candidates: " ++ unwords cands), Nothing, Nothing
         , Just "name the executable: `zinc run <exe>` (or member:exe)" )
       ManifestParse file d ->
-        ( "manifest parse error", Just d, Just file, Nothing
+        ( "manifest parse error", Just d, Just (tomlLocation file d), Nothing
         , Just "fix the TOML in the manifest" )
       NixAbsent ->
         ( "Nix is not available", Nothing, Nothing, Nothing
@@ -171,9 +246,22 @@ diagnosticJson d =
     , ("severity", Just (JString (severityText (diagSeverity d))))
     , ("title", Just (JString (diagTitle d)))
     , ("detail", JString <$> diagDetail d)
-    , ("location", JString <$> diagLocation d)
+    , ("location", locationJson <$> diagLocation d)
     , ("package", JString <$> diagPackage d)
     , ("nextAction", JString <$> diagNextAction d)
+    ]
+
+-- | A 'SourceLocation' as a JSON object (absent position fields omitted), so a
+-- machine consumer can position a caret without re-parsing tool output.
+locationJson :: SourceLocation -> Json
+locationJson l =
+  object
+    [ ("file", Just (JString (locFile l)))
+    , ("line", JInt <$> locLine l)
+    , ("col", JInt <$> locCol l)
+    , ("endLine", JInt <$> locEndLine l)
+    , ("endCol", JInt <$> locEndCol l)
+    , ("excerpt", JString <$> locExcerpt l)
     ]
 
 severityText :: Severity -> String
