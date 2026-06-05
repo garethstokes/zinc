@@ -451,13 +451,13 @@ runRepl :: FilePath -> IO (Either ZincError ())
 runRepl wsDir = runResult $ do
   _ <- orFailE (runBuild wsDir)
   wsSrc <- liftIO $ readFile (wsDir </> "zinc.toml")
-  ws <- liftEither (parseWorkspace wsSrc)
+  ws <- liftEitherE (first (ManifestParse (wsDir </> "zinc.toml")) (parseWorkspace wsSrc))
   case wsMembers ws of
     [] -> failWith "no members to load"
     (member : _) -> do
       let dir = wsDir </> member
       msrc <- liftIO $ readFile (dir </> "zinc.toml")
-      mem <- liftEither (parseMember msrc)
+      mem <- liftEitherE (first (ManifestParse (dir </> "zinc.toml")) (parseMember msrc))
       case pkgComponents mem of
         [] -> failWith (member ++ ": no components to load")
         (comp : _) ->

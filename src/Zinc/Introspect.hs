@@ -25,8 +25,9 @@ import Data.Maybe (fromMaybe)
 import System.Directory (doesFileExist)
 import System.FilePath ((</>))
 import Zinc.Cache (BuildKey (..), buildCacheKey, storeConfPath)
-import Zinc.Diagnostic (ZincError (NoZincToml))
-import Zinc.Except (Result, failWithError, liftEither, liftIO, runResult)
+import Data.Bifunctor (first)
+import Zinc.Diagnostic (ZincError (ManifestParse, NoZincToml))
+import Zinc.Except (Result, failWithError, liftEitherE, liftIO, runResult)
 import Zinc.Json (Json (..))
 import Zinc.Lock (LockedPackage (..), lockRepo, lockRev, parseLock)
 import Zinc.Manifest (Ref (Latest), WorkspaceManifest (wsDependencies, wsGhc, wsMembers), depName, depGhcOptionsOf, parseWorkspace)
@@ -53,7 +54,7 @@ loadWorkspace wsDir = do
     then failWithError (NoZincToml wsDir)
     else do
       src <- liftIO (readFile wsFile)
-      ws <- liftEither (parseWorkspace src)
+      ws <- liftEitherE (first (ManifestParse wsFile) (parseWorkspace src))
       pure (src, ws)
 
 -- | Read the lockfile (empty when absent or unparseable).

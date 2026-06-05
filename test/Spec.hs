@@ -32,7 +32,7 @@ import Zinc.Output (OutputEvent (..), OutputFlags (..), OutputMode (..), RProg (
 import Zinc.Docker (dockerfileText)
 import Zinc.Fmt (canonicalizeManifest)
 import Zinc.Doctor (doctorJson, doctorOk, flakesOffDiagnostic, lockDriftDiagnostic, renderDoctor, runDoctor)
-import Zinc.Introspect (DepStatus (..), explainJson, graphJson, statusJson)
+import Zinc.Introspect (DepStatus (..), explainJson, graphJson, runStatus, statusJson)
 import Zinc.Prime (onboardText, primeText)
 import Zinc.Json (Json (..), parseJson, renderJson)
 import Zinc.Git (cloneAt, gitEnv, gitInitIfNeeded, isInsideRepo, listTags, splitRepoSubdir)
@@ -1334,6 +1334,16 @@ main = hspec $ do
 
     it "is empty when the closure is unchanged" $
       isEmptyDelta (closureDelta [mk "a" "v1"] [mk "a" "v1"]) `shouldBe` True
+
+  describe "manifest parse diagnostics on read-only paths (szn)" $
+    it "a malformed zinc.toml yields ZINC_MANIFEST_PARSE, not a generic error" $ do
+      let d = "/tmp/zinc-badmanifest"
+      stale <- doesDirectoryExist d
+      when stale $ removeDirectoryRecursive d
+      createDirectoryIfMissing True d
+      writeFile (d </> "zinc.toml") "[workspace]\nmembers =\n"
+      r <- runStatus d
+      (errorCode <$> either Just (const Nothing) r) `shouldBe` Just "ZINC_MANIFEST_PARSE"
 
   describe "listTags" $ do
     repo <- runIO setupDepRepo

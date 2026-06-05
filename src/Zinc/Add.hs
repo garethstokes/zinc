@@ -22,8 +22,8 @@ import System.Directory (doesDirectoryExist, doesFileExist, removeDirectoryRecur
 import System.FilePath (takeDirectory, (</>))
 import Zinc.Closure (ClosureReport (crMembers, crNeedsVendoring), installedVersion, runClosure)
 import Zinc.Delta (ClosureDelta, closureDelta)
-import Zinc.Diagnostic (ZincError (DepNoGitRepo, NoZincToml))
-import Zinc.Except (Result, failWith, failWithError, liftEither, liftIO, orFail, orFailE, runResult)
+import Zinc.Diagnostic (ZincError (DepNoGitRepo, ManifestParse, NoZincToml))
+import Zinc.Except (Result, failWith, failWithError, liftEitherE, liftIO, orFail, orFailE, runResult)
 import Zinc.Fetch (gitFetchManifest, resolveRef)
 import Zinc.Git (cloneAt)
 import Zinc.Hackage (fetchHackageTarball, hackageSourceRepo)
@@ -112,7 +112,7 @@ hackageDiscover n = either (const Nothing) id <$> hackageSourceRepo n
 runAdd :: FilePath -> FilePath -> String -> Ref -> String -> IO (Either ZincError String)
 runAdd wsFile storeRoot name ref repo = runResult $ do
   src <- liftIO (readFile wsFile)
-  ws <- liftEither (parseWorkspace src)
+  ws <- liftEitherE (first (ManifestParse wsFile) (parseWorkspace src))
   let ws' = addDep ws name ref repo
   res <- freezeWorkspace wsFile storeRoot ws'
   liftIO $ writeFile wsFile (renderWorkspace ws')
@@ -129,7 +129,7 @@ addInWorkspace name = runResult $ do
   present <- liftIO (doesFileExist wsFile)
   when (not present) $ failWithError (NoZincToml ".")
   src <- liftIO (readFile wsFile)
-  ws <- liftEither (parseWorkspace src)
+  ws <- liftEitherE (first (ManifestParse wsFile) (parseWorkspace src))
   storeRoot <- liftIO resolveStoreRoot
   case lookup name (depRepos ws) of
     -- Repo already pinned in the manifest: freeze it directly (offline).
@@ -164,7 +164,7 @@ enrichWithRepos = foldr add
 runUpdate :: Bool -> FilePath -> FilePath -> IO (Either ZincError ClosureDelta)
 runUpdate dryRun wsFile storeRoot = runResult $ do
   src <- liftIO (readFile wsFile)
-  ws <- liftEither (parseWorkspace src)
+  ws <- liftEitherE (first (ManifestParse wsFile) (parseWorkspace src))
   let lockFile = takeDirectory wsFile </> "zinc.lock"
   old <- liftIO (readLockOr lockFile)
   (_, locks) <- resolveFreeze storeRoot ws
@@ -210,7 +210,7 @@ vendorInWorkspace pkgs = runResult $ do
 runVendor :: FilePath -> FilePath -> [String] -> IO (Either ZincError String)
 runVendor wsFile storeRoot pkgs = runResult $ do
   src <- liftIO (readFile wsFile)
-  ws <- liftEither (parseWorkspace src)
+  ws <- liftEitherE (first (ManifestParse wsFile) (parseWorkspace src))
   resolved <- traverse resolveVendorVersion pkgs
   let ws' = foldl (\w (n, v) -> addVendored w n v) ws resolved
   res <- freezeWorkspace wsFile storeRoot ws'

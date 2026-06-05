@@ -17,8 +17,9 @@ module Zinc.Outdated
 import Data.List (sortOn)
 import System.Directory (doesFileExist)
 import System.FilePath ((</>))
-import Zinc.Diagnostic (ZincError (NoZincToml))
-import Zinc.Except (Result, failWithError, liftEither, liftIO, runResult)
+import Data.Bifunctor (first)
+import Zinc.Diagnostic (ZincError (ManifestParse, NoZincToml))
+import Zinc.Except (Result, failWithError, liftEitherE, liftIO, runResult)
 import Zinc.Git (listTags, splitRepoSubdir)
 import Zinc.Hackage (hackageLatestVersion)
 import Zinc.Json (Json (..), object)
@@ -76,7 +77,8 @@ runOutdated allClosure wsDir = runResult $ do
   let wsFile = wsDir </> "zinc.toml"
   present <- liftIO (doesFileExist wsFile)
   if not present then failWithError (NoZincToml wsDir) else pure ()
-  ws <- liftEither . parseWorkspace =<< liftIO (readFile wsFile)
+  src <- liftIO (readFile wsFile)
+  ws <- liftEitherE (first (ManifestParse wsFile) (parseWorkspace src))
   locks <- liftIO (loadLocks wsDir)
   let byName = [(lockName l, l) | l <- locks]
       targets
