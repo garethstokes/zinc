@@ -83,3 +83,21 @@ Post-MVP, P3 — a forward-looking differentiator, not on a current critical
 path. Builds on the Nix env (`a6h`), the artifact cache (`gec`), and the build
 driver. The WASI core is the valuable first slice; the browser flavor is the
 flashier follow-on.
+
+## 9. Latest dev-team notes (researched 2026-06, GHC 9.14.1)
+
+Refinements from the GHC team's recent updates ([9.14.1 release](https://www.haskell.org/ghc/blog/20251219-ghc-9.14.1-released.html),
+[wasm guide](https://ghc.gitlab.haskell.org/ghc/doc/users_guide/wasm.html)):
+
+- **GHCi + Template Haskell now evaluate in wasm** (9.14+), via a custom
+  dynamic-linking + node external-interpreter mechanism — including `foreign
+  import javascript` from the browser. TH is solidly supported; `zinc repl
+  --target wasm32-wasi` becomes feasible as a later add.
+- **No native threads.** WASM/WASI has no multithreading (`wasi-threads` is only
+  a proposal). The wasm build driver **must not pass `-threaded` /
+  `-with-rtsopts=-N`** — note: zinc's *native* build does. Target-specific link
+  flags, not shared.
+- **Recent-runtime requirement.** The wasm module uses post-MVP extensions
+  (multi-value, …) needing a recent `wasmtime`/browser. The Nix-pinned
+  `wasmtime` (from the flake) satisfies the CLI runner.
+- Still a **tech preview**, not in official bindists — via `ghc-wasm-meta`.
