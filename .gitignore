@@ -15,3 +15,9 @@ result-*
 # direnv / Nix dev-env cache
 .direnv/
 .envrc
+
+# local docs preview
+docs/_site/
+docs/.jekyll-cache/
+docs/Gemfile.lock
+docs/Gemfile
