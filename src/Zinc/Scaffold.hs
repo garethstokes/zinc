@@ -1,6 +1,7 @@
 module Zinc.Scaffold
   ( FileSpec (..)
   , scaffoldNew
+  , scaffoldWorkspace
   , materialize
   ) where
 
@@ -16,14 +17,42 @@ data FileSpec = FileSpec
   }
   deriving (Eq, Show)
 
--- | Pure plan for @zinc new \<name\>@: the files a fresh single-member
--- workspace needs. Workspaces are first-class from day one (spec §4), so even
--- a one-package project gets a workspace root.
+-- | Pure plan for @zinc new \<name\>@: a FLAT single-package project at the repo
+-- root (zinc-6hf.1) — one @zinc.toml@ (@[workspace]@ member @"."@ + @[package]@ +
+-- @[build.exe.\<name\>]@ + @[dependencies]@) with @app\/Main.hs@ at the root, NO
+-- @packages\/\<name\>\/@ nesting. A lone package is the implicit one-member
+-- workspace (spec §4); 'scaffoldWorkspace' produces the multi-member layout.
 scaffoldNew :: String -> [FileSpec]
 scaffoldNew name =
+  [ FileSpec "zinc.toml" manifest
+  , FileSpec "app/Main.hs" (mainModule name)
+  ]
+  where
+    manifest =
+      unlines
+        [ "[workspace]"
+        , "members = [\".\"]"
+        , "ghc = \"9.6.5\""
+        , ""
+        , "[package]"
+        , "name = \"" ++ name ++ "\""
+        , "version = \"0.1.0\""
+        , ""
+        , "[build.exe." ++ name ++ "]"
+        , "source-dirs = [\"app\"]"
+        , "main = \"Main.hs\""
+        , "depends = []"
+        , ""
+        , "[dependencies]"
+        ]
+
+-- | Pure plan for @zinc new --workspace \<name\>@: the multi-member layout — a
+-- workspace-root @zinc.toml@ plus a nested @packages\/\<name\>\/@ member.
+scaffoldWorkspace :: String -> [FileSpec]
+scaffoldWorkspace name =
   [ FileSpec "zinc.toml" workspaceManifest
   , FileSpec (memberDir ++ "/zinc.toml") memberManifest
-  , FileSpec (memberDir ++ "/app/Main.hs") mainModule
+  , FileSpec (memberDir ++ "/app/Main.hs") (mainModule name)
   ]
   where
     memberDir = "packages/" ++ name
@@ -35,8 +64,6 @@ scaffoldNew name =
         , "ghc = \"9.6.5\""
         , ""
         , "[dependencies]"
-        , ""
-        , "[registry]"
         ]
 
     memberManifest =
@@ -51,13 +78,15 @@ scaffoldNew name =
         , "depends = []"
         ]
 
-    mainModule =
-      unlines
-        [ "module Main (main) where"
-        , ""
-        , "main :: IO ()"
-        , "main = putStrLn \"Hello from " ++ name ++ "!\""
-        ]
+-- | The placeholder @app\/Main.hs@ shared by both scaffolds.
+mainModule :: String -> String
+mainModule name =
+  unlines
+    [ "module Main (main) where"
+    , ""
+    , "main :: IO ()"
+    , "main = putStrLn \"Hello from " ++ name ++ "!\""
+    ]
 
 -- | Write a scaffold plan to disk under @root@, creating parent directories.
 -- The thin IO shell around the pure 'scaffoldNew'.

@@ -71,7 +71,7 @@ import Zinc.Version (newestTag, newestTagFor)
 import Zinc.Lock (LockedPackage (..), Source (..), lockRepo, lockRev, parseLock, renderLock)
 import Zinc.Metrics (MetricsRecord (..), appendMetrics, metricsLine, metricsPath)
 import Zinc.Perf (CommandStats (..), PerfRecord (..), Regression (..), PerfSummary (..), decodeRecord, percentile, perfSummaryJson, renderPerf, summarize)
-import Zinc.Scaffold (FileSpec (..), materialize, scaffoldNew)
+import Zinc.Scaffold (FileSpec (..), materialize, scaffoldNew, scaffoldWorkspace)
 
 -- | Body of the generated file at the given path, if present.
 bodyOf :: FilePath -> [FileSpec] -> Maybe String
@@ -702,8 +702,9 @@ main = hspec $ do
       parseArgs ["build", "--json"] `shouldBe` Right (OutputFlags True False, Build Nothing)
       parseArgs ["build", "mylib", "--json"] `shouldBe` Right (OutputFlags True False, Build (Just "mylib"))
 
-    it "parses `new <name>` with its argument" $
-      parseArgs ["new", "myapp"] `shouldBe` Right (OutputFlags False False, New "myapp")
+    it "parses `new <name>` (flat default) and `new --workspace <name>`" $ do
+      parseArgs ["new", "myapp"] `shouldBe` Right (OutputFlags False False, New "myapp" False)
+      parseArgs ["new", "--workspace", "myapp"] `shouldBe` Right (OutputFlags False False, New "myapp" True)
 
     it "parses `add <pkg>` with its argument" $
       parseArgs ["add", "aeson"] `shouldBe` Right (OutputFlags False False, Add "aeson")
@@ -734,18 +735,30 @@ main = hspec $ do
     it "rejects an unknown subcommand" $
       parseArgs ["frobnicate"] `shouldSatisfy` isLeft
 
-  describe "scaffoldNew" $ do
+  describe "scaffoldNew (flat single-package, 6hf.1)" $ do
     let files = scaffoldNew "myapp"
 
-    it "writes a workspace manifest that lists the member" $
+    it "writes a flat root manifest: implicit one-member workspace (member \".\")" $
+      (isInfixOf "members = [\".\"]" <$> bodyOf "zinc.toml" files)
+        `shouldBe` Just True
+
+    it "puts [package] in the root zinc.toml — no packages/<name>/ nesting" $ do
+      (isInfixOf "name = \"myapp\"" <$> bodyOf "zinc.toml" files) `shouldBe` Just True
+      bodyOf "packages/myapp/zinc.toml" files `shouldBe` Nothing
+
+    it "writes app/Main.hs at the root" $ do
+      bodyOf "app/Main.hs" files `shouldSatisfy` isJust
+      bodyOf "packages/myapp/app/Main.hs" files `shouldBe` Nothing
+
+  describe "scaffoldWorkspace (--workspace multi-member, 6hf.1)" $ do
+    let files = scaffoldWorkspace "myapp"
+
+    it "writes a workspace manifest that lists the nested member" $
       (isInfixOf "members = [\"packages/myapp\"]" <$> bodyOf "zinc.toml" files)
         `shouldBe` Just True
 
-    it "writes a member manifest naming the package" $
-      (isInfixOf "name = \"myapp\"" <$> bodyOf "packages/myapp/zinc.toml" files)
-        `shouldBe` Just True
-
-    it "writes a Main.hs entrypoint for the member" $
+    it "writes a nested member manifest + Main.hs" $ do
+      (isInfixOf "name = \"myapp\"" <$> bodyOf "packages/myapp/zinc.toml" files) `shouldBe` Just True
       bodyOf "packages/myapp/app/Main.hs" files `shouldSatisfy` isJust
 
   describe "parseWorkspace" $ do
@@ -827,8 +840,8 @@ main = hspec $ do
     it "reads the package version" $
       (pkgVersion <$> parseMember sample) `shouldBe` Right "0.2.3"
 
-    it "parses the member manifest produced by scaffoldNew" $
-      let body = maybe "" id (bodyOf "packages/demo/zinc.toml" (scaffoldNew "demo"))
+    it "parses the [package] in the flat manifest produced by scaffoldNew" $
+      let body = maybe "" id (bodyOf "zinc.toml" (scaffoldNew "demo"))
        in (pkgName <$> parseMember body) `shouldBe` Right "demo"
 
   describe "Zinc.Lock" $ do
@@ -1954,7 +1967,8 @@ main = hspec $ do
       when stale $ removeDirectoryRecursive dir
       createDirectoryIfMissing True dir
       materialize dir (scaffoldNew "demo")
-      let memberDir = dir ++ "/packages/demo"
+      -- flat scaffold: the member is the repo root itself (member "."), source at app/
+      let memberDir = dir
           comp = Component Executable "demo" ["app"] [] (Just "Main.hs") [] [] [] [] [] [] []
       out <- readProcess "ghci" (replArgs Nothing memberDir comp ++ ["-e", "main"]) ""
       out `shouldBe` "Hello from demo!\n"
@@ -2611,7 +2625,7 @@ main = hspec $ do
       when stale $ removeDirectoryRecursive root
       materialize root (scaffoldNew "demo")
       wsExists <- doesFileExist (root ++ "/zinc.toml")
-      mainExists <- doesFileExist (root ++ "/packages/demo/app/Main.hs")
-      memberBody <- readFile (root ++ "/packages/demo/zinc.toml")
-      (wsExists, mainExists, "name = \"demo\"" `isInfixOf` memberBody)
+      mainExists <- doesFileExist (root ++ "/app/Main.hs")
+      manifestBody <- readFile (root ++ "/zinc.toml")
+      (wsExists, mainExists, "name = \"demo\"" `isInfixOf` manifestBody)
         `shouldBe` (True, True, True)

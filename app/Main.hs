@@ -22,7 +22,7 @@ import Zinc.Output (OutputEvent (..), OutputMode (..), emit, resolveMode, withRe
 import Zinc.Perf (perfSummaryJson, renderPerf, runPerf)
 import Zinc.Prime (runOnboard, runPrime)
 import Zinc.Report (PackageReport, PackageStatus (Built, Cached), boExes, boPackages, buildDataJson, buildSummaryLine, packageReportJson, prName, prStatus, prTimeMs, timingJson)
-import Zinc.Scaffold (materialize, scaffoldNew)
+import Zinc.Scaffold (materialize, scaffoldNew, scaffoldWorkspace)
 
 -- | Thin executable shim: parse argv into the output flags + a 'Command',
 -- resolve one 'OutputMode', and dispatch. Parsing lives in "Zinc.CLI".
@@ -72,9 +72,12 @@ warmSummary pkgs =
     count s = length (filter ((== s) . prStatus) pkgs)
 
 dispatch :: OutputMode -> Command -> IO ()
-dispatch _ (New name) = do
-  materialize "." (scaffoldNew name)
-  putStrLn ("Created workspace member at ./packages/" ++ name)
+dispatch _ (New name workspace) = do
+  materialize "." (if workspace then scaffoldWorkspace name else scaffoldNew name)
+  putStrLn $
+    if workspace
+      then "Created workspace member at ./packages/" ++ name
+      else "Created project " ++ name ++ " — `zinc run` to build and run it."
 dispatch mode (Add name) =
   addInWorkspace name >>= either (failCmd mode) putStr
 dispatch mode (Vendor pkgs) =

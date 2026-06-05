@@ -9,7 +9,7 @@ import Zinc.Output (OutputFlags (..))
 -- | A parsed zinc command. Output mode (@--json@/@--quiet@) is parsed separately
 -- (every subcommand accepts it; see 'parseArgs') and is not encoded here.
 data Command
-  = New String            -- ^ scaffold a new workspace
+  = New String Bool       -- ^ scaffold a new project; Bool = --workspace (multi-member layout)
   | Add String            -- ^ resolve a dependency closure and freeze it
   | Vendor [String]       -- ^ pin no-git deps from their Hackage tarballs
   | Build (Maybe String)  -- ^ build the workspace, or one member
@@ -50,7 +50,7 @@ commandParser :: Parser (OutputFlags, Command)
 commandParser =
   subparser $
     mconcat
-      [ sub "new"    "Scaffold a new workspace"       (New <$> strArgument (metavar "NAME"))
+      [ sub "new"    "Scaffold a new project (--workspace for a multi-member layout)" (New <$> strArgument (metavar "NAME") <*> switch (long "workspace" <> help "Scaffold a multi-member workspace (packages/<name>/) instead of a flat single-package project"))
       , sub "add"    "Add a dependency"               (Add <$> (yesFlag *> strArgument (metavar "PKG")))
       , sub "vendor" "Pin a no-git dependency from its Hackage tarball" (Vendor <$> (yesFlag *> some (strArgument (metavar "PKG..."))))
       , sub "build"  "Build the workspace or a member" buildCmd
