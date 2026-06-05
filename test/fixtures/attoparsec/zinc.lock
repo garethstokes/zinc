@@ -1,0 +1,41 @@
+[[locked]]
+name = "attoparsec"
+repo = "https://github.com/haskell/attoparsec.git"
+rev = "aabb749c88d26a342122e5c0bce9d85199577c9a"
+sha256 = "sha256:81bb973c1ff102e12cbb043ad0003eaaa09cf7394a3f618865a7ffd9fd4c420e"
+depends = ["scientific"]
+
+[[locked]]
+name = "hashable"
+repo = "https://github.com/haskell-unordered-containers/hashable.git"
+rev = "92bd55d1f1251d4c5666216aa8cf84143778d5d3"
+sha256 = "sha256:5a5b6040ec090745d5882465bbff845aee233858cfb351b36bbcf37a34f33bf3"
+depends = ["os-string"]
+
+[[locked]]
+name = "integer-logarithms"
+repo = "https://github.com/haskellari/integer-logarithms"
+rev = "117aed8e5198ed116a5f73ed05f6c33205a0d562"
+sha256 = "sha256:1b459dd9c9c047dba6a05b8bfe29d3a081edce3ea97d046d18d1696d7d0fdb37"
+depends = []
+
+[[locked]]
+name = "os-string"
+repo = "https://github.com/haskell/os-string"
+rev = "71f66e1af2288867becaa567dfb10c1d791b0343"
+sha256 = "sha256:af2dc7d8b4bed958d56b3ffa3381b8b289cf347f259ea4282a2f8f7710f4a4a0"
+depends = []
+
+[[locked]]
+name = "primitive"
+repo = "https://github.com/haskell/primitive"
+rev = "8ef29458e80c539261817dc057c9e784e1cbea36"
+sha256 = "sha256:61847e9b76370553c4d2a40133ad6e1f49eab863aacdb9f5e33e16e55021741a"
+depends = []
+
+[[locked]]
+name = "scientific"
+repo = "https://github.com/basvandijk/scientific.git"
+rev = "3274dbcf87e37f31de4473037f80363201177be1"
+sha256 = "sha256:96a8b7fff3ffc329a5431049083851a0024aea59f6385619e8941d2b39e9b123"
+depends = ["hashable", "integer-logarithms", "primitive"]

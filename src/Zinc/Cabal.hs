@@ -25,7 +25,7 @@ import Distribution.PackageDescription
   ( BuildInfo
   , Executable (buildInfo, exeName, modulePath)
   , Library
-  , PackageDescription (executables, library, package, testSuites)
+  , PackageDescription (executables, library, package, subLibraries, testSuites)
   , TestSuite (testBuildInfo, testInterface, testName)
   , TestSuiteInterface (TestSuiteExeV10)
   , buildType
@@ -49,7 +49,9 @@ import Distribution.Pretty (prettyShow)
 import Distribution.System (buildPlatform)
 import Distribution.Types.ComponentRequestedSpec (ComponentRequestedSpec (ComponentRequestedSpec))
 import Distribution.Types.Dependency (depPkgName)
-import Distribution.Types.PackageId (pkgVersion)
+import Distribution.Types.Library (libName)
+import Distribution.Types.LibraryName (LibraryName (LSubLibName))
+import Distribution.Types.PackageId (pkgName, pkgVersion)
 import Distribution.Types.PackageName (unPackageName)
 import Distribution.Types.PkgconfigDependency (PkgconfigDependency (PkgconfigDependency))
 import Distribution.Types.PkgconfigName (unPkgconfigName)
@@ -86,8 +88,48 @@ versionInts = map read . splitDots
       (a, [])    -> [a]
       (a, _ : r) -> a : splitDots r
 
+-- | The package's single library unit: the main library with every INTERNAL
+-- sub-library (private @library \<name\>@ stanzas, e.g. attoparsec's
+-- @attoparsec-internal@) FLATTENED in — their source dirs, modules, deps and
+-- flags merged, and the sub-library names dropped from build-depends (they are
+-- this same unit now, not external packages). zinc models one library per
+-- package and hides no modules (spec §2, §4), so an internal library is just
+-- more source folded into the one unit; the external view (the exposed API +
+-- package name a dependent links) is unchanged. (zinc-ffm.2)
 libraryComponent :: PackageDescription -> [Component]
-libraryComponent pd = maybe [] (\l -> [fromLibrary l]) (library pd)
+libraryComponent pd = case library pd of
+  Nothing   -> []
+  Just main ->
+    let subs = subLibraries pd
+        -- Cabal records a build-depends on an internal sub-library as a
+        -- dependency on the PACKAGE ITSELF (so it reads as the package name),
+        -- and some forms as the bare sub-library name. Both are this one unit —
+        -- drop them (a library never -packages itself; leaving the self name in
+        -- yields "cannot satisfy -package-id <self>" when building it).
+        selfNames = unPackageName (pkgName (package pd)) : mapMaybe subLibName subs
+        merged    = foldr (mergeLib . fromLibrary) (fromLibrary main) subs
+     in [merged {compDepends = filter (`notElem` selfNames) (compDepends merged)}]
+  where
+    subLibName lib = case libName lib of
+      LSubLibName n -> Just (unUnqualComponentName n)
+      _             -> Nothing
+
+-- | Fold a sub-library's build inputs into the accumulating library component
+-- (union of source dirs, modules, deps and flags); the kind/name/main stay the
+-- main library's.
+mergeLib :: Component -> Component -> Component
+mergeLib sub acc =
+  acc
+    { compSourceDirs  = nub (compSourceDirs acc ++ compSourceDirs sub)
+    , compModules     = nub (compModules acc ++ compModules sub)
+    , compDepends     = nub (compDepends acc ++ compDepends sub)
+    , compExtensions  = nub (compExtensions acc ++ compExtensions sub)
+    , compGhcOptions  = compGhcOptions acc ++ compGhcOptions sub
+    , compIncludeDirs = nub (compIncludeDirs acc ++ compIncludeDirs sub)
+    , compCppOptions  = compCppOptions acc ++ compCppOptions sub
+    , compCSources    = nub (compCSources acc ++ compCSources sub)
+    , compSystemLibs  = nub (compSystemLibs acc ++ compSystemLibs sub)
+    }
 
 executableComponents :: PackageDescription -> [Component]
 executableComponents pd =

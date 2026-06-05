@@ -1311,6 +1311,28 @@ main = hspec $ do
           libc = either (const Nothing) (find ((== "lib") . compName)) (parseCabalComponents c)
        in (compGhcOptions <$> libc) `shouldBe` Just ["-O2"]
 
+    it "flattens an internal sub-library into the one library unit (ffm.2)" $ do
+      let c =
+            unlines
+              [ "cabal-version: 2.4"
+              , "name: p"
+              , "version: 1"
+              , "library p-internal"
+              , "  hs-source-dirs: internal"
+              , "  build-depends: base, array"
+              , "  exposed-modules: P.Internal"
+              , "library"
+              , "  hs-source-dirs: src"
+              , "  build-depends: base, bytestring, p-internal"
+              , "  exposed-modules: P"
+              ]
+          libc = either (const Nothing) (find ((== "lib") . compName)) (parseCabalComponents c)
+      -- one merged unit: both source dirs and both module sets ...
+      (compSourceDirs <$> libc) `shouldBe` Just ["src", "internal"]
+      (sort . compModules <$> libc) `shouldBe` Just ["P", "P.Internal"]
+      -- ... and the sub-library name dropped from build-depends (it is this unit)
+      (sort . compDepends <$> libc) `shouldBe` Just ["array", "base", "bytestring"]
+
   describe "synthesizePaths" $ do
     let src = synthesizePaths "my-pkg" [0, 1, 0]
 
@@ -2101,6 +2123,7 @@ main = hspec $ do
               Just _  -> buildAndRun ("test/fixtures/" ++ name) [] >>= (`shouldBe` Right expected)
     fixtureRunsTo "hashable" "42\n"
     fixtureRunsTo "scientific" "3.14\n"
+    fixtureRunsTo "attoparsec" "Right 42\n"
 
   describe "content-hash verification on build (spec §8)" $
     it "rejects a fetched dep whose content hash does not match the lock" $ do
