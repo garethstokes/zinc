@@ -1,0 +1,5 @@
+.zinc/
+result
+result-*
+*.hi
+*.o

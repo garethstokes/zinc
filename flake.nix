@@ -68,6 +68,20 @@
         zinc = (perSystem final.stdenv.hostPlatform.system).zinc;
       };
 
+      # `nix flake init -t github:garethstokes/zinc` bootstraps a flat project
+      # (flake + zinc.toml + app/ + .gitignore) — the Nix-idiomatic entry point,
+      # complementing `zinc new` (zinc-6hf.4).
+      templates.default = {
+        path = ./templates/default;
+        description = "A flat single-package zinc project (zinc.toml + app/ + flake + .gitignore).";
+        welcomeText = ''
+          Created a zinc project.
+            - Rename the package: edit `name` and `[build.exe.app]` in zinc.toml.
+            - Build and run: `zinc run` (enter `nix develop` first if your zinc
+              build does not yet auto-provision the toolchain).
+        '';
+      };
+
       devShells = forAll (system:
         let s = perSystem system;
         in {
