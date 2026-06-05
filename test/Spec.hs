@@ -39,6 +39,7 @@ import Zinc.Git (cloneAt, gitEnv, gitInitIfNeeded, isInsideRepo, listTags, split
 import Zinc.Hackage (hackageCabalUrl, hackageTarballUrl, sourceRepoOf)
 import Zinc.Outdated (OutdatedDep (..), Status (..), classify)
 import Zinc.Delta (Change (..), ClosureDelta (..), closureDelta, isEmptyDelta)
+import Zinc.CacheBackend (CacheBackend (..), PullOutcome (..), artifactUrl, curlOutcome, httpBackend)
 import Zinc.Store (contentHash, resolveStoreRoot, storeSrcPath, verifyContent, withStoreLock)
 import Zinc.Manifest
   ( Component (..)
@@ -1334,6 +1335,30 @@ main = hspec $ do
 
     it "is empty when the closure is unchanged" $
       isEmptyDelta (closureDelta [mk "a" "v1"] [mk "a" "v1"]) `shouldBe` True
+
+  describe "Zinc.CacheBackend (vwn.3)" $ do
+    it "builds the content-addressed artifact URL (trailing slash normalised)" $ do
+      artifactUrl "https://cache.example.com" "abc123" `shouldBe` "https://cache.example.com/abc123.tar.gz"
+      artifactUrl "https://cache.example.com/" "abc123" `shouldBe` "https://cache.example.com/abc123.tar.gz"
+
+    it "classifies a curl exit: success / Miss(4xx) / transport error" $ do
+      curlOutcome ExitSuccess "" `shouldBe` Right ()
+      curlOutcome (ExitFailure 22) "" `shouldBe` Left Miss
+      case curlOutcome (ExitFailure 7) "refused" of
+        Left (PullFailed _) -> pure ()
+        other -> expectationFailure ("expected PullFailed, got " ++ show other)
+
+    it "pulls + unpacks an artifact over file:// into pkg/<key>/, miss otherwise" $ do
+      let base = "/tmp/zinc-cb"; store = "/tmp/zinc-cb-store"; key = "deadbeefkey"
+      forM_ [base, store] $ \d -> doesDirectoryExist d >>= \e -> when e (removeDirectoryRecursive d)
+      createDirectoryIfMissing True (base ++ "/art")
+      writeFile (base ++ "/art/package.conf") "name: demo\n"
+      _ <- readProcess "tar" ["-czf", base ++ "/" ++ key ++ ".tar.gz", "-C", base ++ "/art", "."] ""
+      let backend = httpBackend ("file://" ++ base)
+      out <- cbPull backend key store
+      got <- readFile (storePkgPath store key </> "package.conf")
+      miss <- cbPull backend "no-such-key" store
+      (out, "name: demo" `isInfixOf` got, miss /= Pulled) `shouldBe` (Pulled, True, True)
 
   describe "manifest parse diagnostics on read-only paths (szn)" $
     it "a malformed zinc.toml yields ZINC_MANIFEST_PARSE, not a generic error" $ do
