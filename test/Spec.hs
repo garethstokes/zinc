@@ -1227,18 +1227,27 @@ main = hspec $ do
     it "is Nothing when there are no version tags" $
       newestTag ["nightly", "HEAD"] `shouldBe` Nothing
 
-    it "prefers a package-scoped tag over stale global tags in a monorepo (ffm.3)" $ do
+    it "prefers a package-scoped tag over stale global tags in a monorepo subdir (ffm.3)" $ do
       -- haskell/vector carries both vector-stream-* and pre-split v0.12.* tags;
-      -- Latest for vector-stream must pick its own newest, not the global one.
+      -- Latest for the vector-stream SUBDIR must pick its own newest scoped tag,
+      -- not the global one (which belongs to a sibling / pre-split state).
       let tags = ["v0.12.3.1", "vector-0.13.2.0", "vector-stream-0.1.0.0", "vector-stream-0.1.0.1"]
-      newestTagFor (Just "vector-stream") tags `shouldBe` Just "vector-stream-0.1.0.1"
-      newestTagFor (Just "vector") tags `shouldBe` Just "vector-0.13.2.0"
+      newestTagFor (Just "vector-stream") True tags `shouldBe` Just "vector-stream-0.1.0.1"
+      newestTagFor (Just "vector") True tags `shouldBe` Just "vector-0.13.2.0"
 
-    it "falls back to bare version tags when no package-scoped tag exists (ffm.3)" $
-      newestTagFor (Just "vector-stream") ["v0.12.3.1", "v0.13.0.0"] `shouldBe` Just "v0.13.0.0"
+    it "a monorepo subdir falls back to bare version tags when it has no scoped tag (ffm.3)" $
+      newestTagFor (Just "vector-stream") True ["v0.12.3.1", "v0.13.0.0"] `shouldBe` Just "v0.13.0.0"
 
-    it "newestTag is newestTagFor with no package scope" $
-      newestTagFor Nothing ["v1.2.0", "v1.10.0"] `shouldBe` Just "v1.10.0"
+    it "a standalone repo considers BOTH scoped and bare tags, newest wins (myx)" $ do
+      -- hashable's repo tags its releases bare (v1.5.1.0) but also carries one
+      -- stale scoped tag (hashable-1.3.2.0). As a standalone (non-subdir) repo,
+      -- the newest across both must win — not the stale scoped tag, which would
+      -- pick a pre-text-2.0 hashable incompatible with the boot text.
+      let tags = ["v1.4.7.0", "hashable-1.3.2.0", "v1.5.0.0", "v1.5.1.0"]
+      newestTagFor (Just "hashable") False tags `shouldBe` Just "v1.5.1.0"
+
+    it "newestTag is newestTagFor with no package scope, non-subdir" $
+      newestTagFor Nothing False ["v1.2.0", "v1.10.0"] `shouldBe` Just "v1.10.0"
 
   describe "listTags" $ do
     repo <- runIO setupDepRepo

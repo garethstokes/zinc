@@ -14,7 +14,7 @@ import Control.Monad (when)
 import Data.Bifunctor (first)
 import Data.Char (toLower)
 import Data.List (find, nub)
-import Data.Maybe (listToMaybe)
+import Data.Maybe (isJust, listToMaybe)
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory, removeDirectoryRecursive)
 import System.FilePath (takeExtension, (</>))
 import Zinc.Cabal (cabalBuildType, parseCabalComponentsForGhc)
@@ -140,12 +140,14 @@ resolveRef _    _    (Branch b)   = pure (Right b)
 resolveRef _    _    (Rev r)      = pure (Right r)
 resolveRef _    _    (Vendored v) = pure (Right v) -- not a git ref; the tarball path uses the version directly
 resolveRef name repo Latest     = do
-  tags <- listTags (fst (splitRepoSubdir repo))
+  let (base, msubdir) = splitRepoSubdir repo
+  tags <- listTags base
   pure $ case tags of
     Left err -> Left err
-    -- Scope Latest by the PACKAGE NAME: a monorepo carries package-prefixed
-    -- tags (vector-stream-*, strict-*) that must be preferred over a sibling's
-    -- or a stale global tag; a dedicated repo has none, so newestTagFor falls
-    -- back to bare version tags (v1.5.1.0). Works whether or not the repo URL
-    -- carried a #subdir (strict's was discovered from its homepage, no subdir).
-    Right ts -> maybe (Left "no release tags found") Right (newestTagFor (Just name) ts)
+    -- Scope Latest by the PACKAGE NAME. For a monorepo SUBDIR dep, package-
+    -- prefixed tags (vector-stream-*) must win over a sibling's or a stale
+    -- global tag. For a standalone repo (no #subdir, e.g. hashable), the bare
+    -- v* tags ARE this package's releases, so they are considered alongside any
+    -- scoped tag and the newest overall wins — never masked by a stale scoped
+    -- tag like hashable-1.3.2.0 (zinc-myx).
+    Right ts -> maybe (Left "no release tags found") Right (newestTagFor (Just name) (isJust msubdir) ts)

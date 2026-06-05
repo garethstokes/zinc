@@ -14,24 +14,33 @@ import Text.Read (readMaybe)
 -- @v1.10.0 > v1.2.0@). Tags that don't parse as a dotted version (optionally
 -- @v@-prefixed) are ignored. 'Nothing' if none parse.
 newestTag :: [String] -> Maybe String
-newestTag = newestTagFor Nothing
+newestTag = newestTagFor Nothing False
 
--- | As 'newestTag', but monorepo-aware: when a package name is given (the
--- subdir of a @repo#subdir@ dependency), PREFER tags scoped to that package —
--- @\<pkg\>-1.2.3@, @\<pkg\>\/1.2.3@, or @\<pkg\>_1.2.3@ — over bare version
--- tags. A monorepo like haskell/vector carries both per-package tags
--- (@vector-stream-0.1.0.1@) and stale global ones (@v0.12.3.1@); picking the
--- latter checks out a commit where the package's subdir does not yet exist.
--- Falls back to bare version tags only when no package-scoped tag is present.
-newestTagFor :: Maybe String -> [String] -> Maybe String
-newestTagFor mpkg tags =
-  case scoped of
-    (_ : _) -> Just (pick scoped)
-    []      -> case bare of
-      []        -> Nothing
-      (_ : _)   -> Just (pick bare)
+-- | As 'newestTag', but package- and monorepo-aware. A package name (the subdir
+-- of a @repo#subdir@ dependency, or the dep name) lets tags scoped to that
+-- package — @\<pkg\>-1.2.3@, @\<pkg\>\/1.2.3@, @\<pkg\>_1.2.3@ — be recognised.
+--
+-- @isSubdir@ says whether the dependency is a subdir of a multi-package monorepo
+-- (@repo#subdir@). The two cases differ in what a /bare/ version tag (@v1.2.3@)
+-- means:
+--
+--   * Subdir package: bare/global tags belong to a SIBLING or a pre-split repo
+--     state (haskell/vector carries @vector-stream-0.1.0.1@ alongside stale
+--     global @v0.12.3.1@); picking one checks out a commit where the subdir may
+--     not exist. So prefer scoped tags, falling back to bare only when the
+--     package has no scoped tag at all (zinc-ffm.3).
+--   * Standalone repo (no subdir): the package IS the whole repo, so its
+--     releases may be tagged EITHER scoped (@strict-1.5@) OR bare (@v1.5.1.0@,
+--     e.g. hashable, which also carries one stale @hashable-1.3.2.0@). Consider
+--     both and take the newest — never let a stale scoped tag mask newer bare
+--     releases (zinc-myx).
+newestTagFor :: Maybe String -> Bool -> [String] -> Maybe String
+newestTagFor mpkg isSubdir tags
+  | isSubdir  = maybePick (if null scoped then bare else scoped)
+  | otherwise = maybePick (scoped ++ bare)
   where
-    pick = snd . maximumBy (comparing fst)
+    maybePick [] = Nothing
+    maybePick xs = Just (snd (maximumBy (comparing fst) xs))
     bare = [(v, t) | t <- tags, Just v <- [parseVersion t]]
     scoped = case mpkg of
       Nothing  -> []
