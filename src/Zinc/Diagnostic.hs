@@ -12,6 +12,7 @@ module Zinc.Diagnostic
   , tomlLocation
   , toDiagnostic
   , renderError
+  , humanError
   , errorCode
   , exitCodeFor
   , diagnosticJson
@@ -20,8 +21,9 @@ module Zinc.Diagnostic
   ) where
 
 import Data.Char (isDigit)
-import Data.List (find, isInfixOf, stripPrefix)
+import Data.List (find, intercalate, isInfixOf, stripPrefix)
 import Data.Maybe (listToMaybe, mapMaybe)
+import Zinc.Ansi (cyan, dim, red, redBold)
 import System.Exit (ExitCode (..))
 import Zinc.Json (Json (..), object)
 
@@ -217,6 +219,56 @@ renderError :: ZincError -> String
 renderError e =
   let d = toDiagnostic e
    in diagTitle d ++ maybe "" (\x -> ": " ++ x) (diagDetail d)
+
+-- | The rich, multi-line human rendering of a 'Diagnostic' (hw6.2, minimal
+-- style): a status line, an indented source block with a caret under the
+-- offending span when the diagnostic carries a 'SourceLocation' with an
+-- excerpt (e.g. GHC compile errors via hw6.5), and a @help:@ footer from the
+-- next action. Extends the one-line 'renderError'; @color@ gates all ANSI.
+humanError :: Bool -> Diagnostic -> String
+humanError color d = intercalate "\n" (statusLine : body)
+  where
+    statusLine = red color "\10007" ++ " " ++ redBold color (diagTitle d) ++ locSuffix
+    locSuffix = maybe "" (\l -> "  " ++ dim color (renderLoc l)) (diagLocation d)
+    body = sourceOrDetail ++ helpLines
+    -- With a caret-able location (excerpt + column) draw the source block; the
+    -- primary GHC "•" message annotates the caret. Otherwise fall back to the
+    -- detail text (toml message, generic errors) indented under the status.
+    sourceOrDetail = case diagLocation d of
+      Just l
+        | Just ex <- locExcerpt l
+        , Just c <- locCol l ->
+            "" : sourceBlock color l ex c (primaryMessage =<< diagDetail d)
+      _ -> maybe [] (\dt -> ["", indentLines dt]) (diagDetail d)
+    helpLines = maybe [] (\h -> ["", "   " ++ cyan color "help" ++ ": " ++ h]) (diagNextAction d)
+    indentLines = intercalate "\n" . map ("   " ++) . lines
+
+-- | @file:line:col@ for a status line (degrades to file, or file:line).
+renderLoc :: SourceLocation -> String
+renderLoc l = locFile l ++ case locLine l of
+  Nothing -> ""
+  Just ln -> ":" ++ show ln ++ maybe "" ((":" ++) . show) (locCol l)
+
+-- | The two-line source block: the numbered excerpt and a caret run under the
+-- offending span (columns @col@..@endCol@), optionally annotated with the
+-- primary message. The gutter pipe on line 2 aligns under line 1's.
+sourceBlock :: Bool -> SourceLocation -> String -> Int -> Maybe String -> [String]
+sourceBlock color l ex c msg =
+  [ "   " ++ lnStr ++ " " ++ pipe ++ " " ++ ex
+  , "   " ++ replicate (length lnStr) ' ' ++ " " ++ pipe ++ " " ++ replicate (c - 1) ' ' ++ carets ++ inline
+  ]
+  where
+    lnStr = maybe "" show (locLine l)
+    pipe = dim color "\9474"                                   -- │
+    width = maybe 1 (\e -> max 1 (e - c)) (locEndCol l)
+    carets = red color (replicate width '^')
+    inline = maybe "" (" " ++) msg
+
+-- | The first GHC @•@-bulleted line (its primary cause) for the inline caret
+-- annotation; 'Nothing' when the detail has no bullet (non-GHC diagnostics).
+primaryMessage :: String -> Maybe String
+primaryMessage detail =
+  listToMaybe [dropWhile (== ' ') (drop 1 (dropWhile (/= '\8226') ln)) | ln <- lines detail, '\8226' `elem` ln]
 
 -- | The process exit code for an error category, so agents branch without
 -- parsing. 2 = usage/manifest, 3 = resolution/fetch, 4 = build, 5 = environment,

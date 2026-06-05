@@ -23,7 +23,7 @@ import System.Process (readProcess)
 import Test.Hspec
 import System.Exit (ExitCode (..))
 import Zinc.CLI (Command (..), parseArgs)
-import Zinc.Diagnostic (Diagnostic (..), Severity (..), SourceLocation (..), ZincError (..), diagnosticJson, envelope, errorCode, exitCodeFor, ghcLocation, renderError, toDiagnostic, tomlLocation)
+import Zinc.Diagnostic (Diagnostic (..), Severity (..), SourceLocation (..), ZincError (..), diagnosticJson, envelope, errorCode, exitCodeFor, ghcLocation, humanError, renderError, toDiagnostic, tomlLocation)
 import Control.Concurrent.STM (atomically, modifyTVar', newTVarIO, readTVarIO)
 import Zinc.Closure (discoverRepos, parseDependsField, pkgNameOf)
 import Zinc.Ansi (greenBold, style)
@@ -365,6 +365,29 @@ main = hspec $ do
 
     it "progressLine switches to Building once the closure is complete (members)" $
       progressLine False (RProg 47 47 "zinc") `shouldBe` "    Building zinc"
+
+    it "humanError renders a minimal status line, caret block, and help (hw6.2)" $ do
+      let d =
+            Diagnostic
+              { diagCode = "ZINC_GHC_COMPILE"
+              , diagSeverity = SError
+              , diagTitle = "compilation failed"
+              , diagDetail = Just "app/Main.hs:3:22: error:\n    \8226 Couldn't match type 'Bool' with '[Char]'\n"
+              , diagLocation = Just (SourceLocation "app/Main.hs" (Just 3) (Just 22) Nothing (Just 26) (Just "main = putStrLn (1 + True)"))
+              , diagPackage = Just "demo"
+              , diagNextAction = Just "fix the type"
+              }
+          out = humanError False d
+      out `shouldSatisfy` isInfixOf "\10007 compilation failed  app/Main.hs:3:22"
+      out `shouldSatisfy` isInfixOf "3 \9474 main = putStrLn (1 + True)"
+      -- caret width = endCol(26) - col(22) = 4, annotated with the primary cause
+      out `shouldSatisfy` isInfixOf "^^^^ Couldn't match type 'Bool' with '[Char]'"
+      out `shouldSatisfy` isInfixOf "help: fix the type"
+
+    it "humanError degrades to status + detail when there is no source excerpt" $ do
+      let out = humanError False (toDiagnostic (DepNoGitRepo "colour"))
+      out `shouldSatisfy` isInfixOf "\10007 dependency has no git repository"
+      out `shouldSatisfy` isInfixOf "help: "
 
   describe "closure discovery (49o)" $ do
     it "parses the `closure` subcommand (+ --json)" $ do

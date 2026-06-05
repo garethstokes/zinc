@@ -9,7 +9,7 @@ import System.Process (CreateProcess (std_err, std_in, std_out), StdStream (Inhe
 import Zinc.Add (addInWorkspace, updateInWorkspace)
 import Zinc.CLI (Command (..), parseArgs)
 import Zinc.Closure (closureReportJson, renderClosure, runClosure)
-import Zinc.Diagnostic (ZincError, envelope, exitCodeFor, renderError, toDiagnostic)
+import Zinc.Diagnostic (ZincError, envelope, exitCodeFor, humanError, toDiagnostic)
 import Zinc.Docker (runDockerfile)
 import Zinc.Doctor (doctorJson, doctorOk, renderDoctor, runDoctor)
 import Zinc.Fmt (runFmt)
@@ -38,11 +38,18 @@ machine :: OutputMode -> Bool
 machine Machine = True
 machine _ = False
 
+-- | Whether human color is on (false in machine mode / no-color / piped).
+humanColor :: OutputMode -> Bool
+humanColor (Human color _ _) = color
+humanColor _ = False
+
 -- | Report a failed command and exit with its category's stable code (spec §6).
--- The error goes to stderr; structured output stays on stdout.
-failCmd :: String -> ZincError -> IO ()
-failCmd cmd e = do
-  hPutStrLn stderr (cmd ++ ": " ++ renderError e)
+-- The rich, caret-bearing human rendering (hw6.2) goes to stderr; structured
+-- output stays on stdout. (Machine-mode failures use the JSON envelope, not
+-- this path.)
+failCmd :: OutputMode -> ZincError -> IO ()
+failCmd mode e = do
+  hPutStrLn stderr (humanError (humanColor mode) (toDiagnostic e))
   exitWith (exitCodeFor e)
 
 -- | Emit a read-only command's result: the JSON envelope in machine mode
@@ -51,7 +58,7 @@ emitIntrospection :: String -> OutputMode -> (a -> Json) -> (a -> String) -> Eit
 emitIntrospection cmd mode toJson toHuman r = case r of
   Left e
     | machine mode -> putStrLn (renderJson (envelope cmd False Nothing Nothing [toDiagnostic e])) >> exitWith (exitCodeFor e)
-    | otherwise    -> failCmd ("zinc " ++ cmd) e
+    | otherwise    -> failCmd mode e
   Right a
     | machine mode -> putStrLn (renderJson (envelope cmd True (Just (toJson a)) Nothing []))
     | otherwise    -> putStr (toHuman a)
@@ -68,8 +75,8 @@ dispatch :: OutputMode -> Command -> IO ()
 dispatch _ (New name) = do
   materialize "." (scaffoldNew name)
   putStrLn ("Created workspace member at ./packages/" ++ name)
-dispatch _ (Add name) =
-  addInWorkspace name >>= either (failCmd "zinc add") putStr
+dispatch mode (Add name) =
+  addInWorkspace name >>= either (failCmd mode) putStr
 dispatch mode (Build target) = do
   -- Human path shows the lock-drift hint up front; the machine envelope stays
   -- pure JSON. Both run the report-bearing build and persist a metrics record.
@@ -89,7 +96,7 @@ dispatch mode (Build target) = do
   case r of
     Left e
       | machine mode -> putStrLn (renderJson (envelope "build" False Nothing Nothing [toDiagnostic e])) >> exitWith (exitCodeFor e)
-      | otherwise    -> failCmd "zinc build" e
+      | otherwise    -> failCmd mode e
     Right (outcome, timing) -> do
       recordBuild "." "build" target timing [(prName p, ms) | p <- boPackages outcome, Just ms <- [prTimeMs p]]
       if machine mode
@@ -97,27 +104,27 @@ dispatch mode (Build target) = do
         else do
           putStrLn ("Built " ++ show (length (boExes outcome)) ++ " executable(s):")
           mapM_ (putStrLn . ("  " ++)) (boExes outcome)
-dispatch _ (Run target args) =
+dispatch mode (Run target args) =
   resolveRunTarget "." target >>= \r -> case r of
-    Left e -> failCmd "zinc run" e
+    Left e -> failCmd mode e
     Right exe -> do
       -- Exec with live, inherited stdio and exit zinc with the child's code.
       (_, _, _, ph) <- createProcess (proc exe args) {std_in = Inherit, std_out = Inherit, std_err = Inherit}
       waitForProcess ph >>= exitWith
-dispatch _ (Test _) =
+dispatch mode (Test _) =
   runTests "." >>= \r -> case r of
-    Left e  -> failCmd "zinc test" e
+    Left e  -> failCmd mode e
     Right n -> putStrLn (show n ++ " test suite(s) passed")
-dispatch _ (Repl _) =
-  runRepl "." >>= either (failCmd "zinc repl") (const (pure ()))
-dispatch _ (Update _) =
-  updateInWorkspace >>= either (failCmd "zinc update") putStr
+dispatch mode (Repl _) =
+  runRepl "." >>= either (failCmd mode) (const (pure ()))
+dispatch mode (Update _) =
+  updateInWorkspace >>= either (failCmd mode) putStr
 dispatch _ Clean = do
   runClean "."
   putStrLn "Cleaned build artifacts (kept the store)."
-dispatch _ Gc =
+dispatch mode Gc =
   runGc "." >>= \r -> case r of
-    Left e -> failCmd "zinc gc" e
+    Left e -> failCmd mode e
     Right (pkgs, srcs) ->
       putStrLn ("Collected " ++ show (length pkgs) ++ " package(s) and " ++ show (length srcs) ++ " source(s) from the store.")
 dispatch mode Perf =
@@ -147,21 +154,21 @@ dispatch mode Warm = do
   case r of
     Left e
       | machine mode -> putStrLn (renderJson (envelope "warm" False Nothing Nothing [toDiagnostic e])) >> exitWith (exitCodeFor e)
-      | otherwise    -> failCmd "zinc warm" e
+      | otherwise    -> failCmd mode e
     Right pkgs
       | machine mode -> putStrLn (renderJson (envelope "warm" True (Just (JObject [("packages", JArray (map packageReportJson pkgs))])) Nothing []))
       | otherwise    -> putStrLn (warmSummary pkgs)
-dispatch _ Prime =
-  runPrime "." >>= either (failCmd "zinc prime") putStr
-dispatch _ Onboard =
-  runOnboard "." >>= either (failCmd "zinc onboard") putStr
-dispatch _ Dockerfile =
-  runDockerfile "." >>= either (failCmd "zinc dockerfile") putStr
+dispatch mode Prime =
+  runPrime "." >>= either (failCmd mode) putStr
+dispatch mode Onboard =
+  runOnboard "." >>= either (failCmd mode) putStr
+dispatch mode Dockerfile =
+  runDockerfile "." >>= either (failCmd mode) putStr
 dispatch mode (Closure pkg) =
   runClosure pkg >>= emitIntrospection "closure" mode closureReportJson renderClosure
-dispatch _ (Fmt check) =
+dispatch mode (Fmt check) =
   runFmt check "." >>= \r -> case r of
-    Left e -> failCmd "zinc fmt" e
+    Left e -> failCmd mode e
     Right clean
       | check && not clean -> hPutStrLn stderr "zinc.toml is not canonical (run `zinc fmt`)" >> exitWith (ExitFailure 1)
       | check              -> putStrLn "zinc.toml is canonical."
