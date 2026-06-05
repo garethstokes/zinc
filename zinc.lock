@@ -58,28 +58,28 @@ depends = []
 name = "hspec"
 repo = "https://github.com/hspec/hspec.git"
 rev = "770a64366a3059cc7a91012a3ffb43ab8d0b29f4"
-sha256 = "sha256:e634f76803a45af599ca335a8c47c63db3e471b015bcbcea9e4ecbeba2c18af2"
+sha256 = "sha256:0ea509cfb99eccbd9aa7a0b8fd13856ca4daa2779777f8e21f8d24820b9d4d58"
 depends = ["QuickCheck", "hspec-core", "hspec-discover", "hspec-expectations"]
 
 [[locked]]
 name = "hspec-core"
 repo = "https://github.com/hspec/hspec.git#hspec-core"
 rev = "770a64366a3059cc7a91012a3ffb43ab8d0b29f4"
-sha256 = "sha256:e634f76803a45af599ca335a8c47c63db3e471b015bcbcea9e4ecbeba2c18af2"
+sha256 = "sha256:0ea509cfb99eccbd9aa7a0b8fd13856ca4daa2779777f8e21f8d24820b9d4d58"
 depends = ["HUnit", "QuickCheck", "ansi-terminal", "call-stack", "haskell-lexer", "hspec-expectations", "quickcheck-io", "random", "tf-random"]
 
 [[locked]]
 name = "hspec-discover"
 repo = "https://github.com/hspec/hspec.git#hspec-discover"
 rev = "770a64366a3059cc7a91012a3ffb43ab8d0b29f4"
-sha256 = "sha256:e634f76803a45af599ca335a8c47c63db3e471b015bcbcea9e4ecbeba2c18af2"
+sha256 = "sha256:0ea509cfb99eccbd9aa7a0b8fd13856ca4daa2779777f8e21f8d24820b9d4d58"
 depends = []
 
 [[locked]]
 name = "hspec-expectations"
 repo = "https://github.com/hspec/hspec-expectations.git"
 rev = "0c2f8822744c3fbf09356919a337361b80ad33c9"
-sha256 = "sha256:d6f75d30f9f7e6cf67aabd077aeb8d793be71a9bf26db4fdac9de85644d07c1a"
+sha256 = "sha256:775242c8f7ea9fac2b086d48c3742aa10539d2a7f26d7e4153f295fde027fe2e"
 depends = ["HUnit", "call-stack"]
 
 [[locked]]
@@ -93,14 +93,14 @@ depends = ["prettyprinter", "prettyprinter-ansi-terminal", "transformers-compat"
 name = "prettyprinter"
 repo = "https://github.com/quchen/prettyprinter.git#prettyprinter"
 rev = "7f9af88c37a511c1bca1af6836bf250319817926"
-sha256 = "sha256:ad4eb12a5799011abc244bd7284d1bc415c991dfa1b3d175056d8685a8c3acf3"
+sha256 = "sha256:7ff34a85b11087c66775d3afc8f44f2538a42daf878e24d097a31363a297d22e"
 depends = []
 
 [[locked]]
 name = "prettyprinter-ansi-terminal"
 repo = "https://github.com/quchen/prettyprinter.git#prettyprinter-ansi-terminal"
 rev = "7f9af88c37a511c1bca1af6836bf250319817926"
-sha256 = "sha256:ad4eb12a5799011abc244bd7284d1bc415c991dfa1b3d175056d8685a8c3acf3"
+sha256 = "sha256:7ff34a85b11087c66775d3afc8f44f2538a42daf878e24d097a31363a297d22e"
 depends = ["ansi-terminal", "prettyprinter"]
 
 [[locked]]
@@ -128,7 +128,7 @@ depends = ["splitmix"]
 name = "splitmix"
 repo = "https://github.com/haskellari/splitmix.git"
 rev = "a52b12732c729c87fdb4937adc689afb8cbe408b"
-sha256 = "sha256:f5df3ca257a1b3922f2abeb8a1ffaaf58659f881f4ace1c496f9830c9f93d106"
+sha256 = "sha256:2562aaa30e1c8fd2cd74e0abbf2d99670d91b29fb7084db4468f831c6a8697d5"
 depends = []
 
 [[locked]]
@@ -142,7 +142,7 @@ depends = ["primitive", "random"]
 name = "toml-parser"
 repo = "https://github.com/glguy/toml-parser.git"
 rev = "3f02aa375c4decfa7de6d4841974919697cfb54a"
-sha256 = "sha256:23ddb2192d8eff059fe1c30d302b78532e81e7a1f32b1cc4bfc9de7a868cfcc6"
+sha256 = "sha256:e5a8ac2d86456cb321f98857be19a770e7fb8787d5eb15da76182f7c86de94aa"
 depends = ["prettyprinter"]
 
 [[locked]]
