@@ -3,6 +3,7 @@
 module Zinc.Version
   ( newestTag
   , newestTagFor
+  , parseVersion
   ) where
 
 import Control.Applicative ((<|>))

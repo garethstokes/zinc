@@ -19,6 +19,7 @@ import Zinc.Introspect (explainJson, graphJson, renderExplain, renderGraph, rend
 import Zinc.Json (Json (..), renderJson)
 import Zinc.Metrics (recordBuild)
 import Zinc.Orchestrate (checkLockDrift, resolveRunTarget, runBuildReport, runClean, runRepl, runTests, runWarm)
+import Zinc.Outdated (outdatedJson, renderOutdated, runOutdated)
 import Zinc.Output (OutputEvent (..), OutputMode (..), emit, resolveMode, withRenderer)
 import Zinc.Perf (perfSummaryJson, renderPerf, runPerf)
 import Zinc.Prime (runOnboard, runPrime)
@@ -180,6 +181,8 @@ dispatch mode Version
   | machine mode = putStrLn (renderJson (envelope "version" True (Just (JObject [("version", JString zincVersion)])) Nothing []))
   | otherwise    = putStrLn zincVersionLine
 dispatch _ Help = putStr helpOverview
+dispatch mode (Outdated allClosure) =
+  runOutdated allClosure "." >>= emitIntrospection "outdated" mode outdatedJson renderOutdated
 dispatch mode (Fmt check) =
   runFmt check "." >>= \r -> case r of
     Left e -> failCmd mode e

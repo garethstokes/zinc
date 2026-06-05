@@ -36,6 +36,7 @@ import Zinc.Prime (onboardText, primeText)
 import Zinc.Json (Json (..), parseJson, renderJson)
 import Zinc.Git (cloneAt, gitEnv, gitInitIfNeeded, isInsideRepo, listTags, splitRepoSubdir)
 import Zinc.Hackage (hackageCabalUrl, hackageTarballUrl, sourceRepoOf)
+import Zinc.Outdated (OutdatedDep (..), Status (..), classify)
 import Zinc.Store (contentHash, resolveStoreRoot, storeSrcPath, verifyContent, withStoreLock)
 import Zinc.Manifest
   ( Component (..)
@@ -723,6 +724,10 @@ main = hspec $ do
     it "zincVersionLine reads `zinc <semver>` (plus optional commit/date)" $
       zincVersionLine `shouldSatisfy` isInfixOf ("zinc " ++ zincVersion)
 
+    it "parses `outdated` and `outdated --all` (90j.1)" $ do
+      parseArgs ["outdated"] `shouldBe` Right (OutputFlags False False, Outdated False)
+      parseArgs ["outdated", "--all"] `shouldBe` Right (OutputFlags False False, Outdated True)
+
     it "no args / help / --help parse to the friendly Help overview (hw6.6)" $ do
       parseArgs [] `shouldBe` Right (OutputFlags False False, Help)
       parseArgs ["help"] `shouldBe` Right (OutputFlags False False, Help)
@@ -1299,6 +1304,19 @@ main = hspec $ do
 
     it "newestTag is newestTagFor with no package scope, non-subdir" $
       newestTagFor Nothing False ["v1.2.0", "v1.10.0"] `shouldBe` Just "v1.10.0"
+
+  describe "Zinc.Outdated.classify (90j.1)" $ do
+    it "flags a newer version, distinguishing minor from major jumps" $ do
+      classify "v1.2.0" (Just "v1.3.0") `shouldBe` Behind False
+      classify "v1.2.0" (Just "v2.0.0") `shouldBe` Behind True
+
+    it "is up-to-date when current is the newest or newer" $ do
+      classify "v1.2.0" (Just "v1.2.0") `shouldBe` UpToDate
+      classify "v1.5.0" (Just "v1.2.0") `shouldBe` UpToDate
+
+    it "is unknown for a bare commit or a missing upstream version" $ do
+      classify "a1b2c3d" (Just "v1.2.0") `shouldBe` Unknown
+      classify "v1.2.0" Nothing `shouldBe` Unknown
 
   describe "listTags" $ do
     repo <- runIO setupDepRepo

@@ -8,10 +8,12 @@ module Zinc.Hackage
   , hackageSourceRepo
   , hackageTarballUrl
   , fetchHackageTarball
+  , hackageLatestVersion
   ) where
 
 import Control.Applicative ((<|>))
 import Control.Monad (when)
+import Data.Char (toLower)
 import qualified Data.ByteString.Char8 as BS
 import Data.Maybe (listToMaybe)
 import Data.List (isInfixOf, stripPrefix)
@@ -66,6 +68,25 @@ hackageSourceRepo pkg = do
   pure $ case code of
     ExitSuccess   -> Right (sourceRepoOf out)
     ExitFailure _ -> Left ("fetch " ++ pkg ++ " from Hackage: " ++ err)
+
+-- | The latest version of a package on Hackage, read from its preferred
+-- @.cabal@ (the @\<pkg\>\/\<pkg\>.cabal@ endpoint serves the newest release).
+-- 'Nothing' if the fetch fails or the version is unparseable (zinc-90j.1).
+hackageLatestVersion :: String -> IO (Maybe String)
+hackageLatestVersion pkg = do
+  (code, out, _) <- readProcessWithExitCode "curl" ["-fsSL", hackageCabalUrl pkg] ""
+  pure $ case code of
+    ExitSuccess   -> versionOf out
+    ExitFailure _ -> Nothing
+  where
+    versionOf src =
+      listToMaybe
+        [ dropWhile (== ' ') (drop 1 rest)
+        | l <- lines src
+        , let (key, rest) = break (== ':') l
+        , map toLower (dropWhile (== ' ') key) == "version"
+        , not (null rest)
+        ]
 
 -- | URL of a package's sdist tarball (@\<name\>-\<version\>.tar.gz@) on Hackage —
 -- the vendoring source (b1z, design s2). Pinned by sha256 at vendor time;
