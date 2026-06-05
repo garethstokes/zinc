@@ -19,7 +19,7 @@ import Zinc.GC (runGc)
 import Zinc.Introspect (explainJson, graphJson, renderExplain, renderGraph, renderStatus, runExplain, runGraph, runStatus, statusJson)
 import Zinc.Json (Json (..), renderJson)
 import Zinc.Metrics (recordBuild)
-import Zinc.Orchestrate (checkLockDrift, resolveRunTarget, runBuildReport, runClean, runRepl, runTests, runWarm)
+import Zinc.Orchestrate (checkLockDrift, resolveRunTarget, runBuildReport, runCachePush, runClean, runRepl, runTests, runWarm)
 import Zinc.Outdated (outdatedJson, renderOutdated, runOutdated)
 import Zinc.Output (OutputEvent (..), OutputMode (..), emit, resolveMode, withRenderer)
 import Zinc.Perf (perfSummaryJson, renderPerf, runPerf)
@@ -182,6 +182,12 @@ dispatch mode Version
   | machine mode = putStrLn (renderJson (envelope "version" True (Just (JObject [("version", JString zincVersion)])) Nothing []))
   | otherwise    = putStrLn zincVersionLine
 dispatch _ Help = putStr helpOverview
+dispatch mode CachePush =
+  runCachePush "." >>= \r -> case r of
+    Left e -> failCmd mode e
+    Right pushed
+      | machine mode -> putStrLn (renderJson (envelope "cache-push" True (Just (JObject [("pushed", JArray (map JString pushed))])) Nothing []))
+      | otherwise    -> putStrLn ("Pushed " ++ show (length pushed) ++ " artifact(s) to the cache" ++ if null pushed then " (nothing built locally)." else ": " ++ intercalate ", " pushed ++ ".")
 dispatch mode (Outdated allClosure) =
   runOutdated allClosure "." >>= emitIntrospection "outdated" mode outdatedJson renderOutdated
 dispatch mode (Fmt check) =

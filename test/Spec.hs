@@ -731,6 +731,9 @@ main = hspec $ do
       parseArgs ["outdated"] `shouldBe` Right (OutputFlags False False, Outdated False)
       parseArgs ["outdated", "--all"] `shouldBe` Right (OutputFlags False False, Outdated True)
 
+    it "parses the nested `cache push` (vwn.5)" $
+      parseArgs ["cache", "push"] `shouldBe` Right (OutputFlags False False, CachePush)
+
     it "no args / help / --help parse to the friendly Help overview (hw6.6)" $ do
       parseArgs [] `shouldBe` Right (OutputFlags False False, Help)
       parseArgs ["help"] `shouldBe` Right (OutputFlags False False, Help)
@@ -1359,6 +1362,19 @@ main = hspec $ do
       got <- readFile (storePkgPath store key </> "package.conf")
       miss <- cbPull backend "no-such-key" store
       (out, "name: demo" `isInfixOf` got, miss /= Pulled) `shouldBe` (Pulled, True, True)
+
+    it "round-trips an artifact: push to file:// then pull into a fresh store (vwn.5)" $ do
+      let base = "/tmp/zinc-cb-rt"; store = base ++ "/store"; store2 = base ++ "/store2"
+          cache = base ++ "/cache"; key = "roundtripkey"
+      doesDirectoryExist base >>= \e -> when e (removeDirectoryRecursive base)
+      createDirectoryIfMissing True (storePkgPath store key)
+      writeFile (storePkgPath store key </> "package.conf") "name: rt\n"
+      createDirectoryIfMissing True cache -- a file:// upload target dir must exist
+      let be = httpBackend ("file://" ++ cache)
+      pushed <- cbPush be key store
+      out <- cbPull be key store2
+      got <- readFile (storePkgPath store2 key </> "package.conf")
+      (pushed, out, "name: rt" `isInfixOf` got) `shouldBe` (Right (), Pulled, True)
 
   describe "manifest parse diagnostics on read-only paths (szn)" $
     it "a malformed zinc.toml yields ZINC_MANIFEST_PARSE, not a generic error" $ do

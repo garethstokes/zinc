@@ -34,6 +34,7 @@ data Command
   | Version               -- ^ print the zinc version (`--version`/`version`)
   | Help                   -- ^ the friendly no-args / `help` / `--help` overview
   | Outdated Bool          -- ^ report deps with newer versions; Bool = --all (whole closure)
+  | CachePush              -- ^ `cache push`: publish closure artifacts to the remote cache
   deriving (Eq, Show)
 
 -- | Pure, testable entry point: parse argv into the output flags + a 'Command'.
@@ -86,6 +87,7 @@ commandParser =
       , sub "closure" "Discover a package's non-boot closure + repos" (Closure <$> strArgument (metavar "PKG"))
       , sub "version" "Print the zinc version" (pure Version)
       , sub "outdated" "Report dependencies with newer versions available" (Outdated <$> switch (long "all" <> help "Include the whole closure, not just direct dependencies"))
+      , command "cache" (info (subparser (sub "push" "Publish built closure artifacts to the remote cache (ZINC_CACHE)" (pure CachePush)) <**> helper) (progDesc "Manage the remote artifact cache"))
       ]
   where
     -- Every subcommand inherits the output flags (--json/--quiet), declared once

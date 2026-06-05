@@ -35,10 +35,12 @@ data PullOutcome
   deriving (Eq, Show)
 
 -- | A pluggable remote artifact cache. 'cbPull' brings a key's artifact into the
--- local store (under @pkg\/\<key\>@) if the backend has it. (Push is vwn.5.)
+-- local store; 'cbPush' uploads a locally-built artifact (an explicit CI publish
+-- step, zinc-vwn.5).
 data CacheBackend = CacheBackend
-  { cbName :: String                                   -- ^ for diagnostics
-  , cbPull :: String -> FilePath -> IO PullOutcome     -- ^ key -> storeRoot -> outcome
+  { cbName :: String                                       -- ^ for diagnostics
+  , cbPull :: String -> FilePath -> IO PullOutcome         -- ^ key -> storeRoot -> outcome
+  , cbPush :: String -> FilePath -> IO (Either String ())  -- ^ key -> storeRoot -> uploaded?
   }
 
 -- | The content-addressed artifact URL for a build @key@ under a base URL:
@@ -63,8 +65,27 @@ curlOutcome (ExitFailure code) err =
 -- works behind any static host, bucket, or @file:\/\/@). Pull does
 -- @GET \<base\>\/\<key\>.tar.gz@ and unpacks it into @pkg\/\<key\>\/@.
 httpBackend :: String -> CacheBackend
-httpBackend base = CacheBackend {cbName = "http " ++ base, cbPull = pull}
+httpBackend base = CacheBackend {cbName = "http " ++ base, cbPull = pull, cbPush = push}
   where
+    -- Tar the local pkg/<key>/ and upload it to <base>/<key>.tar.gz (curl -T:
+    -- an HTTP PUT, or a write to a file:// path). The artifact must exist locally.
+    push key storeRoot = do
+      let src = storePkgPath storeRoot key
+          tmp = src ++ ".push.tar.gz"
+      exists <- doesDirectoryExist src
+      if not exists
+        then pure (Left ("no local artifact for " ++ key))
+        else do
+          (tc, _, te) <- readProcessWithExitCode "tar" ["-czf", tmp, "-C", src, "."] ""
+          case tc of
+            ExitFailure _ -> removeIfExists tmp >> pure (Left ("tar " ++ key ++ ": " ++ te))
+            ExitSuccess -> do
+              (uc, _, ue) <- readProcessWithExitCode "curl" ["-fsS", "-T", tmp, artifactUrl base key] ""
+              removeIfExists tmp
+              pure $ case uc of
+                ExitSuccess   -> Right ()
+                ExitFailure n -> Left ("upload " ++ key ++ " (curl exit " ++ show n ++ ")" ++ (if null ue then "" else ": " ++ ue))
+
     pull key storeRoot = do
       let dest = storePkgPath storeRoot key
           tmp = dest ++ ".pull.tar.gz"

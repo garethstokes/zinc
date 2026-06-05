@@ -20,6 +20,7 @@ module Zinc.Orchestrate
   , checkLockDrift
   , runRepl
   , runClean
+  , runCachePush
   , parMapBounded
   ) where
 
@@ -28,12 +29,12 @@ import GHC.Clock (getMonotonicTime)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.QSem (newQSem, signalQSem, waitQSem)
 import Control.Exception (SomeException, finally, try)
-import Control.Monad (when)
+import Control.Monad (forM, when)
 import Data.Bifunctor (first)
 import Data.Char (isHexDigit)
 import Data.List (stripPrefix)
 import qualified Data.Map as Map
-import Data.Maybe (fromMaybe, isNothing, mapMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isNothing, mapMaybe)
 import System.Directory (doesDirectoryExist, doesFileExist, findExecutable, listDirectory, makeAbsolute, removeDirectoryRecursive)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeExtension, takeFileName, (</>))
@@ -41,7 +42,7 @@ import System.Process (callProcess, readProcess, readProcessWithExitCode)
 import Zinc.Build (LibBuild (..), MemberBuild (..), buildLib, buildLibArtifacts, buildMember, initPackageDb, isRegistered, registerPackage, replArgs)
 import Zinc.Cabal (cabalBuildType, cabalVersion, parseCabalComponentsForGhc)
 import Zinc.Cache (BuildKey (..), buildCacheKey, storeConfPath, storePkgPath)
-import Zinc.CacheBackend (CacheBackend (cbPull), PullOutcome (Pulled), remoteCacheFromEnv)
+import Zinc.CacheBackend (CacheBackend (cbPull, cbPush), PullOutcome (Pulled), remoteCacheFromEnv)
 import Zinc.Fetch (packageDirIn)
 import Zinc.Git (cloneAt)
 import Zinc.Hackage (fetchHackageTarball)
@@ -443,6 +444,36 @@ buildClosure sink wsDir storeRoot wsDb ghcVersion buildOpts = runResult $ do
                   Left err -> Left err
                   Right cs -> Right (either (const "0") id (cabalVersion src), cs)
             [] -> pure (Left "no zinc.toml or .cabal")
+
+-- | @zinc cache push@ (vwn.5): upload each locally-built closure artifact to the
+-- configured remote cache (@ZINC_CACHE@), keyed by its 'buildCacheKey'. An
+-- explicit CI publish step — only artifacts present in the local store are
+-- pushed (an unbuilt one is skipped); an upload error fails. The build key is
+-- computed exactly as the build does, so a pushed artifact is pull-hit later.
+-- Returns the pushed dependency names.
+runCachePush :: FilePath -> IO (Either ZincError [String])
+runCachePush wsDir = runResult $ do
+  mBackend <- liftIO remoteCacheFromEnv
+  be <- maybe (failWith "no remote cache configured (set ZINC_CACHE)") pure mBackend
+  let lockFile = wsDir </> "zinc.lock"
+  haveLock <- liftIO (doesFileExist lockFile)
+  locks <- if haveLock then liftEither . parseLock =<< liftIO (readFile lockFile) else pure []
+  let wsFile = wsDir </> "zinc.toml"
+  wsSrc <- liftIO (readFile wsFile)
+  ws <- liftEitherE (first (ManifestParse wsFile) (parseWorkspace wsSrc))
+  storeRoot <- liftIO resolveStoreRoot
+  let ghc = wsGhc ws
+      opts = depGhcOptionsOf ws
+      optsFor l = fromMaybe [] (lookup (lockName l) opts)
+  fmap catMaybes $ forM locks $ \l -> do
+    let key = buildCacheKey (BuildKey (lockRev l) ghc (lockDepends l) (optsFor l))
+        pkgDir = storePkgPath storeRoot key
+    there <- liftIO (doesDirectoryExist pkgDir)
+    if not there
+      then pure Nothing
+      else do
+        res <- liftIO (cbPush be key storeRoot)
+        either (\e -> failWith ("cache push " ++ lockName l ++ ": " ++ e)) (const (pure (Just (lockName l)))) res
 
 -- | Direct dependencies declared in the manifest but absent from the lockfile
 -- — i.e. names that need (re-)resolving via @zinc add@. Empty means the lock
