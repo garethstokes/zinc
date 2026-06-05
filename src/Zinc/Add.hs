@@ -21,11 +21,11 @@ import Zinc.Diagnostic (ZincError (DepNoGitRepo, NoZincToml))
 import Zinc.Except (Result, failWithError, liftEither, liftIO, orFail, orFailE, runResult)
 import Zinc.Fetch (gitFetchManifest, resolveRef)
 import Zinc.Git (cloneAt)
-import Zinc.Hackage (hackageSourceRepo)
-import Zinc.Lock (LockedPackage (..), renderLock)
+import Zinc.Hackage (fetchHackageTarball, hackageSourceRepo)
+import Zinc.Lock (LockedPackage (..), Source (..), renderLock)
 import Zinc.Manifest
   ( Dependency (depName, depRef)
-  , Ref (Latest)
+  , Ref (Latest, Vendored)
   , WorkspaceManifest (wsDependencies, wsGhc)
   , depRepos
   , addDep
@@ -36,33 +36,43 @@ import Zinc.Report (renderResolution)
 import Zinc.Resolve (ResolvedDep (..), isBootLib, resolve)
 import Zinc.Store (contentHash, resolveStoreRoot)
 
--- | Build a lock entry from a resolved dep and its resolved commit + hash.
+-- | Build a lock entry from a resolved dep and its resolved commit + hash. A
+-- vendored pin records a tarball source (version from the ref); everything else
+-- a git source (repo + resolved commit).
 lockEntry :: ResolvedDep -> String -> String -> LockedPackage
 lockEntry dep rev sha =
   LockedPackage
     { lockName = rdName dep
-    , lockRepo = rdRepo dep
-    , lockRev = rev
+    , lockSource = case rdRef dep of
+        Vendored ver -> TarballSource ver
+        _            -> GitSource (rdRepo dep) rev
     , lockSha256 = sha
     , lockDepends = rdDepends dep
     }
 
--- | Clone every dep in the closure at its ref into the store, capture the exact
--- commit + content hash, and produce the lockfile entries. Short-circuits on
--- the first failure.
+-- | Bring every dep in the closure into the store at its ref — git clone, or a
+-- Hackage tarball fetch for a vendored pin (b1z) — capture its exact
+-- commit/version + content hash, and produce the lockfile entries.
+-- Short-circuits on the first failure.
 freezeClosure :: FilePath -> [ResolvedDep] -> IO (Either ZincError [LockedPackage])
 freezeClosure storeRoot = runResult . traverse freezeOne
   where
     freezeOne :: ResolvedDep -> Result LockedPackage
     freezeOne dep = do
-      refStr <- orFail (first ((rdName dep ++ ": ") ++) <$> resolveRef (rdName dep) (rdRepo dep) (rdRef dep))
       let dest = storeRoot </> "checkout" </> rdName dep
-      liftIO $ do
-        stale <- doesDirectoryExist dest
-        when stale (removeDirectoryRecursive dest)
-      rev <- orFail (first (("freeze " ++ rdName dep ++ ": ") ++) <$> cloneAt (rdRepo dep) refStr dest)
-      sha <- liftIO (contentHash dest)
-      pure (lockEntry dep rev sha)
+      case rdRef dep of
+        Vendored ver -> do
+          _ <- orFail (first (("freeze " ++ rdName dep ++ ": ") ++) <$> fetchHackageTarball (rdName dep) ver dest)
+          sha <- liftIO (contentHash dest)
+          pure (lockEntry dep ver sha)
+        _ -> do
+          refStr <- orFail (first ((rdName dep ++ ": ") ++) <$> resolveRef (rdName dep) (rdRepo dep) (rdRef dep))
+          liftIO $ do
+            stale <- doesDirectoryExist dest
+            when stale (removeDirectoryRecursive dest)
+          rev <- orFail (first (("freeze " ++ rdName dep ++ ": ") ++) <$> cloneAt (rdRepo dep) refStr dest)
+          sha <- liftIO (contentHash dest)
+          pure (lockEntry dep rev sha)
 
 -- | Resolve a workspace's dependency closure (real git fetch), freeze it, and
 -- write @zinc.lock@; returns the resolution table for display. Shared by

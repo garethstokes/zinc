@@ -43,7 +43,8 @@ import Zinc.Cabal (cabalBuildType, cabalVersion, parseCabalComponentsForGhc)
 import Zinc.Cache (BuildKey (..), buildCacheKey, storeConfPath, storePkgPath)
 import Zinc.Fetch (packageDirIn)
 import Zinc.Git (cloneAt)
-import Zinc.Lock (LockedPackage (..), parseLock)
+import Zinc.Hackage (fetchHackageTarball)
+import Zinc.Lock (LockedPackage (..), Source (..), lockRepo, lockRev, parseLock)
 import Zinc.Manifest
   ( Component (compDepends, compGhcOptions, compKind)
   , ComponentKind (Executable, Library, TestSuite)
@@ -358,7 +359,14 @@ buildClosure sink wsDir storeRoot wsDb ghcVersion buildOpts = runResult $ do
       exists <- liftIO (doesDirectoryExist dest)
       when (not exists) $ do
         liftIO (emit sink (FetchStart (lockName l)))
-        _ <- orFail (first (("fetch " ++ lockName l ++ ": ") ++) <$> cloneAt (lockRepo l) (lockRev l) dest)
+        -- Fetch the pinned source by its kind: a git clone, or a Hackage sdist
+        -- tarball for a vendored pin (b1z). Either way the bytes are verified
+        -- against the lock's sha256 below, so build never resolves a version —
+        -- it only retrieves the already-pinned content.
+        let fetchLocked = case lockSource l of
+              GitSource repo rev -> fmap (const ()) <$> cloneAt repo rev dest
+              TarballSource ver  -> fmap (const ()) <$> fetchHackageTarball (lockName l) ver dest
+        _ <- orFail (first (("fetch " ++ lockName l ++ ": ") ++) <$> fetchLocked)
         liftIO (emit sink (FetchDone (lockName l)))
       orFailE (verifyFetched l dest)
       -- The package may live in a subdirectory of the repo (monorepo) — an

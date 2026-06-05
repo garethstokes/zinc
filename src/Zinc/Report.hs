@@ -166,7 +166,8 @@ renderResolution rds = unlines (header : map row rds)
 
 -- | Compact display form of a ref.
 renderRef :: Ref -> String
-renderRef (Tag t)    = t
-renderRef (Branch b) = b
-renderRef (Rev r)    = take 8 r
-renderRef Latest     = "*"
+renderRef (Tag t)      = t
+renderRef (Branch b)   = b
+renderRef (Rev r)      = take 8 r
+renderRef Latest       = "*"
+renderRef (Vendored v) = v ++ " (vendored)"

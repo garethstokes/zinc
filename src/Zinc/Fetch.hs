@@ -21,25 +21,32 @@ import Zinc.Cabal (cabalBuildType, parseCabalComponentsForGhc)
 import Zinc.Diagnostic (ZincError (BuildTypeCustom))
 import Zinc.Except (failWith, failWithError, liftEither, liftIO, orFail, orFailE, runResult)
 import Zinc.Git (cloneAt, listTags, splitRepoSubdir)
+import Zinc.Hackage (fetchHackageTarball)
 import Zinc.Manifest (Component (compDepends, compKind), ComponentKind (Library), Dependency (..), Ref (..), parseDependencies)
 import Zinc.Resolve (DepManifest (..))
 import Zinc.Version (newestTagFor)
 
--- | Fetch a dependency's manifest: clone @repo@ at @ref@ into the store and
+-- | Fetch a dependency's manifest: bring @repo@ at @ref@ into the store and
 -- read its dependency list. A zinc-native dep declares @[dependencies]@ +
 -- @[registry]@ in its @zinc.toml@; a real upstream (only a @.cabal@) has its
 -- deps derived from the cabal file via the Opt-2 reader (their repos then come
--- from the root workspace registry). @ghcVersion@ resolves @impl(ghc)@
+-- from the root workspace registry). A vendored pin ('Vendored') is fetched as
+-- a Hackage sdist tarball instead of a git clone (b1z); its deps come from the
+-- unpacked @.cabal@ the same way. @ghcVersion@ resolves @impl(ghc)@
 -- conditionals. Matches the fetch signature 'Zinc.Resolve.resolve' expects.
 gitFetchManifest :: FilePath -> String -> String -> String -> Ref -> IO (Either ZincError DepManifest)
 gitFetchManifest storeRoot ghcVersion name repo ref = runResult $ do
-  refStr <- orFail (first ((name ++ ": ") ++) <$> resolveRef name repo ref)
   let dest = storeRoot </> "checkout" </> name
-  liftIO $ do
-    stale <- doesDirectoryExist dest
-    when stale (removeDirectoryRecursive dest)
-  _ <- orFail (first (("fetch " ++ name ++ ": ") ++) <$> cloneAt repo refStr dest)
-  pkgDir <- liftIO (packageDirIn dest repo name)
+  pkgDir <- case ref of
+    Vendored ver ->
+      orFail (first (("fetch " ++ name ++ ": ") ++) <$> fetchHackageTarball name ver dest)
+    _ -> do
+      refStr <- orFail (first ((name ++ ": ") ++) <$> resolveRef name repo ref)
+      liftIO $ do
+        stale <- doesDirectoryExist dest
+        when stale (removeDirectoryRecursive dest)
+      _ <- orFail (first (("fetch " ++ name ++ ": ") ++) <$> cloneAt repo refStr dest)
+      liftIO (packageDirIn dest repo name)
   hasZinc <- liftIO (doesFileExist (pkgDir </> "zinc.toml"))
   if hasZinc
     then do
@@ -128,9 +135,10 @@ firstThatM p (x : xs) = do
 -- | The git checkout target for a ref. 'Latest' is resolved to the repo's
 -- newest release tag.
 resolveRef :: String -> String -> Ref -> IO (Either String String)
-resolveRef _    _    (Tag t)    = pure (Right t)
-resolveRef _    _    (Branch b) = pure (Right b)
-resolveRef _    _    (Rev r)    = pure (Right r)
+resolveRef _    _    (Tag t)      = pure (Right t)
+resolveRef _    _    (Branch b)   = pure (Right b)
+resolveRef _    _    (Rev r)      = pure (Right r)
+resolveRef _    _    (Vendored v) = pure (Right v) -- not a git ref; the tarball path uses the version directly
 resolveRef name repo Latest     = do
   tags <- listTags (fst (splitRepoSubdir repo))
   pure $ case tags of

@@ -5,6 +5,7 @@ module Zinc.Manifest
   , ComponentKind (..)
   , Dependency (..)
   , Ref (..)
+  , isVendored
   , depRepos
   , depGhcOptionsOf
   , parseWorkspace
@@ -29,7 +30,14 @@ data Ref
   | Branch String  -- ^ @{ branch = "main" }@
   | Rev String     -- ^ @{ rev = "a1b2c3d" }@
   | Latest         -- ^ @"*"@ — latest release tag, resolved at @add@ time
+  | Vendored String -- ^ @{ vendored = "2.3.6" }@ — a pinned Hackage tarball, not a git ref (b1z)
   deriving (Eq, Show)
+
+-- | Whether a pin is a vendored Hackage tarball (no git repo) rather than a git
+-- ref — the one place the resolver/freeze/render branch on source kind.
+isVendored :: Ref -> Bool
+isVendored (Vendored _) = True
+isVendored _            = False
 
 -- | A direct dependency, vertically: a name, how it is pinned, and (optionally)
 -- its repo override and extra ghc flags — all of a dependency's facets in one
@@ -173,6 +181,7 @@ parseDeps = map dep . Map.toList
     dep (name, _) = Dependency name Latest Nothing []
 
     refOf t
+      | Just (String s) <- Map.lookup "vendored" t = Vendored s -- a pinned Hackage tarball
       | Just (String "*") <- Map.lookup "tag" t  = Latest -- canonical sub-table form of Latest
       | Just (String s) <- Map.lookup "tag" t    = Tag s
       | Just (String s) <- Map.lookup "branch" t = Branch s
@@ -205,14 +214,17 @@ renderDependencies :: [Dependency] -> [String]
 renderDependencies deps = "[dependencies]" : concatMap renderDep (sortOn depName deps)
   where
     quote s = "\"" ++ s ++ "\""
-    refStr (Tag t)    = ("tag", t)
-    refStr (Branch b) = ("branch", b)
-    refStr (Rev v)    = ("rev", v)
-    refStr Latest     = ("tag", "*")
+    refStr (Tag t)      = ("tag", t)
+    refStr (Branch b)   = ("branch", b)
+    refStr (Rev v)      = ("rev", v)
+    refStr Latest       = ("tag", "*")
+    refStr (Vendored v) = ("vendored", v)
     -- A dep with no repo override and no ghc flags renders as one-line shorthand
-    -- (the bare ref string); otherwise a [dependencies.name] sub-table.
+    -- (the bare ref string); otherwise a [dependencies.name] sub-table. A
+    -- vendored pin always uses the sub-table form: its bare value would parse
+    -- back as a git tag, losing the source kind.
     renderDep d
-      | Nothing <- depRepo d, null (depGhcOptions d) =
+      | Nothing <- depRepo d, null (depGhcOptions d), not (isVendored (depRef d)) =
           [depName d ++ " = " ++ quote (snd (refStr (depRef d)))]
       | otherwise =
           let (k, v) = refStr (depRef d)

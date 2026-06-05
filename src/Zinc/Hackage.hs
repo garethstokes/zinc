@@ -6,9 +6,12 @@ module Zinc.Hackage
   ( sourceRepoOf
   , hackageCabalUrl
   , hackageSourceRepo
+  , hackageTarballUrl
+  , fetchHackageTarball
   ) where
 
 import Control.Applicative ((<|>))
+import Control.Monad (when)
 import qualified Data.ByteString.Char8 as BS
 import Data.Maybe (listToMaybe)
 import Data.List (isInfixOf, stripPrefix)
@@ -16,7 +19,9 @@ import Distribution.PackageDescription (homepage, packageDescription, sourceRepo
 import Distribution.PackageDescription.Parsec (parseGenericPackageDescription, runParseResult)
 import Distribution.Types.SourceRepo (RepoKind (RepoHead), SourceRepo (repoKind, repoLocation, repoSubdir))
 import Distribution.Utils.ShortText (fromShortText)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, removeDirectoryRecursive, removeFile)
 import System.Exit (ExitCode (..))
+import System.FilePath ((</>))
 import System.Process (readProcessWithExitCode)
 
 -- | Extract a git repo URL from @.cabal@ source: the @source-repository head@
@@ -61,3 +66,34 @@ hackageSourceRepo pkg = do
   pure $ case code of
     ExitSuccess   -> Right (sourceRepoOf out)
     ExitFailure _ -> Left ("fetch " ++ pkg ++ " from Hackage: " ++ err)
+
+-- | URL of a package's sdist tarball (@\<name\>-\<version\>.tar.gz@) on Hackage —
+-- the vendoring source (b1z, design s2). Pinned by sha256 at vendor time;
+-- consulted only at the explicit @vendor@/@add@ step, never to /resolve/ a
+-- version (the version is supplied, not solved).
+hackageTarballUrl :: String -> String -> String
+hackageTarballUrl name version =
+  "https://hackage.haskell.org/package/" ++ nv ++ "/" ++ nv ++ ".tar.gz"
+  where nv = name ++ "-" ++ version
+
+-- | Fetch + unpack @\<name\>-\<version\>@'s Hackage sdist tarball into @dest@,
+-- which becomes the package directory (the tarball's top-level
+-- @\<name\>-\<version\>/@ wrapper is stripped). Any stale @dest@ is replaced so
+-- the unpacked tree is exactly the tarball's content (its hash must match the
+-- lock's pin). Returns the unpacked @dest@ on success.
+fetchHackageTarball :: String -> String -> FilePath -> IO (Either String FilePath)
+fetchHackageTarball name version dest = do
+  stale <- doesDirectoryExist dest
+  when stale (removeDirectoryRecursive dest)
+  createDirectoryIfMissing True dest
+  let url = hackageTarballUrl name version
+      tgz = dest </> ".sdist.tar.gz"
+  (dlCode, _, dlErr) <- readProcessWithExitCode "curl" ["-fsSL", "-o", tgz, url] ""
+  case dlCode of
+    ExitFailure _ -> pure (Left ("fetch " ++ name ++ "-" ++ version ++ " tarball: " ++ dlErr))
+    ExitSuccess -> do
+      (xCode, _, xErr) <- readProcessWithExitCode "tar" ["-xzf", tgz, "-C", dest, "--strip-components=1"] ""
+      removeFile tgz
+      pure $ case xCode of
+        ExitSuccess   -> Right dest
+        ExitFailure _ -> Left ("unpack " ++ name ++ "-" ++ version ++ " tarball: " ++ xErr)

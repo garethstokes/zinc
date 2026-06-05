@@ -19,7 +19,7 @@ import Zinc.Except (failWithError, liftEither, liftIO, runResult)
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory, removeDirectoryRecursive)
 import System.FilePath ((</>))
 import Zinc.Cache (BuildKey (..), buildCacheKey)
-import Zinc.Lock (LockedPackage (..), parseLock)
+import Zinc.Lock (LockedPackage (..), lockRev, parseLock)
 import Zinc.Manifest (WorkspaceManifest (wsGhc), parseWorkspace)
 import Zinc.Store (resolveStoreRoot)
 

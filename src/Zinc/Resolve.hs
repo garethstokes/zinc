@@ -21,7 +21,7 @@ import Zinc.Diagnostic (ZincError (NoRepoInRegistry, OtherError))
 import qualified Data.Map as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
-import Zinc.Manifest (Dependency (..), Ref)
+import Zinc.Manifest (Dependency (..), Ref, isVendored)
 
 -- | What a fetched package declares about its own dependencies: their pins
 -- (@[dependencies]@) and where they live (@[registry]@).
@@ -67,13 +67,17 @@ resolve isBoot fetch discoverRepo rootDeps rootReg = runExceptT $ do
     -- registry at all — Hackage @source-repository@ auto-discovery (zinc-49o):
     -- so the whole non-boot closure need not be hand-listed. Only when discovery
     -- also draws a blank is it a hard 'NoRepoInRegistry'.
-    toReq reg parent d = case lookup (depName d) (reg ++ rootReg) of
-      Just repo -> pure (Right (Req (depName d) (depRef d) repo))
-      Nothing -> do
-        mRepo <- discoverRepo (depName d)
-        pure $ case mRepo of
-          Just repo -> Right (Req (depName d) (depRef d) repo)
-          Nothing   -> Left (NoRepoInRegistry (depName d) parent)
+    -- A vendored pin has no git repo to discover: its source is the Hackage
+    -- tarball, fetched by name+version, so skip registry/Hackage lookup (b1z).
+    toReq reg parent d
+      | isVendored (depRef d) = pure (Right (Req (depName d) (depRef d) ""))
+      | otherwise = case lookup (depName d) (reg ++ rootReg) of
+          Just repo -> pure (Right (Req (depName d) (depRef d) repo))
+          Nothing -> do
+            mRepo <- discoverRepo (depName d)
+            pure $ case mRepo of
+              Just repo -> Right (Req (depName d) (depRef d) repo)
+              Nothing   -> Left (NoRepoInRegistry (depName d) parent)
 
     go seen [] = pure (Map.elems seen)
     go seen (Req name ref repo : rest)
