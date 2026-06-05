@@ -8,26 +8,32 @@ module Zinc.Hackage
   , hackageSourceRepo
   ) where
 
+import Control.Applicative ((<|>))
 import qualified Data.ByteString.Char8 as BS
 import Data.Maybe (listToMaybe)
-import Data.List (stripPrefix)
-import Distribution.PackageDescription (packageDescription, sourceRepos)
+import Data.List (isInfixOf, stripPrefix)
+import Distribution.PackageDescription (homepage, packageDescription, sourceRepos)
 import Distribution.PackageDescription.Parsec (parseGenericPackageDescription, runParseResult)
 import Distribution.Types.SourceRepo (RepoKind (RepoHead), SourceRepo (repoKind, repoLocation, repoSubdir))
+import Distribution.Utils.ShortText (fromShortText)
 import System.Exit (ExitCode (..))
 import System.Process (readProcessWithExitCode)
 
 -- | Extract a git repo URL from @.cabal@ source: the @source-repository head@
--- location, falling back to any declared repo. A @subdir@ (monorepo packages
--- like prettyprinter) is appended as zinc's @url#subdir@ spec so the package is
--- read from the right directory. 'Nothing' if none / unparseable.
+-- location, falling back to any declared repo, then to the @homepage@ when it
+-- points at a known git host (some packages — e.g. @strict@ — omit
+-- @source-repository@ but set @homepage@ to their GitHub repo). A @subdir@
+-- (monorepo packages like prettyprinter) is appended as zinc's @url#subdir@
+-- spec so the package is read from the right directory. 'Nothing' if none /
+-- unparseable.
 sourceRepoOf :: String -> Maybe String
 sourceRepoOf src =
   case snd (runParseResult (parseGenericPackageDescription (BS.pack src))) of
     Left _ -> Nothing
-    Right gpd -> listToMaybe (heads ++ others)
+    Right gpd -> listToMaybe (heads ++ others) <|> homepageRepo
       where
-        repos = sourceRepos (packageDescription gpd)
+        pd = packageDescription gpd
+        repos = sourceRepos pd
         heads = [withSub r (normalize loc) | r <- repos, repoKind r == RepoHead, Just loc <- [repoLocation r]]
         others = [withSub r (normalize loc) | r <- repos, Just loc <- [repoLocation r]]
         withSub r loc = case repoSubdir r of
@@ -35,6 +41,13 @@ sourceRepoOf src =
           _ -> loc
         -- git:// is deprecated (GitHub no longer serves it); use https.
         normalize u = maybe u ("https://" ++) (stripPrefix "git://" u)
+        -- Fallback: a homepage on a known git host is almost always the repo.
+        homepageRepo
+          | any (`isInfixOf` hp) gitHosts = Just (dropTrailingSlash hp)
+          | otherwise                     = Nothing
+        hp = fromShortText (homepage pd)
+        gitHosts = ["github.com", "gitlab.com", "codeberg.org", "bitbucket.org", "git.sr.ht"]
+        dropTrailingSlash s = if not (null s) && last s == '/' then init s else s
 
 -- | URL of a package's @.cabal@ on Hackage.
 hackageCabalUrl :: String -> String

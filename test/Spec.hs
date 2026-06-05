@@ -1647,6 +1647,13 @@ main = hspec $ do
     it "returns Nothing when there is no source-repository" $
       sourceRepoOf "cabal-version: 2.4\nname: demo\nversion: 0.1\n" `shouldBe` Nothing
 
+    it "falls back to a git-host homepage when source-repository is absent (ffm.2/strict)" $ do
+      sourceRepoOf (unlines ["name: strict", "version: 0.5.1", "homepage: https://github.com/haskell-strict/strict", "library", "  build-depends: base"])
+        `shouldBe` Just "https://github.com/haskell-strict/strict"
+      -- a non-git-host homepage is not assumed to be a repo
+      sourceRepoOf (unlines ["name: x", "version: 1", "homepage: https://example.com/docs", "library", "  build-depends: base"])
+        `shouldBe` Nothing
+
     it "normalizes git:// to https and appends a monorepo subdir (49o)" $ do
       sourceRepoOf (unlines ["name: x", "version: 1", "source-repository head", "  type: git", "  location: git://github.com/o/r"])
         `shouldBe` Just "https://github.com/o/r"
