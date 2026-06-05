@@ -22,7 +22,7 @@ import System.FilePath (takeDirectory, (</>))
 import System.Process (readProcess)
 import Test.Hspec
 import System.Exit (ExitCode (..))
-import Zinc.CLI (Command (..), parseArgs)
+import Zinc.CLI (Command (..), helpOverview, parseArgs)
 import Zinc.Diagnostic (Diagnostic (..), Severity (..), SourceLocation (..), ZincError (..), diagnosticJson, envelope, errorCode, exitCodeFor, ghcLocation, humanError, renderError, toDiagnostic, tomlLocation, zincVersion, zincVersionLine)
 import Control.Concurrent.STM (atomically, modifyTVar', newTVarIO, readTVarIO)
 import Zinc.Closure (discoverRepos, parseDependsField, pkgNameOf)
@@ -722,6 +722,15 @@ main = hspec $ do
 
     it "zincVersionLine reads `zinc <semver>` (plus optional commit/date)" $
       zincVersionLine `shouldSatisfy` isInfixOf ("zinc " ++ zincVersion)
+
+    it "no args / help / --help parse to the friendly Help overview (hw6.6)" $ do
+      parseArgs [] `shouldBe` Right (OutputFlags False False, Help)
+      parseArgs ["help"] `shouldBe` Right (OutputFlags False False, Help)
+      parseArgs ["--help"] `shouldBe` Right (OutputFlags False False, Help)
+
+    it "helpOverview lists the common commands grouped" $
+      all (`isInfixOf` helpOverview) ["Usage: zinc", "new", "build", "run", "Getting started:"]
+        `shouldBe` True
 
     it "parses `repl` with no target" $
       parseArgs ["repl"] `shouldBe` Right (OutputFlags False False, Repl Nothing)

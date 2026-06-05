@@ -1,6 +1,7 @@
 module Zinc.CLI
   ( Command (..)
   , parseArgs
+  , helpOverview
   ) where
 
 import Options.Applicative
@@ -31,6 +32,7 @@ data Command
   | Fmt Bool              -- ^ canonically format zinc.toml; Bool = --check
   | Closure String        -- ^ discover a package's non-boot closure + repos
   | Version               -- ^ print the zinc version (`--version`/`version`)
+  | Help                   -- ^ the friendly no-args / `help` / `--help` overview
   deriving (Eq, Show)
 
 -- | Pure, testable entry point: parse argv into the output flags + a 'Command'.
@@ -41,6 +43,10 @@ parseArgs args
   -- them before the subparser, which would reject them (zinc-gtv.3). The
   -- `version` subcommand flows through the parser below.
   | args `elem` [["--version"], ["-V"]] = Right (OutputFlags False False, Version)
+  -- No args / `help` / `--help` show a friendly overview (exit 0), not
+  -- optparse's terse "Missing: COMMAND" (zinc-hw6.6). Per-command help
+  -- (`zinc build --help`) still flows through the subparser.
+  | args `elem` [[], ["help"], ["--help"], ["-h"]] = Right (OutputFlags False False, Help)
 parseArgs args =
   case execParserPure defaultPrefs opts args of
     Success r           -> Right r
@@ -97,3 +103,46 @@ commandParser =
       OutputFlags
         <$> switch (long "json" <> help "Machine-readable output (JSONL stream + result envelope)")
         <*> switch (long "quiet" <> short 'q' <> help "Suppress progress output")
+
+-- | The friendly overview shown for @zinc@ (no args), @zinc help@, and
+-- @zinc --help@ (zinc-hw6.6) — a curated, grouped command list, not optparse's
+-- terse usage. Per-command detail is still @zinc \<command\> --help@.
+helpOverview :: String
+helpOverview =
+  unlines
+    [ "zinc — fast, reproducible Haskell builds that just work."
+    , ""
+    , "Usage: zinc <command> [options]"
+    , ""
+    , "Getting started:"
+    , "  new <name>         Scaffold a new project (--workspace for multi-member)"
+    , "  add <pkg>          Add a dependency and freeze the lock"
+    , "  run [target]       Build, then run an executable"
+    , ""
+    , "Build & test:"
+    , "  build [member]     Build the workspace (or one member)"
+    , "  test [target]      Build and run tests"
+    , "  repl [target]      Open ghci for a target"
+    , "  warm               Build only the dependency closure (CI/Docker cache)"
+    , ""
+    , "Dependencies:"
+    , "  add <pkg>          Resolve a package's closure and freeze it"
+    , "  vendor <pkg...>    Pin a no-git dependency from its Hackage tarball"
+    , "  update [pkg]       Bump dependency refs to latest"
+    , ""
+    , "Inspect:"
+    , "  status             Workspace overview (members, closure, drift)"
+    , "  graph              The closure build DAG"
+    , "  explain <pkg>      Why a package is in the build"
+    , "  closure <pkg>      A package's non-boot closure + repos"
+    , "  doctor             Diagnose environment and project problems"
+    , ""
+    , "Other:"
+    , "  fmt                Canonically format zinc.toml"
+    , "  clean / gc         Remove build artifacts / collect the shared store"
+    , "  dockerfile         Emit a multi-stage Docker build recipe"
+    , "  version            Print the zinc version"
+    , ""
+    , "Run `zinc <command> --help` for command-specific options."
+    , "Every command accepts --json (machine output) and --quiet."
+    ]

@@ -7,7 +7,7 @@ import System.Exit (ExitCode (ExitFailure), exitWith)
 import System.IO (hPutStrLn, stderr)
 import System.Process (CreateProcess (std_err, std_in, std_out), StdStream (Inherit), createProcess, proc, waitForProcess)
 import Zinc.Add (addInWorkspace, updateInWorkspace, vendorInWorkspace)
-import Zinc.CLI (Command (..), parseArgs)
+import Zinc.CLI (Command (..), helpOverview, parseArgs)
 import Zinc.Closure (closureReportJson, renderClosure, runClosure)
 import Zinc.Diagnostic (ZincError, envelope, exitCodeFor, humanError, toDiagnostic, zincVersion, zincVersionLine)
 import Zinc.Docker (runDockerfile)
@@ -179,6 +179,7 @@ dispatch mode (Closure pkg) =
 dispatch mode Version
   | machine mode = putStrLn (renderJson (envelope "version" True (Just (JObject [("version", JString zincVersion)])) Nothing []))
   | otherwise    = putStrLn zincVersionLine
+dispatch _ Help = putStr helpOverview
 dispatch mode (Fmt check) =
   runFmt check "." >>= \r -> case r of
     Left e -> failCmd mode e
