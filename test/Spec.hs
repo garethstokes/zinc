@@ -16,6 +16,7 @@ import System.Directory
   , doesFileExist
   , getHomeDirectory
   , removeDirectoryRecursive
+  , removeFile
   )
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.FilePath (takeDirectory, (</>))
@@ -37,6 +38,7 @@ import Zinc.Json (Json (..), parseJson, renderJson)
 import Zinc.Git (cloneAt, gitEnv, gitInitIfNeeded, isInsideRepo, listTags, splitRepoSubdir)
 import Zinc.Hackage (hackageCabalUrl, hackageTarballUrl, sourceRepoOf)
 import Zinc.Outdated (OutdatedDep (..), Status (..), classify)
+import Zinc.Delta (Change (..), ClosureDelta (..), closureDelta, isEmptyDelta)
 import Zinc.Store (contentHash, resolveStoreRoot, storeSrcPath, verifyContent, withStoreLock)
 import Zinc.Manifest
   ( Component (..)
@@ -746,8 +748,9 @@ main = hspec $ do
     it "parses `test` with no target" $
       parseArgs ["test"] `shouldBe` Right (OutputFlags False False, Test Nothing)
 
-    it "parses `update` with no package" $
-      parseArgs ["update"] `shouldBe` Right (OutputFlags False False, Update Nothing)
+    it "parses `update` (with --dry-run)" $ do
+      parseArgs ["update"] `shouldBe` Right (OutputFlags False False, Update Nothing False)
+      parseArgs ["update", "--dry-run"] `shouldBe` Right (OutputFlags False False, Update Nothing True)
 
     it "parses `run [TARGET] [-- ARGS]` (target first, then program args)" $ do
       parseArgs ["run"] `shouldBe` Right (OutputFlags False False, Run Nothing [])
@@ -1317,6 +1320,20 @@ main = hspec $ do
     it "is unknown for a bare commit or a missing upstream version" $ do
       classify "a1b2c3d" (Just "v1.2.0") `shouldBe` Unknown
       classify "v1.2.0" Nothing `shouldBe` Unknown
+
+  describe "Zinc.Delta.closureDelta (90j.2)" $ do
+    let mk n v = LockedPackage n (GitSource ("r/" ++ n) v) "sha256:x" []
+    it "reports changed (with major flag), added, and removed — incl. ripples" $ do
+      let old = [mk "a" "v1.0.0", mk "b" "v2.0.0", mk "gone" "v1.0.0"]
+          new = [mk "a" "v1.1.0", mk "b" "v3.0.0", LockedPackage "new" (TarballSource "0.5") "sha256:x" []]
+          d = closureDelta old new
+      map chName (cdChanged d) `shouldBe` ["a", "b"]
+      map chMajor (cdChanged d) `shouldBe` [False, True]
+      map fst (cdAdded d) `shouldBe` ["new"]
+      map fst (cdRemoved d) `shouldBe` ["gone"]
+
+    it "is empty when the closure is unchanged" $
+      isEmptyDelta (closureDelta [mk "a" "v1"] [mk "a" "v1"]) `shouldBe` True
 
   describe "listTags" $ do
     repo <- runIO setupDepRepo
@@ -2361,7 +2378,7 @@ main = hspec $ do
           writeFileIn (ws ++ "/packages/app/zinc.toml") (unlines ["[package]", "name = \"app\"", "version = \"1.0\"", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "depends = [\"toml-parser\"]"])
           writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Toml (parse)\nmain :: IO ()\nmain = putStrLn (either (const \"err\") (const \"parsed-ok\") (parse \"x = 1\\n\"))\n"
           -- zinc resolves the real closure (.cabal + registry) and freezes a lock
-          upd <- runUpdate (ws ++ "/zinc.toml") store
+          upd <- runUpdate False (ws ++ "/zinc.toml") store
           upd `shouldSatisfy` isRight
           lockSrc <- readFile (ws ++ "/zinc.lock")
           (isInfixOf "toml-parser" lockSrc && isInfixOf "prettyprinter" lockSrc) `shouldBe` True
@@ -2610,11 +2627,19 @@ main = hspec $ do
     (wsFile, store, _leafRepo) <- runIO setupAddFixture
 
     it "re-resolves and rewrites the lockfile" $ do
-      r <- runUpdate wsFile store
+      r <- runUpdate False wsFile store
       lockText <- readFile (takeDirectory wsFile </> "zinc.lock")
       case r of
         Right _ -> ("leaf" `isInfixOf` lockText) `shouldBe` True
         Left err -> expectationFailure (renderError err)
+
+    it "--dry-run computes the delta but does not write the lock (90j.2)" $ do
+      let lockFile = takeDirectory wsFile </> "zinc.lock"
+      stale <- doesFileExist lockFile
+      when stale $ removeFile lockFile
+      r <- runUpdate True wsFile store
+      wrote <- doesFileExist lockFile
+      (isRight r, wrote) `shouldBe` (True, False)
 
   describe "full workspace lifecycle (integration, rung 1)" $
     it "scaffolds, builds, runs, then cleans a synthetic workspace" $ do

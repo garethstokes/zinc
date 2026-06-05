@@ -17,7 +17,7 @@ data Command
   | Run (Maybe String) [String] -- ^ build then run an executable: TARGET, then program ARGS
   | Repl (Maybe String)   -- ^ ghci for an optional target
   | Test (Maybe String)   -- ^ build and run tests for an optional target
-  | Update (Maybe String) -- ^ bump refs for an optional package
+  | Update (Maybe String) Bool -- ^ bump refs for an optional package; Bool = --dry-run
   | Clean                 -- ^ remove build artifacts
   | Gc                    -- ^ garbage-collect the shared store
   | Perf                  -- ^ analyze build performance history
@@ -71,7 +71,7 @@ commandParser =
       , sub "run"    "Build then run an executable"   (Run <$> optional (strArgument (metavar "[TARGET]")) <*> many (strArgument (metavar "[-- ARGS...]")))
       , sub "repl"   "Open ghci for a target"         (Repl <$> optional (strArgument (metavar "TARGET")))
       , sub "test"   "Build and run tests"            (Test <$> optional (strArgument (metavar "TARGET")))
-      , sub "update" "Bump dependency refs to latest" (Update <$> optional (strArgument (metavar "PKG")))
+      , sub "update" "Bump dependency refs to latest" (Update <$> optional (strArgument (metavar "PKG")) <*> switch (long "dry-run" <> help "Show the closure delta without writing zinc.lock"))
       , sub "clean"  "Remove build artifacts"         (pure Clean)
       , sub "gc"     "Garbage-collect the shared store" (pure Gc)
       , sub "perf"   "Analyze build performance history" (pure Perf)

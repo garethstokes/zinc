@@ -10,6 +10,7 @@ import Zinc.Add (addInWorkspace, updateInWorkspace, vendorInWorkspace)
 import Zinc.CLI (Command (..), helpOverview, parseArgs)
 import Zinc.Closure (closureReportJson, renderClosure, runClosure)
 import Zinc.Diagnostic (ZincError, envelope, exitCodeFor, humanError, toDiagnostic, zincVersion, zincVersionLine)
+import Zinc.Delta (deltaJson, renderDelta)
 import Zinc.Docker (runDockerfile)
 import Zinc.Git (gitInitIfNeeded)
 import Zinc.Doctor (doctorJson, doctorOk, renderDoctor, runDoctor)
@@ -128,8 +129,8 @@ dispatch mode (Test _) =
     Right n -> putStrLn (show n ++ " test suite(s) passed")
 dispatch mode (Repl _) =
   runRepl "." >>= either (failCmd mode) (const (pure ()))
-dispatch mode (Update _) =
-  updateInWorkspace >>= either (failCmd mode) putStr
+dispatch mode (Update _ dryRun) =
+  updateInWorkspace dryRun >>= emitIntrospection "update" mode deltaJson (renderDelta dryRun)
 dispatch _ Clean = do
   runClean "."
   putStrLn "Cleaned build artifacts (kept the store)."

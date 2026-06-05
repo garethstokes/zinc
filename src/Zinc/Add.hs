@@ -17,15 +17,17 @@ module Zinc.Add
 import Control.Monad (when)
 import Data.Bifunctor (first)
 import Data.List (find, intercalate)
+import System.IO (readFile')
 import System.Directory (doesDirectoryExist, doesFileExist, removeDirectoryRecursive)
 import System.FilePath (takeDirectory, (</>))
 import Zinc.Closure (ClosureReport (crMembers, crNeedsVendoring), installedVersion, runClosure)
+import Zinc.Delta (ClosureDelta, closureDelta)
 import Zinc.Diagnostic (ZincError (DepNoGitRepo, NoZincToml))
 import Zinc.Except (Result, failWith, failWithError, liftEither, liftIO, orFail, orFailE, runResult)
 import Zinc.Fetch (gitFetchManifest, resolveRef)
 import Zinc.Git (cloneAt)
 import Zinc.Hackage (fetchHackageTarball, hackageSourceRepo)
-import Zinc.Lock (LockedPackage (..), Source (..), renderLock)
+import Zinc.Lock (LockedPackage (..), Source (..), parseLock, renderLock)
 import Zinc.Manifest
   ( Dependency (depName, depRef)
   , Ref (Latest, Vendored)
@@ -83,10 +85,18 @@ freezeClosure storeRoot = runResult . traverse freezeOne
 -- 'runAdd' and 'runUpdate'.
 freezeWorkspace :: FilePath -> FilePath -> WorkspaceManifest -> Result String
 freezeWorkspace wsFile storeRoot ws = do
-  closure <- orFailE (resolve isBootLib (gitFetchManifest storeRoot (wsGhc ws)) hackageDiscover (wsDependencies ws) (depRepos ws))
-  locks <- orFailE (freezeClosure storeRoot closure)
+  (closure, locks) <- resolveFreeze storeRoot ws
   liftIO $ writeFile (takeDirectory wsFile </> "zinc.lock") (renderLock locks)
   pure (renderResolution closure)
+
+-- | Resolve the workspace's dependency closure and freeze it to lock entries,
+-- WITHOUT writing — so @update@ can diff the result against the existing lock
+-- before committing it (zinc-90j.2). Returns the resolved closure + its locks.
+resolveFreeze :: FilePath -> WorkspaceManifest -> Result ([ResolvedDep], [LockedPackage])
+resolveFreeze storeRoot ws = do
+  closure <- orFailE (resolve isBootLib (gitFetchManifest storeRoot (wsGhc ws)) hackageDiscover (wsDependencies ws) (depRepos ws))
+  locks <- orFailE (freezeClosure storeRoot closure)
+  pure (closure, locks)
 
 -- | Discover a transitive dependency's git repo from Hackage when no registry
 -- pins it (zinc-49o auto-fill via 5la), so 'resolve' can walk a real upstream's
@@ -148,22 +158,34 @@ enrichWithRepos = foldr add
     add (m, discovered) w = addDep w m (refFor w m) (maybe discovered id (lookup m (depRepos w)))
     refFor w m = maybe Latest depRef (find ((== m) . depName) (wsDependencies w))
 
--- | Re-resolve the workspace's dependencies (bumping Latest refs) and rewrite
--- the lockfile. Like 'runAdd' but without adding a new dependency.
-runUpdate :: FilePath -> FilePath -> IO (Either ZincError String)
-runUpdate wsFile storeRoot = runResult $ do
+-- | Re-resolve the workspace's dependencies (bumping Latest refs) and return
+-- the before->after closure delta. Writes the new lock unless @dryRun@ (90j.2).
+-- Like 'runAdd' but without adding a new dependency.
+runUpdate :: Bool -> FilePath -> FilePath -> IO (Either ZincError ClosureDelta)
+runUpdate dryRun wsFile storeRoot = runResult $ do
   src <- liftIO (readFile wsFile)
   ws <- liftEither (parseWorkspace src)
-  freezeWorkspace wsFile storeRoot ws
+  let lockFile = takeDirectory wsFile </> "zinc.lock"
+  old <- liftIO (readLockOr lockFile)
+  (_, locks) <- resolveFreeze storeRoot ws
+  liftIO $ when (not dryRun) (writeFile lockFile (renderLock locks))
+  pure (closureDelta old locks)
+  where
+    -- Strict read: a lazy readFile would keep the handle open until 'old' is
+    -- forced (after the writeFile below), and rewriting the same path then hits
+    -- "resource busy". readFile' closes it before we overwrite.
+    readLockOr f = do
+      there <- doesFileExist f
+      if there then either (const []) id . parseLock <$> readFile' f else pure []
 
--- | CLI entry: @zinc update@ in the current workspace.
-updateInWorkspace :: IO (Either ZincError String)
-updateInWorkspace = runResult $ do
+-- | CLI entry: @zinc update [--dry-run]@ in the current workspace.
+updateInWorkspace :: Bool -> IO (Either ZincError ClosureDelta)
+updateInWorkspace dryRun = runResult $ do
   let wsFile = "zinc.toml"
   present <- liftIO (doesFileExist wsFile)
   when (not present) $ failWithError (NoZincToml ".")
   storeRoot <- liftIO resolveStoreRoot
-  orFailE (runUpdate wsFile storeRoot)
+  orFailE (runUpdate dryRun wsFile storeRoot)
 
 -- | CLI entry: @zinc vendor \<pkg...\>@ — recover a no-git dependency (colour,
 -- tf-random — darcs-era) by pinning its Hackage sdist tarball (b1z, design s2).
