@@ -11,6 +11,7 @@ import Zinc.Output (OutputFlags (..))
 data Command
   = New String            -- ^ scaffold a new workspace
   | Add String            -- ^ resolve a dependency closure and freeze it
+  | Vendor [String]       -- ^ pin no-git deps from their Hackage tarballs
   | Build (Maybe String)  -- ^ build the workspace, or one member
   | Run (Maybe String) [String] -- ^ build then run an executable: TARGET, then program ARGS
   | Repl (Maybe String)   -- ^ ghci for an optional target
@@ -51,6 +52,7 @@ commandParser =
     mconcat
       [ sub "new"    "Scaffold a new workspace"       (New <$> strArgument (metavar "NAME"))
       , sub "add"    "Add a dependency"               (Add <$> (yesFlag *> strArgument (metavar "PKG")))
+      , sub "vendor" "Pin a no-git dependency from its Hackage tarball" (Vendor <$> (yesFlag *> some (strArgument (metavar "PKG..."))))
       , sub "build"  "Build the workspace or a member" buildCmd
       , sub "warm"   "Build only the dependency closure (CI/Docker cache)" (pure Warm)
       , sub "run"    "Build then run an executable"   (Run <$> optional (strArgument (metavar "[TARGET]")) <*> many (strArgument (metavar "[-- ARGS...]")))

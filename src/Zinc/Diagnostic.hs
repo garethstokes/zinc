@@ -40,7 +40,7 @@ data ZincError
   | CloneFailed String String         -- ^ repo, detail
   | GitAuth String                    -- ^ repo (private/auth-required fetch)
   | ContentHashMismatch String String String -- ^ name, expected, got
-  | DepNoGitRepo String               -- ^ name (no upstream git repo)
+  | DepNoGitRepo String               -- ^ space-separated package names with no upstream git repo (vendor targets)
   | BuildTypeCustom String            -- ^ name (Custom Setup.hs unsupported)
   | GhcCompile String String          -- ^ package, detail
   | AmbiguousTarget [String]          -- ^ candidate exe names
@@ -182,9 +182,9 @@ toDiagnostic e =
       ContentHashMismatch name expected got ->
         ( "dependency content hash mismatch", Just ("expected " ++ expected ++ ", got " ++ got), Nothing, Just name
         , Just "run `zinc update` to refresh the lock, or verify the source has not been tampered with" )
-      DepNoGitRepo name ->
-        ( "dependency has no git repository", Just (name ++ " is not available from any git repo"), Nothing, Just name
-        , Just ("vendor " ++ name ++ " into a git mirror and map it in [registry]") )
+      DepNoGitRepo names ->
+        ( "dependency has no git repository", Just (names ++ " not available from any git repo (darcs-era / no source-repository)"), Nothing, Just names
+        , Just ("run `zinc vendor " ++ names ++ "` to pin it from its Hackage tarball (sha256)") )
       BuildTypeCustom name ->
         ( "Custom build-type is not supported", Just (name ++ " uses a Setup.hs (build-type: Custom)"), Nothing, Just name
         , Just "pin a version with build-type: Simple, or vendor a Simple-built variant" )

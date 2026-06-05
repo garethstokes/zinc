@@ -6,7 +6,7 @@ import System.Environment (getArgs)
 import System.Exit (ExitCode (ExitFailure), exitWith)
 import System.IO (hPutStrLn, stderr)
 import System.Process (CreateProcess (std_err, std_in, std_out), StdStream (Inherit), createProcess, proc, waitForProcess)
-import Zinc.Add (addInWorkspace, updateInWorkspace)
+import Zinc.Add (addInWorkspace, updateInWorkspace, vendorInWorkspace)
 import Zinc.CLI (Command (..), parseArgs)
 import Zinc.Closure (closureReportJson, renderClosure, runClosure)
 import Zinc.Diagnostic (ZincError, envelope, exitCodeFor, humanError, toDiagnostic)
@@ -77,6 +77,8 @@ dispatch _ (New name) = do
   putStrLn ("Created workspace member at ./packages/" ++ name)
 dispatch mode (Add name) =
   addInWorkspace name >>= either (failCmd mode) putStr
+dispatch mode (Vendor pkgs) =
+  vendorInWorkspace pkgs >>= either (failCmd mode) putStr
 dispatch mode (Build target) = do
   -- Human path shows the lock-drift hint up front; the machine envelope stays
   -- pure JSON. Both run the report-bearing build and persist a metrics record.

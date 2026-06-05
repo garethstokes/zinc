@@ -14,6 +14,7 @@ module Zinc.Manifest
   , renderWorkspace
   , renderDependencies
   , addDep
+  , addVendored
   ) where
 
 import Data.List (intercalate, sortOn)
@@ -244,4 +245,13 @@ addDep w name ref repo =
   w
     { wsDependencies =
         sortOn depName (Dependency name ref (Just repo) [] : filter ((/= name) . depName) (wsDependencies w))
+    }
+
+-- | Add (or replace) a vendored dependency: a Hackage-tarball pin at @version@,
+-- with no git repo (b1z). Keeps the list sorted by name.
+addVendored :: WorkspaceManifest -> String -> String -> WorkspaceManifest
+addVendored w name version =
+  w
+    { wsDependencies =
+        sortOn depName (Dependency name (Vendored version) Nothing [] : filter ((/= name) . depName) (wsDependencies w))
     }

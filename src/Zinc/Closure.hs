@@ -13,6 +13,7 @@ module Zinc.Closure
   , parseDependsField
   , transitiveDeps
   , discoverRepos
+  , installedVersion
   , ClosureReport (..)
   , runClosure
   , closureReportJson
@@ -20,7 +21,8 @@ module Zinc.Closure
   ) where
 
 import Data.Char (isDigit)
-import Data.List (intercalate)
+import Data.List (intercalate, stripPrefix)
+import Data.Maybe (listToMaybe)
 import System.Exit (ExitCode (ExitSuccess))
 import System.Process (readProcessWithExitCode)
 import Zinc.Diagnostic (ZincError (OtherError, ToolchainMissing))
@@ -56,6 +58,17 @@ ghcPkgDeps pkg = do
   pure $ case code of
     ExitSuccess -> map pkgNameOf (parseDependsField out)
     _ -> []
+
+-- | The version of an installed package as ghc-pkg reports it (e.g. @"2.3.6"@),
+-- or 'Nothing' if it is not installed in this environment. Used by @zinc vendor@
+-- to pin a no-git dependency to the exact version this toolchain ships (b1z) —
+-- the same authoritative source as closure discovery.
+installedVersion :: String -> IO (Maybe String)
+installedVersion pkg = do
+  (code, out, _) <- readProcessWithExitCode "ghc-pkg" ["field", pkg, "version"] ""
+  pure $ case code of
+    ExitSuccess -> listToMaybe [dropWhile (== ' ') v | l <- lines out, Just v <- [stripPrefix "version:" l]]
+    _           -> Nothing
 
 -- | A package's non-boot transitive closure (including itself), walked from the
 -- GHC environment. Boot libraries (per the predicate) are excluded.

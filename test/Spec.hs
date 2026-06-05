@@ -54,7 +54,7 @@ import Zinc.Manifest
   )
 import Zinc.Fetch (gitFetchManifest, namedCabal, packageDirIn)
 import Zinc.GC (GCRoot (..), gcStore, runGc)
-import Zinc.Add (enrichWithRepos, freezeClosure, lockEntry, runAdd, runUpdate)
+import Zinc.Add (enrichWithRepos, freezeClosure, lockEntry, runAdd, runUpdate, runVendor, splitNameVersion)
 import Zinc.Build (GhcInvocation (..), MemberBuild (..), PackageConf (..), archiveArgs, buildMember, ghcMakeArgs, installedVersions, preprocessorFor, registerPackage, renderConf, replArgs, runPreprocessor, writeFileIfChanged)
 import Zinc.Cache (BuildKey (..), buildCacheKey, cacheHit, storeConfPath, storePkgPath, writeCachedConf)
 import Zinc.Cabal (cabalBuildType, cabalVersion, parseCabalComponents, parseCabalComponentsForGhc)
@@ -194,6 +194,13 @@ main = hspec $ do
       diagCode d `shouldBe` "ZINC_DEP_NO_GIT_REPO"
       diagPackage d `shouldBe` Just "colour"
       diagNextAction d `shouldSatisfy` isJust
+
+    it "no-git diagnostic's nextAction is a copy-paste `zinc vendor` command (b1z.3)" $ do
+      diagNextAction (toDiagnostic (DepNoGitRepo "colour"))
+        `shouldSatisfy` maybe False (isInfixOf "zinc vendor colour")
+      -- multiple targets stay one space-separated command
+      diagNextAction (toDiagnostic (DepNoGitRepo "colour tf-random"))
+        `shouldSatisfy` maybe False (isInfixOf "zinc vendor colour tf-random")
 
     it "renders a Diagnostic to JSON, omitting absent optional fields" $
       renderJson (diagnosticJson (toDiagnostic (ManifestParse "f.toml" "bad")))
@@ -406,6 +413,11 @@ main = hspec $ do
     it "parses the `closure` subcommand (+ --json)" $ do
       parseArgs ["closure", "aeson"] `shouldBe` Right (OutputFlags False False, Closure "aeson")
       parseArgs ["closure", "aeson", "--json"] `shouldBe` Right (OutputFlags True False, Closure "aeson")
+
+    it "parses the `vendor` subcommand with one or more packages (b1z.2)" $ do
+      parseArgs ["vendor", "colour"] `shouldBe` Right (OutputFlags False False, Vendor ["colour"])
+      parseArgs ["vendor", "colour", "tf-random"] `shouldBe` Right (OutputFlags False False, Vendor ["colour", "tf-random"])
+      parseArgs ["vendor"] `shouldSatisfy` isLeft -- at least one package required
 
     it "extracts the package name from an installed unit-id" $ do
       pkgNameOf "aeson-2.2.3.0-abc123" `shouldBe` "aeson"
@@ -1445,6 +1457,12 @@ main = hspec $ do
           , lockDepends = ["scientific"]
           }
 
+    it "splitNameVersion separates a trailing version, respecting dashes in names (b1z.2)" $ do
+      splitNameVersion "colour-2.3.6" `shouldBe` Just ("colour", "2.3.6")
+      splitNameVersion "tf-random-0.5" `shouldBe` Just ("tf-random", "0.5")
+      splitNameVersion "colour" `shouldBe` Nothing     -- bare name → version from the env
+      splitNameVersion "tf-random" `shouldBe` Nothing
+
     it "lockEntry records a vendored dep as a tarball source, ignoring the git rev (b1z)" $
       lockEntry (ResolvedDep "colour" "" (Vendored "2.3.6") ["base"]) "unused-rev" "sha256:abc"
         `shouldBe` LockedPackage
@@ -2187,6 +2205,38 @@ main = hspec $ do
           (isInfixOf "toml-parser" lockSrc && isInfixOf "prettyprinter" lockSrc) `shouldBe` True
           r <- buildAndRun ws []
           r `shouldBe` Right "parsed-ok\n"
+
+  -- b1z: the vendoring recovery path on a real no-git package. colour is
+  -- darcs-era (no upstream git repo), so it can only enter the closure via a
+  -- vendored Hackage tarball. runVendor must fetch + unpack + pin it, write a
+  -- [[locked]] entry with `vendored = ...` and a real sha256, and a [dependencies]
+  -- entry with `vendored = ...`. Network-gated.
+  describe "vendoring a no-git package from Hackage (b1z, network)" $
+    it "runVendor pins colour as a vendored tarball with a real content hash" $ do
+      net <- lookupEnv "ZINC_NET_TESTS"
+      case net of
+        Nothing -> pendingWith "network test; set ZINC_NET_TESTS=1 to run"
+        Just _ -> do
+          let base = "/tmp/zinc-vendor-b1z"
+              ws = base ++ "/ws"
+              store = base ++ "/store"
+          stale <- doesDirectoryExist base
+          when stale $ removeDirectoryRecursive base
+          createDirectoryIfMissing True base
+          -- a workspace with no git deps; we vendor colour into it by version
+          writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" []))
+          r <- runVendor (ws ++ "/zinc.toml") store ["colour-2.3.6"]
+          r `shouldSatisfy` isRight
+          lockSrc <- readFile (ws ++ "/zinc.lock")
+          locks <- either (fail . ("lock parse: " ++)) pure (parseLock lockSrc)
+          case find ((== "colour") . lockName) locks of
+            Nothing -> expectationFailure "colour missing from the lock"
+            Just lp -> do
+              lockSource lp `shouldBe` TarballSource "2.3.6"
+              take 7 (lockSha256 lp) `shouldBe` "sha256:"
+              length (drop 7 (lockSha256 lp)) `shouldBe` 64 -- real content hash, not a placeholder
+          manifestSrc <- readFile (ws ++ "/zinc.toml")
+          manifestSrc `shouldSatisfy` isInfixOf "vendored = \"2.3.6\""
 
   -- ffm: the committed real-package fixtures exercise
   -- resolve->fetch->build-closure->link->run on escalating closure depth, each

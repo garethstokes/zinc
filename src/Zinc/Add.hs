@@ -9,6 +9,9 @@ module Zinc.Add
   , enrichWithRepos
   , runUpdate
   , updateInWorkspace
+  , vendorInWorkspace
+  , runVendor
+  , splitNameVersion
   ) where
 
 import Control.Monad (when)
@@ -16,9 +19,9 @@ import Data.Bifunctor (first)
 import Data.List (find, intercalate)
 import System.Directory (doesDirectoryExist, doesFileExist, removeDirectoryRecursive)
 import System.FilePath (takeDirectory, (</>))
-import Zinc.Closure (ClosureReport (crMembers, crNeedsVendoring), runClosure)
+import Zinc.Closure (ClosureReport (crMembers, crNeedsVendoring), installedVersion, runClosure)
 import Zinc.Diagnostic (ZincError (DepNoGitRepo, NoZincToml))
-import Zinc.Except (Result, failWithError, liftEither, liftIO, orFail, orFailE, runResult)
+import Zinc.Except (Result, failWith, failWithError, liftEither, liftIO, orFail, orFailE, runResult)
 import Zinc.Fetch (gitFetchManifest, resolveRef)
 import Zinc.Git (cloneAt)
 import Zinc.Hackage (fetchHackageTarball, hackageSourceRepo)
@@ -29,6 +32,7 @@ import Zinc.Manifest
   , WorkspaceManifest (wsDependencies, wsGhc)
   , depRepos
   , addDep
+  , addVendored
   , parseWorkspace
   , renderWorkspace
   )
@@ -128,7 +132,7 @@ addInWorkspace name = runResult $ do
     Nothing -> do
       rep <- orFailE (runClosure name)
       when (not (null (crNeedsVendoring rep))) $
-        failWithError (DepNoGitRepo (intercalate ", " (crNeedsVendoring rep)))
+        failWithError (DepNoGitRepo (unwords (crNeedsVendoring rep)))
       let found = [(m, r) | (m, Just r) <- crMembers rep]
           enriched = enrichWithRepos ws found
       liftIO (writeFile wsFile (renderWorkspace enriched))
@@ -160,3 +164,58 @@ updateInWorkspace = runResult $ do
   when (not present) $ failWithError (NoZincToml ".")
   storeRoot <- liftIO resolveStoreRoot
   orFailE (runUpdate wsFile storeRoot)
+
+-- | CLI entry: @zinc vendor \<pkg...\>@ — recover a no-git dependency (colour,
+-- tf-random — darcs-era) by pinning its Hackage sdist tarball (b1z, design s2).
+-- For each package, resolve a version (an explicit @\<name\>-\<version\>@ arg,
+-- else the version installed in this GHC environment — the same toolchain truth
+-- closure discovery uses), record it in the manifest as a vendored pin, then
+-- re-resolve + freeze the workspace, fetching + hashing the tarball into the
+-- store. Hackage is touched only here; @zinc build@ reads the pinned source from
+-- the lock + store. The manifest is rewritten only after a successful freeze, so
+-- a failed fetch leaves it untouched.
+vendorInWorkspace :: [String] -> IO (Either ZincError String)
+vendorInWorkspace pkgs = runResult $ do
+  let wsFile = "zinc.toml"
+  present <- liftIO (doesFileExist wsFile)
+  when (not present) $ failWithError (NoZincToml ".")
+  storeRoot <- liftIO resolveStoreRoot
+  orFailE (runVendor wsFile storeRoot pkgs)
+
+-- | Record the named packages as vendored pins and re-freeze the workspace
+-- (explicit paths, the testable core of 'vendorInWorkspace'). The manifest is
+-- rewritten only after a successful freeze.
+runVendor :: FilePath -> FilePath -> [String] -> IO (Either ZincError String)
+runVendor wsFile storeRoot pkgs = runResult $ do
+  src <- liftIO (readFile wsFile)
+  ws <- liftEither (parseWorkspace src)
+  resolved <- traverse resolveVendorVersion pkgs
+  let ws' = foldl (\w (n, v) -> addVendored w n v) ws resolved
+  res <- freezeWorkspace wsFile storeRoot ws'
+  liftIO (writeFile wsFile (renderWorkspace ws'))
+  pure res
+
+-- | Resolve a vendor target to @(name, version)@: an explicit @name-version@
+-- arg, otherwise the version installed in this GHC environment.
+resolveVendorVersion :: String -> Result (String, String)
+resolveVendorVersion arg = case splitNameVersion arg of
+  Just nv -> pure nv
+  Nothing -> do
+    mv <- liftIO (installedVersion arg)
+    case mv of
+      Just v  -> pure (arg, v)
+      Nothing -> failWith (arg ++ ": not installed in this GHC environment; vendor an explicit <name>-<version>")
+
+-- | Split a @name-version@ string into its parts, the version being the trailing
+-- dot-separated-digits component. A name may itself contain dashes (e.g.
+-- @tf-random@), so the version is the LAST dashed component; 'Nothing' if the
+-- arg has no version suffix (a bare name).
+splitNameVersion :: String -> Maybe (String, String)
+splitNameVersion s = case reverse (splitOn '-' s) of
+  (v : rest@(_ : _)) | isVersion v -> Just (intercalate "-" (reverse rest), v)
+  _                                -> Nothing
+  where
+    isVersion v = not (null v) && all (`elem` ("0123456789." :: String)) v
+    splitOn c xs = case break (== c) xs of
+      (a, [])    -> [a]
+      (a, _ : r) -> a : splitOn c r
