@@ -45,6 +45,7 @@ import Zinc.Manifest
   , Ref (..)
   , WorkspaceManifest (..)
   , addDep
+  , addVendored
   , depRepos
   , depGhcOptionsOf
   , parseDependencies
@@ -789,6 +790,14 @@ main = hspec $ do
       -- would parse back as a git tag, silently losing the source kind.
       let ws = WorkspaceManifest [] "9.6.5" [Dependency "colour" (Vendored "2.3.6") Nothing []]
       (wsDependencies <$> parseWorkspace (renderWorkspace ws)) `shouldBe` Right (wsDependencies ws)
+
+    it "addVendored preserves a dep's existing ghc-options when re-pinning (mvj)" $ do
+      -- re-pinning colour (git, -XSafe) as vendored must keep its -XSafe override.
+      let ws0 = WorkspaceManifest [] "9.6.5" [Dependency "colour" (Rev "abc") (Just "r/colour") ["-XSafe"]]
+          ws1 = addVendored ws0 "colour" "2.3.6"
+      (depRef <$> find ((== "colour") . depName) (wsDependencies ws1)) `shouldBe` Just (Vendored "2.3.6")
+      (depGhcOptions <$> find ((== "colour") . depName) (wsDependencies ws1)) `shouldBe` Just ["-XSafe"]
+      (depRepo <$> find ((== "colour") . depName) (wsDependencies ws1)) `shouldBe` Just Nothing
 
     it "fails on a missing [workspace] table" $
       parseWorkspace "[dependencies]\n" `shouldSatisfy` isLeft

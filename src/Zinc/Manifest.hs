@@ -17,7 +17,7 @@ module Zinc.Manifest
   , addVendored
   ) where
 
-import Data.List (intercalate, sortOn)
+import Data.List (find, intercalate, sortOn)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import qualified Toml
@@ -248,10 +248,15 @@ addDep w name ref repo =
     }
 
 -- | Add (or replace) a vendored dependency: a Hackage-tarball pin at @version@,
--- with no git repo (b1z). Keeps the list sorted by name.
+-- with no git repo (b1z). Preserves any @ghc-options@ already set for the dep
+-- (e.g. colour's @-XSafe@), so re-pinning a git dep as vendored keeps its build
+-- overrides. Keeps the list sorted by name.
 addVendored :: WorkspaceManifest -> String -> String -> WorkspaceManifest
 addVendored w name version =
   w
     { wsDependencies =
-        sortOn depName (Dependency name (Vendored version) Nothing [] : filter ((/= name) . depName) (wsDependencies w))
+        sortOn depName (Dependency name (Vendored version) Nothing keptOpts : others)
     }
+  where
+    keptOpts = maybe [] depGhcOptions (find ((== name) . depName) (wsDependencies w))
+    others = filter ((/= name) . depName) (wsDependencies w)

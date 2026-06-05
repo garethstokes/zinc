@@ -42,8 +42,7 @@ depends = []
 
 [[locked]]
 name = "colour"
-repo = "https://github.com/garethstokes/color.git"
-rev = "a291db24d299b90f6eda344fe40cbc1453507f95"
+vendored = "2.3.6"
 sha256 = "sha256:0593b267dda0b49a14282788f3d7876f45639f8bd6265e2ed9292dc2bbd58231"
 depends = []
 
@@ -133,8 +132,7 @@ depends = []
 
 [[locked]]
 name = "tf-random"
-repo = "https://github.com/garethstokes/tf-random.git"
-rev = "7a9026a1b3bef79ca7d78c925ca7194805719bed"
+vendored = "0.5"
 sha256 = "sha256:39575400d744f41d6c1d984f59a5246f45453ee3bddd97de9a9fdab4674611a0"
 depends = ["primitive", "random"]
 

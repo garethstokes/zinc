@@ -63,8 +63,7 @@ rev = "2a4a6d89980801ae353fb573753d6205f90115e7"
 repo = "https://github.com/UnkindPartition/ansi-terminal.git#ansi-terminal-types"
 
 [dependencies.colour]
-rev = "a291db24d299b90f6eda344fe40cbc1453507f95"
-repo = "https://github.com/garethstokes/color.git"
+vendored = "2.3.6"
 ghc-options = ["-XSafe"]
 
 [dependencies.transformers-compat]
@@ -117,8 +116,7 @@ rev = "3fa63b7e9f90a396ddb9c9e4818c748546b6b692"
 repo = "https://github.com/yav/haskell-lexer.git"
 
 [dependencies.tf-random]
-rev = "7a9026a1b3bef79ca7d78c925ca7194805719bed"
-repo = "https://github.com/garethstokes/tf-random.git"
+vendored = "0.5"
 
 [dependencies.primitive]
 rev = "518fe62e2f4b23dda89cb8acd64fa2945e1e6ffd"
