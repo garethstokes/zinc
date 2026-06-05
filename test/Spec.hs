@@ -34,7 +34,7 @@ import Zinc.Doctor (doctorJson, doctorOk, flakesOffDiagnostic, lockDriftDiagnost
 import Zinc.Introspect (DepStatus (..), explainJson, graphJson, statusJson)
 import Zinc.Prime (onboardText, primeText)
 import Zinc.Json (Json (..), parseJson, renderJson)
-import Zinc.Git (cloneAt, gitEnv, listTags, splitRepoSubdir)
+import Zinc.Git (cloneAt, gitEnv, gitInitIfNeeded, isInsideRepo, listTags, splitRepoSubdir)
 import Zinc.Hackage (hackageCabalUrl, hackageTarballUrl, sourceRepoOf)
 import Zinc.Store (contentHash, resolveStoreRoot, storeSrcPath, verifyContent, withStoreLock)
 import Zinc.Manifest
@@ -750,6 +750,10 @@ main = hspec $ do
       bodyOf "app/Main.hs" files `shouldSatisfy` isJust
       bodyOf "packages/myapp/app/Main.hs" files `shouldBe` Nothing
 
+    it "scaffolds a .gitignore covering .zinc/ and Nix result symlinks (6hf.3)" $ do
+      let gi = maybe "" id (bodyOf ".gitignore" files)
+      all (`isInfixOf` gi) [".zinc/", "result", "*.hi", "*.o"] `shouldBe` True
+
   describe "scaffoldWorkspace (--workspace multi-member, 6hf.1)" $ do
     let files = scaffoldWorkspace "myapp"
 
@@ -898,6 +902,19 @@ main = hspec $ do
 
     it "treats an empty/absent [[locked]] array as no packages" $
       parseLock "" `shouldBe` Right []
+
+  describe "gitInitIfNeeded (6hf.3)" $
+    it "inits a repo in a fresh dir, then is a no-op when already inside one" $ do
+      let d = "/tmp/zinc-gitinit-test"
+      stale <- doesDirectoryExist d
+      when stale $ removeDirectoryRecursive d
+      createDirectoryIfMissing True d
+      before <- isInsideRepo d
+      r1 <- gitInitIfNeeded d
+      hasGit <- doesDirectoryExist (d </> ".git")
+      inside <- isInsideRepo d
+      r2 <- gitInitIfNeeded d -- already a repo: no-op
+      (before, isRight r1, hasGit, inside, isRight r2) `shouldBe` (False, True, True, True, True)
 
   describe "cloneAt" $ do
     (repo, c1, c2) <- runIO setupGitFixture

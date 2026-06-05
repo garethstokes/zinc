@@ -6,6 +6,8 @@ module Zinc.Git
   , listTags
   , splitRepoSubdir
   , gitEnv
+  , isInsideRepo
+  , gitInitIfNeeded
   ) where
 
 import Data.Char (isSpace)
@@ -42,6 +44,20 @@ listTags repo = fmap (fmap parseTags) (run "git" ["ls-remote", "--tags", "--refs
   where
     parseTags out =
       [t | line <- lines out, (_ : ref : _) <- [words line], Just t <- [stripPrefix "refs/tags/" ref]]
+
+-- | Whether @dir@ is already inside a git work tree (a parent repo counts), so
+-- @zinc new@ won't nest a fresh repo inside an existing one (zinc-6hf.3).
+isInsideRepo :: FilePath -> IO Bool
+isInsideRepo dir = either (const False) (const True) <$> run "git" ["-C", dir, "rev-parse", "--is-inside-work-tree"]
+
+-- | @git init@ a repo at @dir@ unless it is already inside one. Best-effort:
+-- the caller decides how to surface a failure (e.g. git absent).
+gitInitIfNeeded :: FilePath -> IO (Either String ())
+gitInitIfNeeded dir = do
+  inside <- isInsideRepo dir
+  if inside
+    then pure (Right ())
+    else fmap (const ()) <$> run "git" ["init", "--quiet", dir]
 
 -- | Chain an IO action that may fail, short-circuiting on 'Left'.
 step :: IO (Either String a) -> (a -> IO (Either String b)) -> IO (Either String b)

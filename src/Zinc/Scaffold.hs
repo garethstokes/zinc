@@ -26,6 +26,7 @@ scaffoldNew :: String -> [FileSpec]
 scaffoldNew name =
   [ FileSpec "zinc.toml" manifest
   , FileSpec "app/Main.hs" (mainModule name)
+  , FileSpec ".gitignore" gitignore
   ]
   where
     manifest =
@@ -53,6 +54,7 @@ scaffoldWorkspace name =
   [ FileSpec "zinc.toml" workspaceManifest
   , FileSpec (memberDir ++ "/zinc.toml") memberManifest
   , FileSpec (memberDir ++ "/app/Main.hs") (mainModule name)
+  , FileSpec ".gitignore" gitignore
   ]
   where
     memberDir = "packages/" ++ name
@@ -77,6 +79,18 @@ scaffoldWorkspace name =
         , "main = \"Main.hs\""
         , "depends = []"
         ]
+
+-- | The @.gitignore@ shared by both scaffolds (zinc-6hf.3): zinc's build dir and
+-- Nix's @result@ symlinks plus stray GHC artifacts.
+gitignore :: String
+gitignore =
+  unlines
+    [ ".zinc/"
+    , "result"
+    , "result-*"
+    , "*.hi"
+    , "*.o"
+    ]
 
 -- | The placeholder @app\/Main.hs@ shared by both scaffolds.
 mainModule :: String -> String

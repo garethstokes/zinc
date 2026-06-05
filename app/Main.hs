@@ -11,6 +11,7 @@ import Zinc.CLI (Command (..), parseArgs)
 import Zinc.Closure (closureReportJson, renderClosure, runClosure)
 import Zinc.Diagnostic (ZincError, envelope, exitCodeFor, humanError, toDiagnostic)
 import Zinc.Docker (runDockerfile)
+import Zinc.Git (gitInitIfNeeded)
 import Zinc.Doctor (doctorJson, doctorOk, renderDoctor, runDoctor)
 import Zinc.Fmt (runFmt)
 import Zinc.GC (runGc)
@@ -74,6 +75,9 @@ warmSummary pkgs =
 dispatch :: OutputMode -> Command -> IO ()
 dispatch _ (New name workspace) = do
   materialize "." (if workspace then scaffoldWorkspace name else scaffoldNew name)
+  -- Initialise a git repo unless we're already inside one (zinc-6hf.3).
+  -- Best-effort: a missing/again-failing git just leaves the files in place.
+  gitInitIfNeeded "." >>= either (\e -> hPutStrLn stderr ("note: skipped git init (" ++ e ++ ")")) (const (pure ()))
   putStrLn $
     if workspace
       then "Created workspace member at ./packages/" ++ name
