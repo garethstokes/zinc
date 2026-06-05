@@ -58,6 +58,17 @@ you.
 
 - **Whole-graph git.** Every non-boot package is a `repo + ref`
   (`hash | tag | branch`), fetched with plain `git`. No Hackage at build time.
+- **Vendoring exception for no-git packages (decided 2026-06-05).** A few
+  packages have no upstream git repo (darcs-era — e.g. `colour`, `tf-random`), so
+  `zinc add`'s closure discovery flags them ("needs vendoring") rather than
+  failing into a dead end. The recovery is one explicit command: `zinc vendor
+  <pkg…>` fetches the **Hackage tarball into the content store and pins it by
+  `sha256`** (no git mirror synthesized). This relaxes the invariant to *every
+  dep is a **content-addressed source** — a git ref **or** a vendored tarball*.
+  Hackage is touched only at this explicit, reviewed, frozen `vendor`/`add` step;
+  **build still never touches Hackage** (it reads the pinned source from the
+  lock + store). The git-fail diagnostic carries the `zinc vendor …` command as
+  its `nextAction`.
 - **GHC boot libraries** (`base`, `text`, `bytestring`, `containers`, …) ship
   with the Nix-provided GHC and are never fetched.
 - **One git ref per package name** across the whole workspace (GHC strongly
