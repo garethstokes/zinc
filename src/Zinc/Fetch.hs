@@ -5,6 +5,7 @@
 module Zinc.Fetch
   ( gitFetchManifest
   , resolveRef
+  , packageDirIn
   ) where
 
 import Control.Monad (when)
@@ -28,13 +29,13 @@ import Zinc.Version (newestTagFor)
 -- conditionals. Matches the fetch signature 'Zinc.Resolve.resolve' expects.
 gitFetchManifest :: FilePath -> String -> String -> String -> Ref -> IO (Either ZincError DepManifest)
 gitFetchManifest storeRoot ghcVersion name repo ref = runResult $ do
-  refStr <- orFail (first ((name ++ ": ") ++) <$> resolveRef repo ref)
+  refStr <- orFail (first ((name ++ ": ") ++) <$> resolveRef name repo ref)
   let dest = storeRoot </> "checkout" </> name
   liftIO $ do
     stale <- doesDirectoryExist dest
     when stale (removeDirectoryRecursive dest)
   _ <- orFail (first (("fetch " ++ name ++ ": ") ++) <$> cloneAt repo refStr dest)
-  let pkgDir = maybe dest (dest </>) (snd (splitRepoSubdir repo))
+  pkgDir <- liftIO (packageDirIn dest repo name)
   hasZinc <- liftIO (doesFileExist (pkgDir </> "zinc.toml"))
   if hasZinc
     then do
@@ -59,17 +60,49 @@ cabalManifest name ghcVersion pkgDir = runResult $ do
       let libDeps = nub (concat [compDepends c | c <- comps, compKind c == Library])
       pure (DepManifest [Dependency d Latest Nothing [] | d <- libDeps] [])
 
+-- | Locate a package's manifest directory inside a fetched checkout. An
+-- explicit @url#subdir@ wins; otherwise the repo root if it holds a manifest;
+-- otherwise a @\<name\>/@ subdir — metadata-poor monorepos (e.g. @strict@,
+-- @strict-base-types@ …) ship no @source-repository@ subdir hint, but each
+-- package lives in a directory named after it; else fall back to the root and
+-- let the read fail with a clear message. Used identically at resolve time and
+-- build time so the two agree on where a subdir package lives.
+packageDirIn :: FilePath -> String -> String -> IO FilePath
+packageDirIn dest repo name =
+  case snd (splitRepoSubdir repo) of
+    Just s  -> pure (dest </> s)
+    Nothing -> do
+      rootOk <- hasManifest dest
+      if rootOk
+        then pure dest
+        else do
+          let sub = dest </> name
+          subOk <- hasManifest sub
+          pure (if subOk then sub else dest)
+  where
+    hasManifest d = do
+      z <- doesFileExist (d </> "zinc.toml")
+      if z
+        then pure True
+        else do
+          there <- doesDirectoryExist d
+          if there
+            then any ((== ".cabal") . takeExtension) <$> listDirectory d
+            else pure False
+
 -- | The git checkout target for a ref. 'Latest' is resolved to the repo's
 -- newest release tag.
-resolveRef :: String -> Ref -> IO (Either String String)
-resolveRef _    (Tag t)    = pure (Right t)
-resolveRef _    (Branch b) = pure (Right b)
-resolveRef _    (Rev r)    = pure (Right r)
-resolveRef repo Latest     = do
-  let (url, msub) = splitRepoSubdir repo
-  tags <- listTags url
+resolveRef :: String -> String -> Ref -> IO (Either String String)
+resolveRef _    _    (Tag t)    = pure (Right t)
+resolveRef _    _    (Branch b) = pure (Right b)
+resolveRef _    _    (Rev r)    = pure (Right r)
+resolveRef name repo Latest     = do
+  tags <- listTags (fst (splitRepoSubdir repo))
   pure $ case tags of
     Left err -> Left err
-    -- A subdir package in a monorepo: prefer tags scoped to it (e.g.
-    -- vector-stream-*) over stale global tags from before the subdir existed.
-    Right ts -> maybe (Left "no release tags found") Right (newestTagFor msub ts)
+    -- Scope Latest by the PACKAGE NAME: a monorepo carries package-prefixed
+    -- tags (vector-stream-*, strict-*) that must be preferred over a sibling's
+    -- or a stale global tag; a dedicated repo has none, so newestTagFor falls
+    -- back to bare version tags (v1.5.1.0). Works whether or not the repo URL
+    -- carried a #subdir (strict's was discovered from its homepage, no subdir).
+    Right ts -> maybe (Left "no release tags found") Right (newestTagFor (Just name) ts)

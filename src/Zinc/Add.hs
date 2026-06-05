@@ -55,7 +55,7 @@ freezeClosure storeRoot = runResult . traverse freezeOne
   where
     freezeOne :: ResolvedDep -> Result LockedPackage
     freezeOne dep = do
-      refStr <- orFail (first ((rdName dep ++ ": ") ++) <$> resolveRef (rdRepo dep) (rdRef dep))
+      refStr <- orFail (first ((rdName dep ++ ": ") ++) <$> resolveRef (rdName dep) (rdRepo dep) (rdRef dep))
       let dest = storeRoot </> "checkout" </> rdName dep
       liftIO $ do
         stale <- doesDirectoryExist dest

@@ -41,7 +41,8 @@ import System.Process (callProcess, readProcess, readProcessWithExitCode)
 import Zinc.Build (LibBuild (..), MemberBuild (..), buildLib, buildLibArtifacts, buildMember, initPackageDb, isRegistered, registerPackage, replArgs)
 import Zinc.Cabal (cabalBuildType, cabalVersion, parseCabalComponentsForGhc)
 import Zinc.Cache (BuildKey (..), buildCacheKey, storeConfPath, storePkgPath)
-import Zinc.Git (cloneAt, splitRepoSubdir)
+import Zinc.Fetch (packageDirIn)
+import Zinc.Git (cloneAt)
 import Zinc.Lock (LockedPackage (..), parseLock)
 import Zinc.Manifest
   ( Component (compDepends, compGhcOptions, compKind)
@@ -360,9 +361,10 @@ buildClosure sink wsDir storeRoot wsDb ghcVersion buildOpts = runResult $ do
         _ <- orFail (first (("fetch " ++ lockName l ++ ": ") ++) <$> cloneAt (lockRepo l) (lockRev l) dest)
         liftIO (emit sink (FetchDone (lockName l)))
       orFailE (verifyFetched l dest)
-      -- The package may live in a subdirectory of the repo (monorepo);
-      -- read its manifest/sources from there.
-      let pkgDir = maybe dest (dest </>) (snd (splitRepoSubdir (lockRepo l)))
+      -- The package may live in a subdirectory of the repo (monorepo) — an
+      -- explicit #subdir, or a <name>/ dir auto-detected for metadata-poor
+      -- monorepos. Resolve it the same way the resolver did.
+      pkgDir <- liftIO (packageDirIn dest (lockRepo l) (lockName l))
       comps <- liftIO (loadDepComponents pkgDir)
       (version, components) <- liftEither (first ((lockName l ++ ": ") ++) comps)
       case filter ((== Library) . compKind) components of
