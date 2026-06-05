@@ -21,6 +21,7 @@ import Zinc.Diagnostic (ZincError (DepNoGitRepo, NoZincToml))
 import Zinc.Except (Result, failWithError, liftEither, liftIO, orFail, orFailE, runResult)
 import Zinc.Fetch (gitFetchManifest, resolveRef)
 import Zinc.Git (cloneAt)
+import Zinc.Hackage (hackageSourceRepo)
 import Zinc.Lock (LockedPackage (..), renderLock)
 import Zinc.Manifest
   ( Dependency (depName, depRef)
@@ -68,10 +69,18 @@ freezeClosure storeRoot = runResult . traverse freezeOne
 -- 'runAdd' and 'runUpdate'.
 freezeWorkspace :: FilePath -> FilePath -> WorkspaceManifest -> Result String
 freezeWorkspace wsFile storeRoot ws = do
-  closure <- orFailE (resolve isBootLib (gitFetchManifest storeRoot (wsGhc ws)) (wsDependencies ws) (depRepos ws))
+  closure <- orFailE (resolve isBootLib (gitFetchManifest storeRoot (wsGhc ws)) hackageDiscover (wsDependencies ws) (depRepos ws))
   locks <- orFailE (freezeClosure storeRoot closure)
   liftIO $ writeFile (takeDirectory wsFile </> "zinc.lock") (renderLock locks)
   pure (renderResolution closure)
+
+-- | Discover a transitive dependency's git repo from Hackage when no registry
+-- pins it (zinc-49o auto-fill via 5la), so 'resolve' can walk a real upstream's
+-- whole closure without every repo hand-listed. A fetch failure / no
+-- source-repository degrades to 'Nothing' (the resolver then errors with the
+-- precise missing-repo diagnostic).
+hackageDiscover :: String -> IO (Maybe String)
+hackageDiscover n = either (const Nothing) id <$> hackageSourceRepo n
 
 -- | Add (or refresh) a dependency: update the workspace model, freeze the
 -- closure, and write @zinc.lock@ + @zinc.toml@. Returns the resolution table.

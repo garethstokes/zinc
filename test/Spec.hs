@@ -969,8 +969,9 @@ main = hspec $ do
     let dep n r = Dependency n r Nothing []
         boot = (`elem` ["base", "text", "bytestring", "containers"])
         fetchFrom fix n _ _ = pure (maybe (Left (OtherError ("missing: " ++ n))) Right (lookup n fix))
+        noDiscover _ = pure Nothing
         run fix deps reg =
-          runIdentity (resolve boot (fetchFrom fix) deps reg)
+          runIdentity (resolve boot (fetchFrom fix) noDiscover deps reg)
         findRD n r = either (const Nothing) (find ((== n) . rdName)) r
 
         fixture =
@@ -1028,6 +1029,20 @@ main = hspec $ do
             ]
           r = run fix [dep "a" Latest] [("a", "r/a")]
       (sort . map rdName <$> r) `shouldBe` Right ["a", "b"]
+
+    it "discovers a transitive dep's repo via the injected fallback (Hackage, ffm)" $ do
+      -- 'a' (root-pinned) declares 'b' with NO registry anywhere; the discovery
+      -- function (production: Hackage source-repository) supplies b's repo, so
+      -- the closure resolves without b being hand-listed.
+      let fix =
+            [ ("a", DepManifest [dep "b" Latest] [])
+            , ("b", DepManifest [] [])
+            ]
+          discover n = pure (lookup n [("b", "hackage/b")])
+          r = runIdentity (resolve boot (fetchFrom fix) discover [dep "a" Latest] [("a", "r/a")])
+      (sort . map rdName <$> r) `shouldBe` Right ["a", "b"]
+      (rdRepo <$> (r >>= maybe (Left (OtherError "no b")) Right . find ((== "b") . rdName)))
+        `shouldBe` Right "hackage/b"
 
   describe "topoSort" $ do
     let rd n ds = ResolvedDep n ("r/" ++ n) Latest ds

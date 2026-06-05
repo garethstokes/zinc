@@ -16,7 +16,7 @@ module Zinc.Resolve
   ) where
 
 import Control.Monad (foldM)
-import Control.Monad.Trans.Except (ExceptT (ExceptT), except, runExceptT)
+import Control.Monad.Trans.Except (ExceptT (ExceptT), runExceptT)
 import Zinc.Diagnostic (ZincError (NoRepoInRegistry, OtherError))
 import qualified Data.Map as Map
 import Data.Set (Set)
@@ -51,21 +51,29 @@ resolve
   :: Monad m
   => (String -> Bool)                                             -- ^ is this a GHC boot lib?
   -> (String -> String -> Ref -> m (Either ZincError DepManifest)) -- ^ fetch: name repo ref
+  -> (String -> m (Maybe String))                                 -- ^ discover a repo (Hackage) when not in any registry
   -> [Dependency]                                                 -- ^ root @[dependencies]@
   -> [(String, String)]                                           -- ^ root @[registry]@
   -> m (Either ZincError [ResolvedDep])
-resolve isBoot fetch rootDeps rootReg = runExceptT $ do
-  reqs <- except (traverse (toReq rootReg "<workspace>") rootDeps)
+resolve isBoot fetch discoverRepo rootDeps rootReg = runExceptT $ do
+  reqs <- ExceptT (resolveReqs rootReg "<workspace>" rootDeps)
   go Map.empty reqs
   where
+    -- Resolve a batch of (non-boot) deps to fetch requests; first failure wins.
+    resolveReqs reg parent = fmap sequence . traverse (toReq reg parent)
+
     -- A dep's repo comes from the declaring package's own @[registry]@ first,
-    -- then falls back to the root workspace registry. Real upstreams (only a
-    -- .cabal, no zinc.toml) carry no registry, so the root workspace must list
-    -- the repos for the whole non-boot closure.
+    -- then the root workspace registry, then — for real upstreams that carry no
+    -- registry at all — Hackage @source-repository@ auto-discovery (zinc-49o):
+    -- so the whole non-boot closure need not be hand-listed. Only when discovery
+    -- also draws a blank is it a hard 'NoRepoInRegistry'.
     toReq reg parent d = case lookup (depName d) (reg ++ rootReg) of
-      Just repo -> Right (Req (depName d) (depRef d) repo)
-      Nothing ->
-        Left (NoRepoInRegistry (depName d) parent)
+      Just repo -> pure (Right (Req (depName d) (depRef d) repo))
+      Nothing -> do
+        mRepo <- discoverRepo (depName d)
+        pure $ case mRepo of
+          Just repo -> Right (Req (depName d) (depRef d) repo)
+          Nothing   -> Left (NoRepoInRegistry (depName d) parent)
 
     go seen [] = pure (Map.elems seen)
     go seen (Req name ref repo : rest)
@@ -75,7 +83,7 @@ resolve isBoot fetch rootDeps rootReg = runExceptT $ do
           dm <- ExceptT (fetch name repo ref)
           let transitive = filter (not . isBoot . depName) (dmDeps dm)
               node = ResolvedDep name repo ref (map depName transitive)
-          newReqs <- except (traverse (toReq (dmRegistry dm) name) transitive)
+          newReqs <- ExceptT (resolveReqs (dmRegistry dm) name transitive)
           go (Map.insert name node seen) (rest ++ newReqs)
 
 -- | Topologically sort a resolved closure so each package appears after all
