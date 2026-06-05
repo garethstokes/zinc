@@ -58,7 +58,15 @@ zinc add aeson     # add a git-pinned dependency, frozen into zinc.lock
 ## Agent-friendly by design
 
 - **`--json` everywhere** — commands emit a `{ zinc, command, ok, data, timing?,
-  diagnostics }` envelope.
+  diagnostics }` envelope. Output is **NDJSON**: the **last line is always that
+  envelope**, and long build ops (`build`, `warm`) stream one event object per
+  line ahead of it (`{ "event": "compile-done", "package": …, "timeMs": …,
+  "cached": … }`, plus `resolve-start`, `fetch-start`/`fetch-done`,
+  `compile-start`, `register-done`, `finished`). Event lines carry an `event`
+  key; the result line carries `zinc`/`ok` and no `event` key — so a streaming
+  agent dispatches on `event` while a non-streaming agent just reads the last
+  line. Commands with no events (e.g. `status`, `doctor`) emit exactly that one
+  envelope line.
 - **Structured errors** — every failure carries a stable code (`ZINC_*`), a
   human `nextAction`, and a **category exit code** (2 usage, 3 resolution,
   4 build, 5 environment, 6 integrity) so agents branch without parsing.
