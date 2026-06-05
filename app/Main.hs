@@ -18,39 +18,43 @@ import Zinc.Introspect (explainJson, graphJson, renderExplain, renderGraph, rend
 import Zinc.Json (Json (..), renderJson)
 import Zinc.Metrics (recordBuild)
 import Zinc.Orchestrate (checkLockDrift, resolveRunTarget, runBuildReport, runClean, runRepl, runTests, runWarm)
+import Zinc.Output (OutputMode (..), resolveMode)
 import Zinc.Perf (perfSummaryJson, renderPerf, runPerf)
 import Zinc.Prime (runOnboard, runPrime)
 import Zinc.Report (PackageReport, PackageStatus (Built, Cached), boExes, boPackages, buildDataJson, packageReportJson, prName, prStatus, prTimeMs, timingJson)
 import Zinc.Scaffold (materialize, scaffoldNew)
 
--- | Thin executable shim. Parsing/dispatch logic lives in (and is tested via)
--- "Zinc.CLI" and "Zinc.Scaffold". Most command implementations arrive in later
--- epics (build driver, resolver, orchestration); `new` is wired up now.
+-- | Thin executable shim: parse argv into the output flags + a 'Command',
+-- resolve one 'OutputMode', and dispatch. Parsing lives in "Zinc.CLI".
 main :: IO ()
 main = do
   args <- getArgs
   case parseArgs args of
-    Left err  -> putStrLn err
-    Right cmd -> dispatch cmd
+    Left err          -> putStrLn err
+    Right (flags, cmd) -> resolveMode flags >>= \mode -> dispatch mode cmd
 
--- | Report a failed command and exit with its category's stable code (spec §6),
--- so an agent can branch on the exit status without parsing the message. The
--- error goes to stderr; structured output (later: --json) stays on stdout.
+-- | True in @--json@ machine mode.
+machine :: OutputMode -> Bool
+machine Machine = True
+machine _ = False
+
+-- | Report a failed command and exit with its category's stable code (spec §6).
+-- The error goes to stderr; structured output stays on stdout.
 failCmd :: String -> ZincError -> IO ()
 failCmd cmd e = do
   hPutStrLn stderr (cmd ++ ": " ++ renderError e)
   exitWith (exitCodeFor e)
 
--- | Emit a read-only command's result: the JSON envelope under --json (failures
--- carry the diagnostic + category exit code), or human text otherwise.
-emitIntrospection :: String -> Bool -> (a -> Json) -> (a -> String) -> Either ZincError a -> IO ()
-emitIntrospection cmd json toJson toHuman r = case r of
+-- | Emit a read-only command's result: the JSON envelope in machine mode
+-- (failures carry the diagnostic + category exit code), or human text.
+emitIntrospection :: String -> OutputMode -> (a -> Json) -> (a -> String) -> Either ZincError a -> IO ()
+emitIntrospection cmd mode toJson toHuman r = case r of
   Left e
-    | json      -> putStrLn (renderJson (envelope cmd False Nothing Nothing [toDiagnostic e])) >> exitWith (exitCodeFor e)
-    | otherwise -> failCmd ("zinc " ++ cmd) e
+    | machine mode -> putStrLn (renderJson (envelope cmd False Nothing Nothing [toDiagnostic e])) >> exitWith (exitCodeFor e)
+    | otherwise    -> failCmd ("zinc " ++ cmd) e
   Right a
-    | json      -> putStrLn (renderJson (envelope cmd True (Just (toJson a)) Nothing []))
-    | otherwise -> putStr (toHuman a)
+    | machine mode -> putStrLn (renderJson (envelope cmd True (Just (toJson a)) Nothing []))
+    | otherwise    -> putStr (toHuman a)
 
 -- | One-line summary of a closure-only (@warm@) build.
 warmSummary :: [PackageReport] -> String
@@ -60,92 +64,87 @@ warmSummary pkgs =
   where
     count s = length (filter ((== s) . prStatus) pkgs)
 
-dispatch :: Command -> IO ()
-dispatch (New name) = do
+dispatch :: OutputMode -> Command -> IO ()
+dispatch _ (New name) = do
   materialize "." (scaffoldNew name)
   putStrLn ("Created workspace member at ./packages/" ++ name)
-dispatch (Add name) =
+dispatch _ (Add name) =
   addInWorkspace name >>= either (failCmd "zinc add") putStr
-dispatch (Build target json) = do
+dispatch mode (Build target) = do
   -- Human path shows the lock-drift hint up front; the machine envelope stays
-  -- pure JSON. Both paths run the report-bearing build and persist a metrics
-  -- record (perf spec §3.1) on success.
-  unless json $ do
+  -- pure JSON. Both run the report-bearing build and persist a metrics record.
+  unless (machine mode) $ do
     drift <- checkLockDrift "."
     unless (null drift) $
       putStrLn ("warning: zinc.lock is missing: " ++ intercalate ", " drift ++ " (run `zinc add`)")
   runBuildReport "." target >>= \r -> case r of
     Left e
-      | json -> do
-          putStrLn (renderJson (envelope "build" False Nothing Nothing [toDiagnostic e]))
-          exitWith (exitCodeFor e)
-      | otherwise -> failCmd "zinc build" e
+      | machine mode -> putStrLn (renderJson (envelope "build" False Nothing Nothing [toDiagnostic e])) >> exitWith (exitCodeFor e)
+      | otherwise    -> failCmd "zinc build" e
     Right (outcome, timing) -> do
       recordBuild "." "build" target timing [(prName p, ms) | p <- boPackages outcome, Just ms <- [prTimeMs p]]
-      if json
+      if machine mode
         then putStrLn (renderJson (envelope "build" True (Just (buildDataJson outcome)) (Just (timingJson timing)) []))
         else do
           putStrLn ("Built " ++ show (length (boExes outcome)) ++ " executable(s):")
           mapM_ (putStrLn . ("  " ++)) (boExes outcome)
-dispatch (Run target args) =
+dispatch _ (Run target args) =
   resolveRunTarget "." target >>= \r -> case r of
     Left e -> failCmd "zinc run" e
     Right exe -> do
-      -- Exec the chosen program with live, inherited stdio (interactive, TTY,
-      -- colors, real stdin) and exit zinc with the child's exit code.
+      -- Exec with live, inherited stdio and exit zinc with the child's code.
       (_, _, _, ph) <- createProcess (proc exe args) {std_in = Inherit, std_out = Inherit, std_err = Inherit}
       waitForProcess ph >>= exitWith
-dispatch (Test _) =
+dispatch _ (Test _) =
   runTests "." >>= \r -> case r of
     Left e  -> failCmd "zinc test" e
     Right n -> putStrLn (show n ++ " test suite(s) passed")
-dispatch (Repl _) =
+dispatch _ (Repl _) =
   runRepl "." >>= either (failCmd "zinc repl") (const (pure ()))
-dispatch (Update _) =
+dispatch _ (Update _) =
   updateInWorkspace >>= either (failCmd "zinc update") putStr
-dispatch Clean = do
+dispatch _ Clean = do
   runClean "."
   putStrLn "Cleaned build artifacts (kept the store)."
-dispatch Gc =
+dispatch _ Gc =
   runGc "." >>= \r -> case r of
     Left e -> failCmd "zinc gc" e
     Right (pkgs, srcs) ->
       putStrLn ("Collected " ++ show (length pkgs) ++ " package(s) and " ++ show (length srcs) ++ " source(s) from the store.")
-dispatch (Perf json) =
+dispatch mode Perf =
   runPerf "." >>= \s ->
-    if json
+    if machine mode
       then putStrLn (renderJson (envelope "perf" True (Just (perfSummaryJson s)) Nothing []))
       else putStr (renderPerf s)
-dispatch (Doctor json) = do
+dispatch mode Doctor = do
   diags <- runDoctor "."
-  if json
+  if machine mode
     then putStrLn (renderJson (doctorJson diags))
     else putStr (renderDoctor diags)
-  -- Exit non-zero on an error-severity finding so agents/CI can gate on health.
   unless (doctorOk diags) (exitWith (ExitFailure 1))
-dispatch (Status json) =
-  runStatus "." >>= emitIntrospection "status" json (\(g, m, d, dr) -> statusJson g m d dr) (\(g, m, d, dr) -> renderStatus g m d dr)
-dispatch (Graph json) =
-  runGraph "." >>= emitIntrospection "graph" json graphJson renderGraph
-dispatch (Explain pkg json) =
-  runExplain "." >>= emitIntrospection "explain" json (explainJson pkg) (renderExplain pkg)
-dispatch (Warm json) =
+dispatch mode Status =
+  runStatus "." >>= emitIntrospection "status" mode (\(g, m, d, dr) -> statusJson g m d dr) (\(g, m, d, dr) -> renderStatus g m d dr)
+dispatch mode Graph =
+  runGraph "." >>= emitIntrospection "graph" mode graphJson renderGraph
+dispatch mode (Explain pkg) =
+  runExplain "." >>= emitIntrospection "explain" mode (explainJson pkg) (renderExplain pkg)
+dispatch mode Warm =
   runWarm "." >>= \r -> case r of
     Left e
-      | json -> putStrLn (renderJson (envelope "warm" False Nothing Nothing [toDiagnostic e])) >> exitWith (exitCodeFor e)
-      | otherwise -> failCmd "zinc warm" e
+      | machine mode -> putStrLn (renderJson (envelope "warm" False Nothing Nothing [toDiagnostic e])) >> exitWith (exitCodeFor e)
+      | otherwise    -> failCmd "zinc warm" e
     Right pkgs
-      | json -> putStrLn (renderJson (envelope "warm" True (Just (JObject [("packages", JArray (map packageReportJson pkgs))])) Nothing []))
-      | otherwise -> putStrLn (warmSummary pkgs)
-dispatch Prime =
+      | machine mode -> putStrLn (renderJson (envelope "warm" True (Just (JObject [("packages", JArray (map packageReportJson pkgs))])) Nothing []))
+      | otherwise    -> putStrLn (warmSummary pkgs)
+dispatch _ Prime =
   runPrime "." >>= either (failCmd "zinc prime") putStr
-dispatch Onboard =
+dispatch _ Onboard =
   runOnboard "." >>= either (failCmd "zinc onboard") putStr
-dispatch Dockerfile =
+dispatch _ Dockerfile =
   runDockerfile "." >>= either (failCmd "zinc dockerfile") putStr
-dispatch (Closure pkg json) =
-  runClosure pkg >>= emitIntrospection "closure" json closureReportJson renderClosure
-dispatch (Fmt check) =
+dispatch mode (Closure pkg) =
+  runClosure pkg >>= emitIntrospection "closure" mode closureReportJson renderClosure
+dispatch _ (Fmt check) =
   runFmt check "." >>= \r -> case r of
     Left e -> failCmd "zinc fmt" e
     Right clean

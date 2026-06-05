@@ -327,8 +327,8 @@ main = hspec $ do
 
   describe "closure discovery (49o)" $ do
     it "parses the `closure` subcommand (+ --json)" $ do
-      parseArgs ["closure", "aeson"] `shouldBe` Right (Closure "aeson" False)
-      parseArgs ["closure", "aeson", "--json"] `shouldBe` Right (Closure "aeson" True)
+      parseArgs ["closure", "aeson"] `shouldBe` Right (OutputFlags False False, Closure "aeson")
+      parseArgs ["closure", "aeson", "--json"] `shouldBe` Right (OutputFlags True False, Closure "aeson")
 
     it "extracts the package name from an installed unit-id" $ do
       pkgNameOf "aeson-2.2.3.0-abc123" `shouldBe` "aeson"
@@ -357,8 +357,8 @@ main = hspec $ do
 
   describe "zinc fmt (8n6.3)" $ do
     it "parses fmt and fmt --check" $ do
-      parseArgs ["fmt"] `shouldBe` Right (Fmt False)
-      parseArgs ["fmt", "--check"] `shouldBe` Right (Fmt True)
+      parseArgs ["fmt"] `shouldBe` Right (OutputFlags False False, Fmt False)
+      parseArgs ["fmt", "--check"] `shouldBe` Right (OutputFlags False False, Fmt True)
 
     it "canonicalizes deps (sorted, shorthand) and is idempotent" $ do
       let src = unlines ["[workspace]", "members = []", "ghc = \"9.6.5\"", "[dependencies]", "zebra = { tag = \"v2\" }", "alpha = \"*\""]
@@ -374,7 +374,7 @@ main = hspec $ do
 
   describe "dockerfile recipe (vwn.2)" $ do
     it "parses the `dockerfile` subcommand" $
-      parseArgs ["dockerfile"] `shouldBe` Right Dockerfile
+      parseArgs ["dockerfile"] `shouldBe` Right (OutputFlags False False, Dockerfile)
 
     it "emits the multi-stage closure-cached recipe" $ do
       let t = dockerfileText "9.6.5"
@@ -390,10 +390,10 @@ main = hspec $ do
 
   describe "warm / build --deps-only (vwn.1)" $ do
     it "parses warm and build --deps-only to the same closure-only command" $ do
-      parseArgs ["warm"] `shouldBe` Right (Warm False)
-      parseArgs ["warm", "--json"] `shouldBe` Right (Warm True)
-      parseArgs ["build", "--deps-only"] `shouldBe` Right (Warm False)
-      parseArgs ["build", "--deps-only", "--json"] `shouldBe` Right (Warm True)
+      parseArgs ["warm"] `shouldBe` Right (OutputFlags False False, Warm)
+      parseArgs ["warm", "--json"] `shouldBe` Right (OutputFlags True False, Warm)
+      parseArgs ["build", "--deps-only"] `shouldBe` Right (OutputFlags False False, Warm)
+      parseArgs ["build", "--deps-only", "--json"] `shouldBe` Right (OutputFlags True False, Warm)
 
     it "builds the closure only (empty for a depless workspace)" $ do
       let d = "/tmp/zinc-warm-test"
@@ -461,8 +461,8 @@ main = hspec $ do
 
   describe "context priming (rdy.5)" $ do
     it "parses prime / onboard" $ do
-      parseArgs ["prime"] `shouldBe` Right Prime
-      parseArgs ["onboard"] `shouldBe` Right Onboard
+      parseArgs ["prime"] `shouldBe` Right (OutputFlags False False, Prime)
+      parseArgs ["onboard"] `shouldBe` Right (OutputFlags False False, Onboard)
 
     it "prime reflects toolchain, members, and the no-cabal gotcha" $ do
       let t = primeText (WorkspaceManifest ["packages/app"] "9.6.5" [])
@@ -474,10 +474,10 @@ main = hspec $ do
 
   describe "introspection (rdy.4)" $ do
     it "parses status / graph / explain (+ --json)" $ do
-      parseArgs ["status"] `shouldBe` Right (Status False)
-      parseArgs ["graph", "--json"] `shouldBe` Right (Graph True)
-      parseArgs ["explain", "aeson"] `shouldBe` Right (Explain "aeson" False)
-      parseArgs ["explain", "aeson", "--json"] `shouldBe` Right (Explain "aeson" True)
+      parseArgs ["status"] `shouldBe` Right (OutputFlags False False, Status)
+      parseArgs ["graph", "--json"] `shouldBe` Right (OutputFlags True False, Graph)
+      parseArgs ["explain", "aeson"] `shouldBe` Right (OutputFlags False False, Explain "aeson")
+      parseArgs ["explain", "aeson", "--json"] `shouldBe` Right (OutputFlags True False, Explain "aeson")
 
     it "renders status as JSON" $
       renderJson (statusJson "9.6.5" ["packages/app"] [DepStatus "colour" "abc1234" True] ["aeson"])
@@ -499,8 +499,8 @@ main = hspec $ do
 
   describe "doctor (rdy.6)" $ do
     it "parses the `doctor` subcommand (+ --json)" $ do
-      parseArgs ["doctor"] `shouldBe` Right (Doctor False)
-      parseArgs ["doctor", "--json"] `shouldBe` Right (Doctor True)
+      parseArgs ["doctor"] `shouldBe` Right (OutputFlags False False, Doctor)
+      parseArgs ["doctor", "--json"] `shouldBe` Right (OutputFlags True False, Doctor)
 
     it "reports lock drift as a warning with a nextAction" $ do
       lockDriftDiagnostic [] `shouldBe` Nothing
@@ -527,8 +527,8 @@ main = hspec $ do
 
   describe "perf analyzer (hbv.3)" $ do
     it "parses the `perf` subcommand (+ --json)" $ do
-      parseArgs ["perf"] `shouldBe` Right (Perf False)
-      parseArgs ["perf", "--json"] `shouldBe` Right (Perf True)
+      parseArgs ["perf"] `shouldBe` Right (OutputFlags False False, Perf)
+      parseArgs ["perf", "--json"] `shouldBe` Right (OutputFlags True False, Perf)
 
     it "decodes a metrics record's analyzer-relevant fields" $ do
       let j = either (error "parse") id (parseJson "{\"command\":\"build\",\"timing\":{\"totalMs\":42,\"cache\":{\"hits\":3,\"misses\":1}}}")
@@ -582,8 +582,8 @@ main = hspec $ do
 
   describe "non-interactive contract (rdy.7)" $ do
     it "accepts (and ignores) --yes on add: zinc never prompts" $ do
-      parseArgs ["add", "--yes", "aeson"] `shouldBe` Right (Add "aeson")
-      parseArgs ["add", "-y", "aeson"] `shouldBe` Right (Add "aeson")
+      parseArgs ["add", "--yes", "aeson"] `shouldBe` Right (OutputFlags False False, Add "aeson")
+      parseArgs ["add", "-y", "aeson"] `shouldBe` Right (OutputFlags False False, Add "aeson")
 
     it "gitEnv sets the non-interactive guards so git can't block on a tty" $ do
       let e = gitEnv [("PATH", "/usr/bin"), ("GIT_TERMINAL_PROMPT", "1")]
@@ -603,43 +603,43 @@ main = hspec $ do
     setEnv "ZINC_STORE" testStoreDir
   describe "parseArgs" $ do
     it "parses the `build` subcommand" $
-      parseArgs ["build"] `shouldBe` Right (Build Nothing False)
+      parseArgs ["build"] `shouldBe` Right (OutputFlags False False, Build Nothing)
 
     it "parses `build <member>` with a target" $
-      parseArgs ["build", "mylib"] `shouldBe` Right (Build (Just "mylib") False)
+      parseArgs ["build", "mylib"] `shouldBe` Right (OutputFlags False False, Build (Just "mylib"))
 
     it "parses `build --json` (machine surface)" $ do
-      parseArgs ["build", "--json"] `shouldBe` Right (Build Nothing True)
-      parseArgs ["build", "mylib", "--json"] `shouldBe` Right (Build (Just "mylib") True)
+      parseArgs ["build", "--json"] `shouldBe` Right (OutputFlags True False, Build Nothing)
+      parseArgs ["build", "mylib", "--json"] `shouldBe` Right (OutputFlags True False, Build (Just "mylib"))
 
     it "parses `new <name>` with its argument" $
-      parseArgs ["new", "myapp"] `shouldBe` Right (New "myapp")
+      parseArgs ["new", "myapp"] `shouldBe` Right (OutputFlags False False, New "myapp")
 
     it "parses `add <pkg>` with its argument" $
-      parseArgs ["add", "aeson"] `shouldBe` Right (Add "aeson")
+      parseArgs ["add", "aeson"] `shouldBe` Right (OutputFlags False False, Add "aeson")
 
     it "parses `clean`" $
-      parseArgs ["clean"] `shouldBe` Right Clean
+      parseArgs ["clean"] `shouldBe` Right (OutputFlags False False, Clean)
 
     it "parses `gc`" $
-      parseArgs ["gc"] `shouldBe` Right Gc
+      parseArgs ["gc"] `shouldBe` Right (OutputFlags False False, Gc)
 
     it "parses `repl` with no target" $
-      parseArgs ["repl"] `shouldBe` Right (Repl Nothing)
+      parseArgs ["repl"] `shouldBe` Right (OutputFlags False False, Repl Nothing)
 
     it "parses `repl <target>`" $
-      parseArgs ["repl", "mylib"] `shouldBe` Right (Repl (Just "mylib"))
+      parseArgs ["repl", "mylib"] `shouldBe` Right (OutputFlags False False, Repl (Just "mylib"))
 
     it "parses `test` with no target" $
-      parseArgs ["test"] `shouldBe` Right (Test Nothing)
+      parseArgs ["test"] `shouldBe` Right (OutputFlags False False, Test Nothing)
 
     it "parses `update` with no package" $
-      parseArgs ["update"] `shouldBe` Right (Update Nothing)
+      parseArgs ["update"] `shouldBe` Right (OutputFlags False False, Update Nothing)
 
     it "parses `run [TARGET] [-- ARGS]` (target first, then program args)" $ do
-      parseArgs ["run"] `shouldBe` Right (Run Nothing [])
-      parseArgs ["run", "web"] `shouldBe` Right (Run (Just "web") [])
-      parseArgs ["run", "web", "--", "a", "b"] `shouldBe` Right (Run (Just "web") ["a", "b"])
+      parseArgs ["run"] `shouldBe` Right (OutputFlags False False, Run Nothing [])
+      parseArgs ["run", "web"] `shouldBe` Right (OutputFlags False False, Run (Just "web") [])
+      parseArgs ["run", "web", "--", "a", "b"] `shouldBe` Right (OutputFlags False False, Run (Just "web") ["a", "b"])
 
     it "rejects an unknown subcommand" $
       parseArgs ["frobnicate"] `shouldSatisfy` isLeft
