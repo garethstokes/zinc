@@ -399,13 +399,13 @@ main = hspec $ do
       let d = "/tmp/zinc-warm-test"
       createDirectoryIfMissing True d
       writeFileIn (d </> "zinc.toml") (renderWorkspace (WorkspaceManifest [] "9.6.5" []))
-      r <- runWarm d
+      r <- runWarm nullSink d
       r `shouldBe` Right []
 
     it "fails with NoZincToml outside a workspace" $ do
       let d = "/tmp/zinc-warm-nows"
       createDirectoryIfMissing True d
-      r <- runWarm d
+      r <- runWarm nullSink d
       either errorCode (const "ok") r `shouldBe` "ZINC_NO_ZINC_TOML"
 
   describe "writeFileIfChanged (zinc-k2i regression)" $ do

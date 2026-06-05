@@ -18,7 +18,7 @@ import Zinc.Introspect (explainJson, graphJson, renderExplain, renderGraph, rend
 import Zinc.Json (Json (..), renderJson)
 import Zinc.Metrics (recordBuild)
 import Zinc.Orchestrate (checkLockDrift, resolveRunTarget, runBuildReport, runClean, runRepl, runTests, runWarm)
-import Zinc.Output (OutputMode (..), resolveMode)
+import Zinc.Output (OutputEvent (..), OutputMode (..), emit, resolveMode, withRenderer)
 import Zinc.Perf (perfSummaryJson, renderPerf, runPerf)
 import Zinc.Prime (runOnboard, runPrime)
 import Zinc.Report (PackageReport, PackageStatus (Built, Cached), boExes, boPackages, buildDataJson, packageReportJson, prName, prStatus, prTimeMs, timingJson)
@@ -77,7 +77,16 @@ dispatch mode (Build target) = do
     drift <- checkLockDrift "."
     unless (null drift) $
       putStrLn ("warning: zinc.lock is missing: " ++ intercalate ", " drift ++ " (run `zinc add`)")
-  runBuildReport "." target >>= \r -> case r of
+  -- The renderer owns stdout for the live event stream; the final summary /
+  -- envelope is emitted below, AFTER withRenderer drains and returns, so it
+  -- lands last and never races the renderer thread.
+  r <- withRenderer mode $ \sink -> do
+    res <- runBuildReport sink "." target
+    case res of
+      Right (outcome, _) -> emit sink (Finished ("Built " ++ show (length (boExes outcome)) ++ " executable(s)"))
+      Left _             -> pure ()
+    pure res
+  case r of
     Left e
       | machine mode -> putStrLn (renderJson (envelope "build" False Nothing Nothing [toDiagnostic e])) >> exitWith (exitCodeFor e)
       | otherwise    -> failCmd "zinc build" e
@@ -128,8 +137,14 @@ dispatch mode Graph =
   runGraph "." >>= emitIntrospection "graph" mode graphJson renderGraph
 dispatch mode (Explain pkg) =
   runExplain "." >>= emitIntrospection "explain" mode (explainJson pkg) (renderExplain pkg)
-dispatch mode Warm =
-  runWarm "." >>= \r -> case r of
+dispatch mode Warm = do
+  r <- withRenderer mode $ \sink -> do
+    res <- runWarm sink "."
+    case res of
+      Right pkgs -> emit sink (Finished (warmSummary pkgs))
+      Left _     -> pure ()
+    pure res
+  case r of
     Left e
       | machine mode -> putStrLn (renderJson (envelope "warm" False Nothing Nothing [toDiagnostic e])) >> exitWith (exitCodeFor e)
       | otherwise    -> failCmd "zinc warm" e

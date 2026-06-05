@@ -56,6 +56,7 @@ import Zinc.Manifest
   )
 import Zinc.Diagnostic (ZincError (AmbiguousTarget, ContentHashMismatch, NoZincToml, OtherError, ToolchainMissing))
 import Zinc.Except (Result, failWith, failWithError, liftEither, liftEitherE, liftIO, orFail, orFailE, runResult)
+import Zinc.Output (OutputEvent (..), Sink, emit, nullSink)
 import Zinc.Report (BuildOutcome (..), PackageReport (..), PackageStatus (..), Timing (..), cacheStatsOf)
 import Zinc.Resolve (ResolvedDep (..), topoLevels)
 import Zinc.Store (contentHash, resolveStoreRoot, storeSrcPath, withStoreLock)
@@ -75,13 +76,13 @@ ensureToolchain = do
   when (isNothing ghc) (failWithError (ToolchainMissing "ghc"))
 
 buildWorkspace :: FilePath -> Maybe String -> (ComponentKind -> Bool) -> IO (Either ZincError [FilePath])
-buildWorkspace wsDir target keep = fmap (fmap (boExes . fst)) (buildWorkspaceReport wsDir target keep)
+buildWorkspace wsDir target keep = fmap (fmap (boExes . fst)) (buildWorkspaceReport nullSink wsDir target keep)
 
 -- | As 'buildWorkspace', but also returns the per-package closure report (spec
 -- §3.2) and per-phase wall-clock timings (perf spec §2) for the structured
 -- @--json@ surface. 'buildWorkspace' is the thin exes-only projection.
-buildWorkspaceReport :: FilePath -> Maybe String -> (ComponentKind -> Bool) -> IO (Either ZincError (BuildOutcome, [(String, Int)]))
-buildWorkspaceReport wsDir target keep = runResult $ do
+buildWorkspaceReport :: Sink -> FilePath -> Maybe String -> (ComponentKind -> Bool) -> IO (Either ZincError (BuildOutcome, [(String, Int)]))
+buildWorkspaceReport sink wsDir target keep = runResult $ do
   ensureToolchain
   let wsFile = wsDir </> "zinc.toml"
   present <- liftIO (doesFileExist wsFile)
@@ -98,7 +99,7 @@ buildWorkspaceReport wsDir target keep = runResult $ do
   -- Coarse phases (perf spec §2): the dependency-closure build (fetch + compile
   -- + register of deps) and the workspace-member build (compile + link). Finer
   -- breakdown (resolve/provision/fetch/register/link split) is a follow-up.
-  (pkgs, closureMs) <- timed (orFailE (buildClosure wsDir storeRoot wsDb (wsGhc ws) (depGhcOptionsOf ws)))
+  (pkgs, closureMs) <- timed (orFailE (buildClosure sink wsDir storeRoot wsDb (wsGhc ws) (depGhcOptionsOf ws)))
   (exes, memberMs) <- timed (concat <$> traverse (buildMemberAll wsDb) (orderMembers members))
   pure (BuildOutcome exes pkgs, [("closure", closureMs), ("member", memberMs)])
   where
@@ -109,8 +110,12 @@ buildWorkspaceReport wsDir target keep = runResult $ do
       pure (dir, mem)
 
     -- Build a member's library (so siblings/exes can link it), then every
-    -- @keep@-selected component, returning the executable paths.
+    -- @keep@-selected component, returning the executable paths. Brackets the
+    -- member's compile with CompileStart/Done events (the visible "build zinc"
+    -- step) carrying its own wall-clock.
     buildMemberAll wsDb (dir, mem) = do
+      liftIO (emit sink (CompileStart (pkgName mem)))
+      t0 <- liftIO getMonotonicTime
       case filter ((== Library) . compKind) (pkgComponents mem) of
         []        -> pure ()
         (lib : _) -> do
@@ -119,7 +124,10 @@ buildWorkspaceReport wsDir target keep = runResult $ do
           -- entry can't be cleanly re-registered across builds.
           libDir <- liftIO (makeAbsolute (dir </> ".zinc" </> "lib"))
           orFailE (buildLib (LibBuild dir libDir wsDb (pkgName mem) (pkgVersion mem) lib))
-      traverse (\comp -> orFail (buildMember (MemberBuild dir (dir </> ".zinc" </> "build") (Just wsDb) comp))) (wanted mem)
+      exes <- traverse (\comp -> orFail (buildMember (MemberBuild dir (dir </> ".zinc" </> "build") (Just wsDb) comp))) (wanted mem)
+      t1 <- liftIO getMonotonicTime
+      liftIO (emit sink (CompileDone (pkgName mem) (round ((t1 - t0) * 1000) :: Int) False))
+      pure exes
 
     wanted mem
       | maybe True (== pkgName mem) target = filter (keep . compKind) (pkgComponents mem)
@@ -138,8 +146,8 @@ runBuildMember wsDir target = buildWorkspace wsDir target (== Executable)
 -- slow-stable closure can be its own Docker layer / CI cache entry, separate
 -- from fast-changing source (ephemeral-builds spec §3). Returns the per-package
 -- closure report.
-runWarm :: FilePath -> IO (Either ZincError [PackageReport])
-runWarm wsDir = runResult $ do
+runWarm :: Sink -> FilePath -> IO (Either ZincError [PackageReport])
+runWarm sink wsDir = runResult $ do
   ensureToolchain
   let wsFile = wsDir </> "zinc.toml"
   present <- liftIO (doesFileExist wsFile)
@@ -149,15 +157,15 @@ runWarm wsDir = runResult $ do
   let wsDb = wsDir </> ".zinc" </> "pkgdb"
   orFail (initPackageDb wsDb)
   storeRoot <- liftIO resolveStoreRoot
-  orFailE (buildClosure wsDir storeRoot wsDb (wsGhc ws) (depGhcOptionsOf ws))
+  orFailE (buildClosure sink wsDir storeRoot wsDb (wsGhc ws) (depGhcOptionsOf ws))
 
 -- | @zinc build [member] --json@: build, returning the structured outcome
 -- (executables + per-package closure report) and the 'Timing' block (total
 -- wall-clock, per-phase durations, cache stats) for the machine surface.
-runBuildReport :: FilePath -> Maybe String -> IO (Either ZincError (BuildOutcome, Timing))
-runBuildReport wsDir target = do
+runBuildReport :: Sink -> FilePath -> Maybe String -> IO (Either ZincError (BuildOutcome, Timing))
+runBuildReport sink wsDir target = do
   t0 <- getMonotonicTime
-  r <- buildWorkspaceReport wsDir target (== Executable)
+  r <- buildWorkspaceReport sink wsDir target (== Executable)
   t1 <- getMonotonicTime
   let totalMs = round ((t1 - t0) * 1000) :: Int
   pure $ fmap (\(o, phases) -> (o, Timing totalMs phases (cacheStatsOf (boPackages o)))) r
@@ -264,13 +272,14 @@ parMapBounded n f xs = do
 -- its library compiled + registered. (Compiling arbitrary upstream packages
 -- with Setup.hs / Template Haskell / deep closures is a further follow-up;
 -- this handles zinc-native git library deps.)
-buildClosure :: FilePath -> FilePath -> FilePath -> String -> [(String, [String])] -> IO (Either ZincError [PackageReport])
-buildClosure wsDir storeRoot wsDb ghcVersion buildOpts = runResult $ do
+buildClosure :: Sink -> FilePath -> FilePath -> FilePath -> String -> [(String, [String])] -> IO (Either ZincError [PackageReport])
+buildClosure sink wsDir storeRoot wsDb ghcVersion buildOpts = runResult $ do
   let lockFile = wsDir </> "zinc.lock"
   present <- liftIO (doesFileExist lockFile)
   if not present
     then pure []
     else do
+      liftIO (emit sink ResolveStart)
       locks <- liftEither . parseLock =<< liftIO (readFile lockFile)
       levels <- liftEitherE (topoLevels (map toResolved locks))
       let byName = Map.fromList [(lockName l, l) | l <- locks]
@@ -296,7 +305,7 @@ buildClosure wsDir storeRoot wsDb ghcVersion buildOpts = runResult $ do
 
     registerNeeded (unitId, pkgOut, conf) = do
       done <- liftIO (isRegistered wsDb unitId pkgOut)
-      when (not done) (orFail (registerPackage wsDb conf))
+      when (not done) (orFail (registerPackage wsDb conf) >> liftIO (emit sink (RegisterDone unitId)))
 
     -- Content-addressed cache key from data available without the source, so a
     -- cached build is reused without even fetching. Includes the dep's
@@ -330,10 +339,14 @@ buildClosure wsDir storeRoot wsDb ghcVersion buildOpts = runResult $ do
               r <- runResult (buildNode l key)
               t1 <- getMonotonicTime
               let ms = round ((t1 - t0) * 1000) :: Int
+              case r of
+                Right (rep, _) | prStatus rep == Built -> emit sink (CompileDone (lockName l) ms False)
+                _ -> pure ()
               pure (fmap (\(rep, m) -> (rep {prTimeMs = Just ms}, m)) r)
 
     reuseCached l key = do
       conf <- readFile (storeConfPath storeRoot key)
+      emit sink (CompileDone (lockName l) 0 True)
       pure (Right (PackageReport (lockName l) (lockRev l) Cached (Just 0), Just (lockName l, storePkgPath storeRoot key, conf)))
 
     buildNode l key = do
@@ -341,8 +354,10 @@ buildClosure wsDir storeRoot wsDb ghcVersion buildOpts = runResult $ do
           report st = PackageReport (lockName l) (lockRev l) st Nothing
           dest = storeSrcPath storeRoot (lockName l) (lockRev l)
       exists <- liftIO (doesDirectoryExist dest)
-      when (not exists) $
-        orFail (first (("fetch " ++ lockName l ++ ": ") ++) <$> cloneAt (lockRepo l) (lockRev l) dest) >> pure ()
+      when (not exists) $ do
+        liftIO (emit sink (FetchStart (lockName l)))
+        _ <- orFail (first (("fetch " ++ lockName l ++ ": ") ++) <$> cloneAt (lockRepo l) (lockRev l) dest)
+        liftIO (emit sink (FetchDone (lockName l)))
       orFailE (verifyFetched l dest)
       -- The package may live in a subdirectory of the repo (monorepo);
       -- read its manifest/sources from there.
@@ -355,6 +370,7 @@ buildClosure wsDir storeRoot wsDb ghcVersion buildOpts = runResult $ do
           -- Apply any per-dependency build overrides (extra ghc flags,
           -- e.g. -XSafe) from the workspace [build-options].
           let lib' = lib {compGhcOptions = compGhcOptions lib ++ overrideFor l}
+          liftIO (emit sink (CompileStart (lockName l)))
           (conf, _) <- orFailE (buildLibArtifacts (LibBuild pkgDir pkgOut wsDb (lockName l) version lib'))
           pure (report Built, Just (lockName l, pkgOut, conf))
 

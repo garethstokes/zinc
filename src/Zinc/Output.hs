@@ -13,6 +13,7 @@
 module Zinc.Output
   ( OutputEvent (..)
   , Sink (..)
+  , emit
   , nullSink
   , OutputMode (..)
   , OutputFlags (..)
@@ -72,6 +73,12 @@ instance Monoid Sink where
 -- | The no-op sink (e.g. tests, @--quiet@, headless).
 nullSink :: Sink
 nullSink = mempty
+
+-- | Emit one event into a sink from 'IO' (any producer thread). The sink's
+-- 'STM' action runs atomically; with the renderer's 'TQueue' sink this is a
+-- non-blocking enqueue, so concurrent producers never serialize on the terminal.
+emit :: Sink -> OutputEvent -> IO ()
+emit (Sink f) = atomically . f
 
 -- | The resolved rendering mode for a run.
 data OutputMode
