@@ -79,8 +79,9 @@ zinc add aeson     # add a git-pinned dependency, frozen into zinc.lock
 
 ## How it works
 
-- **Dependencies** are git repos pinned in `zinc.lock` and mapped in the
-  workspace `[registry]`. Builds are content-addressed
+- **Dependencies** are git repos (or vendored Hackage tarballs) pinned in
+  `zinc.lock` to an exact commit/version + content hash; each dependency's repo
+  lives with its pin in `zinc.toml`. Builds are content-addressed
   (`sha256(rev, ghc-version, dep ids, options)`) and cached once per machine in
   a shared store at `~/.zinc/store` (override with `ZINC_STORE`). The store is
   concurrency-safe, so parallel agents/worktrees can share it.
