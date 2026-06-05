@@ -1,3 +1,5 @@
+{-# LANGUAGE CPP #-}
+
 -- | The diagnostic core (agent-devex spec §3.1): one structured error model that
 -- every command emits through. Pipelines fail with a 'ZincError' /value/ (never
 -- a message string); the single boundary renderer 'toDiagnostic' is the only
@@ -18,6 +20,7 @@ module Zinc.Diagnostic
   , diagnosticJson
   , envelope
   , zincVersion
+  , zincVersionLine
   ) where
 
 import Data.Char (isDigit)
@@ -30,6 +33,20 @@ import Zinc.Json (Json (..), object)
 -- | This zinc's version, surfaced in the JSON envelope.
 zincVersion :: String
 zincVersion = "0.1.0.0"
+
+-- | The human @zinc \<semver\> (\<short-commit\>, \<date\>)@ line for
+-- @zinc --version@ / @zinc version@ (zinc-gtv.3). The commit + date come from
+-- the @ZINC_GIT_COMMIT@ / @ZINC_BUILD_DATE@ CPP defines a release build injects
+-- (e.g. @-DZINC_GIT_COMMIT='"a1b2c3d"'@); a build that sets neither falls back
+-- to the plain @zinc \<semver\>@.
+zincVersionLine :: String
+zincVersionLine = "zinc " ++ zincVersion ++ detail
+  where
+#if defined(ZINC_GIT_COMMIT) && defined(ZINC_BUILD_DATE)
+    detail = " (" ++ ZINC_GIT_COMMIT ++ ", " ++ ZINC_BUILD_DATE ++ ")"
+#else
+    detail = ""
+#endif
 
 -- | A structured failure. Throw sites construct a value (e.g.
 -- @throwE (DepNoGitRepo "colour")@), never a formatted message — so a new error

@@ -30,11 +30,17 @@ data Command
   | Dockerfile            -- ^ emit a multi-stage Docker build recipe
   | Fmt Bool              -- ^ canonically format zinc.toml; Bool = --check
   | Closure String        -- ^ discover a package's non-boot closure + repos
+  | Version               -- ^ print the zinc version (`--version`/`version`)
   deriving (Eq, Show)
 
 -- | Pure, testable entry point: parse argv into the output flags + a 'Command'.
 -- Uses 'execParserPure' so it never touches IO or calls @exitFailure@.
 parseArgs :: [String] -> Either String (OutputFlags, Command)
+parseArgs args
+  -- `--version`/`-V` are top-level flags (not subcommands), so short-circuit
+  -- them before the subparser, which would reject them (zinc-gtv.3). The
+  -- `version` subcommand flows through the parser below.
+  | args `elem` [["--version"], ["-V"]] = Right (OutputFlags False False, Version)
 parseArgs args =
   case execParserPure defaultPrefs opts args of
     Success r           -> Right r
@@ -71,6 +77,7 @@ commandParser =
       , sub "dockerfile" "Emit a multi-stage Docker build recipe" (pure Dockerfile)
       , sub "fmt"    "Canonically format zinc.toml" (Fmt <$> switch (long "check" <> help "Exit non-zero if not already canonical; write nothing"))
       , sub "closure" "Discover a package's non-boot closure + repos" (Closure <$> strArgument (metavar "PKG"))
+      , sub "version" "Print the zinc version" (pure Version)
       ]
   where
     -- Every subcommand inherits the output flags (--json/--quiet), declared once

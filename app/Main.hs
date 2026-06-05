@@ -9,7 +9,7 @@ import System.Process (CreateProcess (std_err, std_in, std_out), StdStream (Inhe
 import Zinc.Add (addInWorkspace, updateInWorkspace, vendorInWorkspace)
 import Zinc.CLI (Command (..), parseArgs)
 import Zinc.Closure (closureReportJson, renderClosure, runClosure)
-import Zinc.Diagnostic (ZincError, envelope, exitCodeFor, humanError, toDiagnostic)
+import Zinc.Diagnostic (ZincError, envelope, exitCodeFor, humanError, toDiagnostic, zincVersion, zincVersionLine)
 import Zinc.Docker (runDockerfile)
 import Zinc.Git (gitInitIfNeeded)
 import Zinc.Doctor (doctorJson, doctorOk, renderDoctor, runDoctor)
@@ -176,6 +176,9 @@ dispatch mode Dockerfile =
   runDockerfile "." >>= either (failCmd mode) putStr
 dispatch mode (Closure pkg) =
   runClosure pkg >>= emitIntrospection "closure" mode closureReportJson renderClosure
+dispatch mode Version
+  | machine mode = putStrLn (renderJson (envelope "version" True (Just (JObject [("version", JString zincVersion)])) Nothing []))
+  | otherwise    = putStrLn zincVersionLine
 dispatch mode (Fmt check) =
   runFmt check "." >>= \r -> case r of
     Left e -> failCmd mode e

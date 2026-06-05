@@ -23,7 +23,7 @@ import System.Process (readProcess)
 import Test.Hspec
 import System.Exit (ExitCode (..))
 import Zinc.CLI (Command (..), parseArgs)
-import Zinc.Diagnostic (Diagnostic (..), Severity (..), SourceLocation (..), ZincError (..), diagnosticJson, envelope, errorCode, exitCodeFor, ghcLocation, humanError, renderError, toDiagnostic, tomlLocation)
+import Zinc.Diagnostic (Diagnostic (..), Severity (..), SourceLocation (..), ZincError (..), diagnosticJson, envelope, errorCode, exitCodeFor, ghcLocation, humanError, renderError, toDiagnostic, tomlLocation, zincVersion, zincVersionLine)
 import Control.Concurrent.STM (atomically, modifyTVar', newTVarIO, readTVarIO)
 import Zinc.Closure (discoverRepos, parseDependsField, pkgNameOf)
 import Zinc.Ansi (greenBold, style)
@@ -714,6 +714,14 @@ main = hspec $ do
 
     it "parses `gc`" $
       parseArgs ["gc"] `shouldBe` Right (OutputFlags False False, Gc)
+
+    it "parses the version command and the --version/-V flags (gtv.3)" $ do
+      parseArgs ["version"] `shouldBe` Right (OutputFlags False False, Version)
+      parseArgs ["--version"] `shouldBe` Right (OutputFlags False False, Version)
+      parseArgs ["-V"] `shouldBe` Right (OutputFlags False False, Version)
+
+    it "zincVersionLine reads `zinc <semver>` (plus optional commit/date)" $
+      zincVersionLine `shouldSatisfy` isInfixOf ("zinc " ++ zincVersion)
 
     it "parses `repl` with no target" $
       parseArgs ["repl"] `shouldBe` Right (OutputFlags False False, Repl Nothing)
