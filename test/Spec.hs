@@ -1566,7 +1566,7 @@ main = hspec $ do
         Right exe -> do
           out <- readProcess exe [] ""
           out `shouldBe` "hello from zinc\n"
-        Left err -> expectationFailure err
+        Left err -> expectationFailure (renderError err)
 
   describe "runBuild (scaffold -> build -> run)" $
     it "builds a scaffolded workspace member that runs" $ do

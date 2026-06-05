@@ -30,7 +30,7 @@ import System.Exit (ExitCode (..))
 import System.FilePath (dropExtension, makeRelative, takeDirectory, takeExtension, (-<.>), (<.>), (</>))
 import System.IO (readFile')
 import System.Process (readProcessWithExitCode)
-import Zinc.Diagnostic (ZincError)
+import Zinc.Diagnostic (ZincError (GhcCompile))
 import Zinc.Except (liftIO, orFail, orFailE, runResult)
 import Zinc.Macros (emitCabalMacros)
 import Zinc.Manifest (Component (..))
@@ -132,6 +132,16 @@ runUnit cmd args = do
     ExitSuccess   -> Right ()
     ExitFailure _ -> Left (cmd ++ ": " ++ err)
 
+-- | Run @ghc@ for one package, surfacing a failure as a structured
+-- 'GhcCompile' carrying GHC's RAW stderr (no @ghc:@ prefix) so the diagnostic
+-- renderer can parse a file:line:col location and draw a caret (hw6.5).
+runGhc :: String -> [String] -> IO (Either ZincError ())
+runGhc pkg args = do
+  (code, _out, err) <- readProcessWithExitCode "ghc" args ""
+  pure $ case code of
+    ExitSuccess   -> Right ()
+    ExitFailure _ -> Left (GhcCompile pkg err)
+
 -- | The preprocessor command for a source file, or 'Nothing' for plain .hs.
 -- Each turns @file.<ext>@ into the sibling @file.hs@.
 preprocessorFor :: FilePath -> Maybe (String, [String])
@@ -174,7 +184,7 @@ packageFlags deps = concatMap flag (nub ("base" : deps))
 -- | Compile + link a member executable with @ghc --make@, returning the
 -- executable path. Isolation via @-hide-all-packages@ + explicit @-package@
 -- (base is always available).
-buildMember :: MemberBuild -> IO (Either String FilePath)
+buildMember :: MemberBuild -> IO (Either ZincError FilePath)
 buildMember mb = do
   createDirectoryIfMissing True (mbBuildDir mb)
   let comp = mbComponent mb
@@ -190,7 +200,7 @@ buildMember mb = do
           ++ map ("-X" ++) (compExtensions comp)
           ++ compGhcOptions comp
           ++ ["-outputdir", mbBuildDir mb, mainFile, "-o", exe]
-  result <- runUnit "ghc" args
+  result <- runGhc (compName comp) args
   pure (fmap (const exe) result)
 
 -- | Inputs to build a member's library so siblings can link against it.
@@ -276,7 +286,7 @@ buildLibArtifacts lb = runResult $ do
   -- alex/happy lexer+parser) so ghc --make finds the resulting .hs modules,
   -- then compile and archive. orFail short-circuits on the first failure.
   orFail (runPreprocessorsIn (map (lbMemberDir lb </>) srcDirs))
-  orFail (runUnit "ghc" compileArgs)
+  orFailE (runGhc (lbName lb) compileArgs)
   objs <- liftIO (findObjs (lbDistDir lb))
   -- Re-archive only when an object is newer than the archive: ghc --make keeps
   -- objects incremental, so an unchanged lib's .a (and the exe linking it)

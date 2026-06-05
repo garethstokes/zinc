@@ -54,7 +54,7 @@ import Zinc.Manifest
   , parseWorkspace
   , depGhcOptionsOf
   )
-import Zinc.Diagnostic (ZincError (AmbiguousTarget, ContentHashMismatch, NoZincToml, OtherError, ToolchainMissing))
+import Zinc.Diagnostic (ZincError (AmbiguousTarget, ContentHashMismatch, ManifestParse, NoZincToml, OtherError, ToolchainMissing))
 import Zinc.Except (Result, failWith, failWithError, liftEither, liftEitherE, liftIO, orFail, orFailE, runResult)
 import Zinc.Output (OutputEvent (..), Sink, emit, nullSink)
 import Zinc.Report (BuildOutcome (..), PackageReport (..), PackageStatus (..), Timing (..), cacheStatsOf)
@@ -88,7 +88,7 @@ buildWorkspaceReport sink wsDir target keep = runResult $ do
   present <- liftIO (doesFileExist wsFile)
   when (not present) $ failWithError (NoZincToml wsDir)
   wsSrc <- liftIO $ readFile wsFile
-  ws <- liftEither (parseWorkspace wsSrc)
+  ws <- liftEitherE (first (ManifestParse wsFile) (parseWorkspace wsSrc))
   members <- traverse loadMember (wsMembers ws)
   let wsDb = wsDir </> ".zinc" </> "pkgdb"
   -- Keep the package db across builds (inner-loop incrementality): registration
@@ -106,7 +106,7 @@ buildWorkspaceReport sink wsDir target keep = runResult $ do
     loadMember member = do
       let dir = wsDir </> member
       src <- liftIO $ readFile (dir </> "zinc.toml")
-      mem <- liftEither (first ((member ++ ": ") ++) (parseMember src))
+      mem <- liftEitherE (first (ManifestParse (dir </> "zinc.toml")) (parseMember src))
       pure (dir, mem)
 
     -- Build a member's library (so siblings/exes can link it), then every
@@ -124,7 +124,7 @@ buildWorkspaceReport sink wsDir target keep = runResult $ do
           -- entry can't be cleanly re-registered across builds.
           libDir <- liftIO (makeAbsolute (dir </> ".zinc" </> "lib"))
           orFailE (buildLib (LibBuild dir libDir wsDb (pkgName mem) (pkgVersion mem) lib))
-      exes <- traverse (\comp -> orFail (buildMember (MemberBuild dir (dir </> ".zinc" </> "build") (Just wsDb) comp))) (wanted mem)
+      exes <- traverse (\comp -> orFailE (buildMember (MemberBuild dir (dir </> ".zinc" </> "build") (Just wsDb) comp))) (wanted mem)
       t1 <- liftIO getMonotonicTime
       liftIO (emit sink (CompileDone (pkgName mem) (round ((t1 - t0) * 1000) :: Int) False))
       pure exes
@@ -153,7 +153,7 @@ runWarm sink wsDir = runResult $ do
   present <- liftIO (doesFileExist wsFile)
   when (not present) $ failWithError (NoZincToml wsDir)
   wsSrc <- liftIO (readFile wsFile)
-  ws <- liftEither (parseWorkspace wsSrc)
+  ws <- liftEitherE (first (ManifestParse wsFile) (parseWorkspace wsSrc))
   let wsDb = wsDir </> ".zinc" </> "pkgdb"
   orFail (initPackageDb wsDb)
   storeRoot <- liftIO resolveStoreRoot
