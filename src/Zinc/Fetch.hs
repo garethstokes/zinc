@@ -18,7 +18,7 @@ import Zinc.Except (failWith, failWithError, liftEither, liftIO, orFail, orFailE
 import Zinc.Git (cloneAt, listTags, splitRepoSubdir)
 import Zinc.Manifest (Component (compDepends, compKind), ComponentKind (Library), Dependency (..), Ref (..), parseDependencies)
 import Zinc.Resolve (DepManifest (..))
-import Zinc.Version (newestTag)
+import Zinc.Version (newestTagFor)
 
 -- | Fetch a dependency's manifest: clone @repo@ at @ref@ into the store and
 -- read its dependency list. A zinc-native dep declares @[dependencies]@ +
@@ -66,7 +66,10 @@ resolveRef _    (Tag t)    = pure (Right t)
 resolveRef _    (Branch b) = pure (Right b)
 resolveRef _    (Rev r)    = pure (Right r)
 resolveRef repo Latest     = do
-  tags <- listTags (fst (splitRepoSubdir repo))
+  let (url, msub) = splitRepoSubdir repo
+  tags <- listTags url
   pure $ case tags of
     Left err -> Left err
-    Right ts -> maybe (Left "no release tags found") Right (newestTag ts)
+    -- A subdir package in a monorepo: prefer tags scoped to it (e.g.
+    -- vector-stream-*) over stale global tags from before the subdir existed.
+    Right ts -> maybe (Left "no release tags found") Right (newestTagFor msub ts)

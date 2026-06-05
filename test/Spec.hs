@@ -66,7 +66,7 @@ import Zinc.Paths (pathsModuleName, synthesizePaths)
 import Zinc.Report (BuildOutcome (..), CacheStats (..), PackageReport (..), PackageStatus (..), Timing (..), buildDataJson, buildSummaryLine, cacheStatsOf, fmtMs, packageReportJson, renderResolution, statusText, timingJson)
 import Zinc.SysLibs (toNixpkgs)
 import Zinc.Resolve (DepManifest (..), ResolvedDep (..), isBootLib, resolve, topoLevels, topoSort)
-import Zinc.Version (newestTag)
+import Zinc.Version (newestTag, newestTagFor)
 import Zinc.Lock (LockedPackage (..), parseLock, renderLock)
 import Zinc.Metrics (MetricsRecord (..), appendMetrics, metricsLine, metricsPath)
 import Zinc.Perf (CommandStats (..), PerfRecord (..), Regression (..), PerfSummary (..), decodeRecord, percentile, perfSummaryJson, renderPerf, summarize)
@@ -1171,6 +1171,19 @@ main = hspec $ do
 
     it "is Nothing when there are no version tags" $
       newestTag ["nightly", "HEAD"] `shouldBe` Nothing
+
+    it "prefers a package-scoped tag over stale global tags in a monorepo (ffm.3)" $ do
+      -- haskell/vector carries both vector-stream-* and pre-split v0.12.* tags;
+      -- Latest for vector-stream must pick its own newest, not the global one.
+      let tags = ["v0.12.3.1", "vector-0.13.2.0", "vector-stream-0.1.0.0", "vector-stream-0.1.0.1"]
+      newestTagFor (Just "vector-stream") tags `shouldBe` Just "vector-stream-0.1.0.1"
+      newestTagFor (Just "vector") tags `shouldBe` Just "vector-0.13.2.0"
+
+    it "falls back to bare version tags when no package-scoped tag exists (ffm.3)" $
+      newestTagFor (Just "vector-stream") ["v0.12.3.1", "v0.13.0.0"] `shouldBe` Just "v0.13.0.0"
+
+    it "newestTag is newestTagFor with no package scope" $
+      newestTagFor Nothing ["v1.2.0", "v1.10.0"] `shouldBe` Just "v1.10.0"
 
   describe "listTags" $ do
     repo <- runIO setupDepRepo
