@@ -81,7 +81,10 @@ resolve isBoot fetch discoverRepo rootDeps rootReg = runExceptT $ do
       | name `Map.member` seen = go seen rest -- one ref per name; first/root wins
       | otherwise = do
           dm <- ExceptT (fetch name repo ref)
-          let transitive = filter (not . isBoot . depName) (dmDeps dm)
+          -- Exclude boot libs AND the package's own name: a package's .cabal can
+          -- list itself (internal sub-libraries, e.g. attoparsec), which is a
+          -- spurious self-edge, not a real closure dependency / build cycle.
+          let transitive = filter (\d -> depName d /= name && not (isBoot (depName d))) (dmDeps dm)
               node = ResolvedDep name repo ref (map depName transitive)
           newReqs <- ExceptT (resolveReqs (dmRegistry dm) name transitive)
           go (Map.insert name node seen) (rest ++ newReqs)
@@ -96,7 +99,9 @@ topoSort nodes = do
   pure (map (byName Map.!) (reverse ordered))
   where
     byName = Map.fromList [(rdName n, n) | n <- nodes]
-    depsOf name = maybe [] (filter (`Map.member` byName) . rdDepends) (Map.lookup name byName)
+    -- Drop self-edges (a package's .cabal can name itself via sub-libraries);
+    -- a node never waits on itself, so this is never a real build cycle.
+    depsOf name = maybe [] (filter (\n -> n /= name && n `Map.member` byName) . rdDepends) (Map.lookup name byName)
 
     -- DFS post-order with a path set for cycle detection.
     visit
@@ -121,7 +126,9 @@ topoLevels :: [ResolvedDep] -> Either ZincError [[ResolvedDep]]
 topoLevels nodes = go Set.empty (map rdName nodes) []
   where
     byName = Map.fromList [(rdName n, n) | n <- nodes]
-    depsOf name = maybe [] (filter (`Map.member` byName) . rdDepends) (Map.lookup name byName)
+    -- Drop self-edges (a package's .cabal can name itself via sub-libraries);
+    -- a node never waits on itself, so this is never a real build cycle.
+    depsOf name = maybe [] (filter (\n -> n /= name && n `Map.member` byName) . rdDepends) (Map.lookup name byName)
 
     go _ [] acc = Right (reverse acc)
     go done remaining acc =

@@ -1030,6 +1030,17 @@ main = hspec $ do
           r = run fix [dep "a" Latest] [("a", "r/a")]
       (sort . map rdName <$> r) `shouldBe` Right ["a", "b"]
 
+    it "drops a package's self-reference from its closure deps (sublibraries, ffm)" $ do
+      -- a real .cabal can list its own name (internal sub-library, e.g.
+      -- attoparsec); that self-edge must not enter the closure or topo sort.
+      let fix =
+            [ ("a", DepManifest [dep "a" Latest, dep "b" Latest] [("b", "r/b")])
+            , ("b", DepManifest [] [])
+            ]
+          r = run fix [dep "a" Latest] [("a", "r/a")]
+      (rdDepends <$> findRD "a" r) `shouldBe` Just ["b"]
+      (sort . map rdName <$> r) `shouldBe` Right ["a", "b"]
+
     it "discovers a transitive dep's repo via the injected fallback (Hackage, ffm)" $ do
       -- 'a' (root-pinned) declares 'b' with NO registry anywhere; the discovery
       -- function (production: Hackage source-repository) supplies b's repo, so
