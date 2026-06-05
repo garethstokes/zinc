@@ -7,6 +7,12 @@ module Zinc.Scaffold
 
 import System.Directory (createDirectoryIfMissing)
 import System.FilePath (takeDirectory, (</>))
+import Zinc.Nix (generateFlake)
+
+-- | The GHC version a fresh project pins (kept in step between the scaffolded
+-- @zinc.toml@ and its @flake.nix@).
+scaffoldGhc :: String
+scaffoldGhc = "9.6.5"
 
 -- | A file the scaffolder intends to create: a path plus its contents.
 -- Keeping this pure (no IO) makes `zinc new` fully testable; the actual
@@ -27,13 +33,14 @@ scaffoldNew name =
   [ FileSpec "zinc.toml" manifest
   , FileSpec "app/Main.hs" (mainModule name)
   , FileSpec ".gitignore" gitignore
+  , FileSpec "flake.nix" (generateFlake scaffoldGhc [])
   ]
   where
     manifest =
       unlines
         [ "[workspace]"
         , "members = [\".\"]"
-        , "ghc = \"9.6.5\""
+        , "ghc = \"" ++ scaffoldGhc ++ "\""
         , ""
         , "[package]"
         , "name = \"" ++ name ++ "\""
@@ -55,6 +62,7 @@ scaffoldWorkspace name =
   , FileSpec (memberDir ++ "/zinc.toml") memberManifest
   , FileSpec (memberDir ++ "/app/Main.hs") (mainModule name)
   , FileSpec ".gitignore" gitignore
+  , FileSpec "flake.nix" (generateFlake scaffoldGhc [])
   ]
   where
     memberDir = "packages/" ++ name
@@ -63,7 +71,7 @@ scaffoldWorkspace name =
       unlines
         [ "[workspace]"
         , "members = [\"" ++ memberDir ++ "\"]"
-        , "ghc = \"9.6.5\""
+        , "ghc = \"" ++ scaffoldGhc ++ "\""
         , ""
         , "[dependencies]"
         ]

@@ -754,6 +754,10 @@ main = hspec $ do
       let gi = maybe "" id (bodyOf ".gitignore" files)
       all (`isInfixOf` gi) [".zinc/", "result", "*.hi", "*.o"] `shouldBe` True
 
+    it "ships a zinc-managed flake.nix: pinned GHC + preprocessors (6hf.2)" $ do
+      let fl = maybe "" id (bodyOf "flake.nix" files)
+      all (`isInfixOf` fl) ["ghc965", "alex", "happy", "devShells"] `shouldBe` True
+
   describe "scaffoldWorkspace (--workspace multi-member, 6hf.1)" $ do
     let files = scaffoldWorkspace "myapp"
 
