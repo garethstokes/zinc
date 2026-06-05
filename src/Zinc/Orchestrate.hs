@@ -281,6 +281,7 @@ buildClosure sink wsDir storeRoot wsDb ghcVersion buildOpts = runResult $ do
     else do
       liftIO (emit sink ResolveStart)
       locks <- liftEither . parseLock =<< liftIO (readFile lockFile)
+      liftIO (emit sink (Plan (length locks)))
       levels <- liftEitherE (topoLevels (map toResolved locks))
       let byName = Map.fromList [(lockName l, l) | l <- locks]
       concat <$> traverse (buildLevel . map ((byName Map.!) . rdName)) levels

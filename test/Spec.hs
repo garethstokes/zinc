@@ -26,7 +26,8 @@ import Zinc.CLI (Command (..), parseArgs)
 import Zinc.Diagnostic (Diagnostic (..), Severity (..), SourceLocation (..), ZincError (..), diagnosticJson, envelope, errorCode, exitCodeFor, ghcLocation, renderError, toDiagnostic, tomlLocation)
 import Control.Concurrent.STM (atomically, modifyTVar', newTVarIO, readTVarIO)
 import Zinc.Closure (discoverRepos, parseDependsField, pkgNameOf)
-import Zinc.Output (OutputEvent (..), OutputFlags (..), OutputMode (..), Sink (..), eventJson, nullSink, withRenderer)
+import Zinc.Ansi (greenBold, style)
+import Zinc.Output (OutputEvent (..), OutputFlags (..), OutputMode (..), RProg (..), Sink (..), eventJson, nullSink, progressLine, verb, withRenderer)
 import Zinc.Docker (dockerfileText)
 import Zinc.Fmt (canonicalizeManifest)
 import Zinc.Doctor (doctorJson, doctorOk, flakesOffDiagnostic, lockDriftDiagnostic, renderDoctor, runDoctor)
@@ -337,7 +338,7 @@ main = hspec $ do
         `shouldBe` ([CompileDone "aeson" 5 False, ResolveStart], [CompileDone "aeson" 5 False, ResolveStart])
 
     it "withRenderer runs the body, drains events, and returns without hanging" $ do
-      r <- withRenderer (Human False True) $ \sink -> do
+      r <- withRenderer (Human False False True) $ \sink -> do
         atomically (runSink sink (CompileStart "x"))
         atomically (runSink sink (CompileDone "x" 1 True))
         pure (42 :: Int)
@@ -345,6 +346,25 @@ main = hspec $ do
 
     it "OutputFlags has the expected shape" $
       (ofJson (OutputFlags True False), ofQuiet (OutputFlags True False)) `shouldBe` (True, False)
+
+    it "Plan is a tagged JSONL object carrying the closure total (hw6.2)" $
+      renderJson (eventJson (Plan 47)) `shouldBe` "{\"event\":\"plan\",\"total\":47}"
+
+  describe "human renderer (hw6.2)" $ do
+    it "raw-ANSI style wraps when color is on and is a no-op when off" $ do
+      style True [1, 32] "x" `shouldBe` "\ESC[1;32mx\ESC[0m"
+      style False [1, 32] "x" `shouldBe` "x"
+      greenBold False "Compiling" `shouldBe` "Compiling"
+
+    it "verb right-aligns the status word in a 12-col gutter (plain when no color)" $ do
+      verb False "Compiling" `shouldBe` "   Compiling"
+      verb False "Resolving" `shouldBe` "   Resolving"
+
+    it "progressLine shows [done/total] while the closure builds (hw6.2)" $
+      progressLine False (RProg 47 23 "aeson") `shouldBe` "   Compiling aeson [23/47]"
+
+    it "progressLine switches to Building once the closure is complete (members)" $
+      progressLine False (RProg 47 47 "zinc") `shouldBe` "    Building zinc"
 
   describe "closure discovery (49o)" $ do
     it "parses the `closure` subcommand (+ --json)" $ do

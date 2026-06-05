@@ -20,6 +20,9 @@ module Zinc.Output
   , resolveMode
   , withRenderer
   , eventJson
+  , RProg (..)
+  , verb
+  , progressLine
   ) where
 
 import Control.Concurrent (forkIO)
@@ -42,14 +45,16 @@ import Control.Concurrent.STM
 import Control.Exception (finally)
 import Data.Maybe (isJust)
 import System.Environment (lookupEnv)
-import System.IO (hIsTerminalDevice, stdout)
-import Zinc.Diagnostic (Diagnostic, diagnosticJson)
+import System.IO (hFlush, hIsTerminalDevice, stdout)
+import Zinc.Ansi (clearLine, dim, greenBold, red, yellow)
+import Zinc.Diagnostic (Diagnostic, Severity (..), diagSeverity, diagTitle, diagnosticJson)
 import Zinc.Json (Json (..), renderJson)
 
 -- | A structured output event. Progress through a build flows as these; a
 -- 'Diagnostic' also rides the stream (so warnings/errors render in one place).
 data OutputEvent
   = ResolveStart
+  | Plan Int                       -- ^ number of closure packages to build (for [n/total])
   | FetchStart String              -- ^ package
   | FetchDone String               -- ^ package
   | CompileStart String            -- ^ package
@@ -82,8 +87,8 @@ emit (Sink f) = atomically . f
 
 -- | The resolved rendering mode for a run.
 data OutputMode
-  = Human Bool Bool -- ^ color enabled?, quiet?
-  | Machine         -- ^ @--json@: JSONL event stream + a final result envelope
+  = Human Bool Bool Bool -- ^ color enabled?, stdout is a TTY?, quiet?
+  | Machine              -- ^ @--json@: JSONL event stream + a final result envelope
   deriving (Eq, Show)
 
 -- | The parsed output flags (the runtime mode is resolved from these +
@@ -102,13 +107,16 @@ resolveMode (OutputFlags json quiet)
   | otherwise = do
       tty <- hIsTerminalDevice stdout
       noColor <- isJust <$> lookupEnv "NO_COLOR"
-      pure (Human (tty && not noColor && not quiet) quiet)
+      -- Color and live-rewriting are independent: NO_COLOR disables color but a
+      -- TTY can still get a live progress line; a pipe gets neither.
+      pure (Human (tty && not noColor) tty quiet)
 
 -- | An event as a JSONL object for machine mode. Stable field order; @event@
 -- discriminates from the final result envelope (which has no @event@ key).
 eventJson :: OutputEvent -> Json
 eventJson ev = case ev of
   ResolveStart       -> tagged "resolve-start" []
+  Plan n             -> tagged "plan" [("total", JInt n)]
   FetchStart p       -> tagged "fetch-start" [("package", JString p)]
   FetchDone p        -> tagged "fetch-done" [("package", JString p)]
   CompileStart p     -> tagged "compile-start" [("package", JString p)]
@@ -133,13 +141,22 @@ withRenderer mode body = do
   takeMVar done
   pure r
 
+-- | Progress state the (single) renderer thread folds over the event stream:
+-- the closure size (from 'Plan'), how many packages have finished, and the
+-- package currently shown on the live line.
+data RProg = RProg
+  { rTotal :: Int
+  , rDone  :: Int
+  , rCur   :: String
+  }
+
 -- | Drain events until the producer is finished. The STM wait wakes on a new
 -- event OR on @closed@ becoming true with an empty queue (then stop) — so a
 -- producer that dies mid-build cannot deadlock the renderer.
 renderLoop :: OutputMode -> TQueue OutputEvent -> TVar Bool -> IO ()
-renderLoop mode q closed = loop
+renderLoop mode q closed = loop (RProg 0 0 "")
   where
-    loop = do
+    loop st = do
       mev <-
         atomically $
           (Just <$> readTQueue q)
@@ -149,11 +166,64 @@ renderLoop mode q closed = loop
                          if c && e then pure Nothing else retry
                      )
       case mev of
-        Nothing -> pure ()
-        Just ev -> render ev >> loop
-    -- Machine mode: one JSONL line per event. Human progress/color is hw6.2;
-    -- for now the human renderer streams nothing (the final summary is printed
-    -- by the caller).
-    render ev = case mode of
-      Machine    -> putStrLn (renderJson (eventJson ev))
-      Human _ _  -> pure ()
+        Nothing -> finish
+        Just ev -> render st ev >>= loop
+    -- On shutdown clear any residual live progress line so the caller's final
+    -- summary lands on a clean line.
+    finish = case mode of
+      Human _ tty _ | tty -> putStr clearLine >> hFlush stdout
+      _                   -> pure ()
+    render st ev = case mode of
+      Machine               -> putStrLn (renderJson (eventJson ev)) >> pure st
+      Human color tty quiet -> renderHuman color tty quiet st ev
+
+-- | The human (cargo-style) renderer: committed phase headers, one live
+-- progress line for the build (rewritten in place on a TTY, suppressed when
+-- piped or @--quiet@), and the final summary left to the caller (it lands after
+-- the renderer drains, so it never races this thread).
+renderHuman :: Bool -> Bool -> Bool -> RProg -> OutputEvent -> IO RProg
+renderHuman color tty quiet st ev = case ev of
+  Plan n            -> pure st {rTotal = n}
+  ResolveStart      -> commit (verb color "Resolving" ++ " dependencies") >> pure st
+  FetchStart p      -> live (verb color "Fetching" ++ " " ++ p) >> pure st
+  FetchDone _       -> pure st
+  CompileStart p    -> let st' = st {rCur = p} in live (progressLine color st') >> pure st'
+  CompileDone _ _ _ -> let st' = st {rDone = rDone st + 1} in live (progressLine color st') >> pure st'
+  RegisterDone _    -> pure st
+  Finished _        -> pure st
+  Note d            -> commit (noteLine color d) >> pure st
+  where
+    -- A committed scrollback line: clear any live line first (TTY) then print.
+    commit s
+      | quiet     = pure ()
+      | tty       = putStr (clearLine ++ s ++ "\n")
+      | otherwise = putStrLn s
+    -- The transient live line: only on a TTY (and not quiet); a pipe shows
+    -- nothing here (committed headers + the final summary carry the log).
+    live s
+      | quiet || not tty = pure ()
+      | otherwise        = putStr (clearLine ++ s) >> hFlush stdout
+
+-- | A right-aligned cargo-style status verb in a fixed gutter, bold green.
+verb :: Bool -> String -> String
+verb color v = greenBold color (replicate (max 0 (12 - length v)) ' ' ++ v)
+
+-- | The live build line: @Compiling \<pkg\> [done/total]@ while the closure
+-- builds; once the closure is done (members compile after, sequentially) it
+-- becomes @Building \<member\>@.
+progressLine :: Bool -> RProg -> String
+progressLine color st
+  | rTotal st > 0 && rDone st < rTotal st =
+      verb color "Compiling" ++ " " ++ rCur st ++ " " ++ dim color counter
+  | otherwise = verb color "Building" ++ " " ++ rCur st
+  where
+    counter = "[" ++ show (rDone st) ++ "/" ++ show (rTotal st) ++ "]"
+
+-- | A surfaced 'Note' diagnostic (warnings during a build); a single colored
+-- line. Full caret rendering for hard failures lives in 'Zinc.Diagnostic'
+-- ('humanError') and is emitted by the command boundary, not the stream.
+noteLine :: Bool -> Diagnostic -> String
+noteLine color d = sev (diagSeverity d) ++ ": " ++ diagTitle d
+  where
+    sev SError = red color "error"
+    sev _      = yellow color "warning"
