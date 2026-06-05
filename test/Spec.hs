@@ -2073,6 +2073,22 @@ main = hspec $ do
           r <- buildAndRun ws []
           r `shouldBe` Right "parsed-ok\n"
 
+  -- ffm: the committed real-package fixtures exercise
+  -- resolve->fetch->build-closure->link->run on escalating closure depth, each
+  -- with a committed zinc.lock generated via the Hackage auto-discovery
+  -- resolver. Network-gated like the rehearsals above. (Deeper fixtures —
+  -- vector's monorepo-sibling subdirs, attoparsec/aeson's internal
+  -- sub-libraries — are tracked as separate capability gaps.)
+  describe "real-package fixtures (ffm, network)" $ do
+    let fixtureRunsTo name expected =
+          it ("builds and runs the " ++ name ++ " fixture") $ do
+            net <- lookupEnv "ZINC_NET_TESTS"
+            case net of
+              Nothing -> pendingWith "network test; set ZINC_NET_TESTS=1 to run"
+              Just _  -> buildAndRun ("test/fixtures/" ++ name) [] >>= (`shouldBe` Right expected)
+    fixtureRunsTo "hashable" "42\n"
+    fixtureRunsTo "scientific" "3.14\n"
+
   describe "content-hash verification on build (spec §8)" $
     it "rejects a fetched dep whose content hash does not match the lock" $ do
       let base = "/tmp/zinc-tamper-ws"
