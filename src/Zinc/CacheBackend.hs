@@ -15,10 +15,12 @@ module Zinc.CacheBackend
   , artifactUrl
   , curlOutcome
   , httpBackend
+  , remoteCacheFromEnv
   ) where
 
 import Control.Monad (when)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, removeDirectoryRecursive, removeFile)
+import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory)
 import System.IO.Error (catchIOError)
@@ -80,3 +82,13 @@ httpBackend base = CacheBackend {cbName = "http " ++ base, cbPull = pull}
             ExitSuccess   -> Pulled
             ExitFailure _ -> PullFailed ("unpack " ++ key ++ ": " ++ xe)
     removeIfExists f = removeFile f `catchIOError` const (pure ())
+
+-- | The remote cache the build should consult, from the @ZINC_CACHE@ env var (a
+-- base URL); 'Nothing' when unset, so the build is unchanged by default
+-- (opt-in). The trust model (private-only, hash-verify) is zinc-vwn.6.
+remoteCacheFromEnv :: IO (Maybe CacheBackend)
+remoteCacheFromEnv = do
+  mUrl <- lookupEnv "ZINC_CACHE"
+  pure $ case mUrl of
+    Just url | not (null url) -> Just (httpBackend url)
+    _                         -> Nothing

@@ -2051,6 +2051,45 @@ main = hspec $ do
       r <- buildAndRun ws []
       r `shouldBe` Right "hi from greet\n"
 
+  describe "remote artifact cache pull (vwn.4, end-to-end)" $
+    it "pulls a closure artifact from a file:// cache instead of recompiling" $ do
+      let base = "/tmp/zinc-cache-pull-ws"
+          greet = base ++ "/greet-repo"
+          ws = base ++ "/ws"
+          cacheDir = base ++ "/cache"
+      stale <- doesDirectoryExist base
+      when stale $ removeDirectoryRecursive base
+      writeFileIn (greet ++ "/zinc.toml") (unlines ["[package]", "name = \"greet\"", "version = \"1.0\"", "[build.lib]", "source-dirs = [\"src\"]", "exposed-modules = [\"Greet\"]"])
+      writeFileIn (greet ++ "/src/Greet.hs") "module Greet (hello) where\nhello :: String\nhello = \"hi from cache\"\n"
+      let git args = readProcess "git" ("-C" : greet : args) ""
+      _ <- git ["init", "--quiet"]
+      _ <- git ["config", "user.email", "t@example.com"]
+      _ <- git ["config", "user.name", "Test"]
+      _ <- git ["add", "."]
+      _ <- git ["commit", "--quiet", "-m", "greet"]
+      rev <- trimStr <$> git ["rev-parse", "HEAD"]
+      writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "greet" (Rev rev) (Just greet) []]))
+      writeFileIn (ws ++ "/zinc.lock") (renderLock [LockedPackage "greet" (GitSource greet rev) "sha256:x" []])
+      writeFileIn (ws ++ "/packages/app/zinc.toml") (unlines ["[package]", "name = \"app\"", "version = \"1.0\"", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "depends = [\"greet\"]"])
+      writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Greet (hello)\nmain :: IO ()\nmain = putStrLn hello\n"
+      -- 1) build locally; greet's artifact lands in the content-addressed store
+      r1 <- buildAndRun ws []
+      -- 2) harvest greet's pkg artifact into a file:// cache, keyed by its build key
+      let key = buildCacheKey (BuildKey rev "9.6.5" [] [])
+          pkgDir = storePkgPath testStoreDir key
+      createDirectoryIfMissing True cacheDir
+      _ <- readProcess "tar" ["-czf", cacheDir ++ "/" ++ key ++ ".tar.gz", "-C", pkgDir, "."] ""
+      -- 3) wipe greet's LOCAL store entry (pkg + src) to force a miss
+      removeDirectoryRecursive pkgDir
+      removeDirectoryRecursive (storeSrcPath testStoreDir "greet" rev)
+      -- 4) rebuild with the remote cache: greet must be PULLED, not recompiled
+      --    (its source is never re-fetched, so the src dir stays absent)
+      setEnv "ZINC_CACHE" ("file://" ++ cacheDir)
+      r2 <- buildAndRun ws []
+      unsetEnv "ZINC_CACHE"
+      srcReFetched <- doesDirectoryExist (storeSrcPath testStoreDir "greet" rev)
+      (r1, r2, srcReFetched) `shouldBe` (Right "hi from cache\n", Right "hi from cache\n", False)
+
   describe "lockDrift" $ do
     let ws = WorkspaceManifest [] "9.6.5" [Dependency "aeson" (Tag "v2") Nothing [], Dependency "hspec" Latest Nothing []]
         lk n = LockedPackage n (GitSource "r" "rev") "sha" []

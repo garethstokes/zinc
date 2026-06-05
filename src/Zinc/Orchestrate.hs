@@ -41,6 +41,7 @@ import System.Process (callProcess, readProcess, readProcessWithExitCode)
 import Zinc.Build (LibBuild (..), MemberBuild (..), buildLib, buildLibArtifacts, buildMember, initPackageDb, isRegistered, registerPackage, replArgs)
 import Zinc.Cabal (cabalBuildType, cabalVersion, parseCabalComponentsForGhc)
 import Zinc.Cache (BuildKey (..), buildCacheKey, storeConfPath, storePkgPath)
+import Zinc.CacheBackend (CacheBackend (cbPull), PullOutcome (Pulled), remoteCacheFromEnv)
 import Zinc.Fetch (packageDirIn)
 import Zinc.Git (cloneAt)
 import Zinc.Hackage (fetchHackageTarball)
@@ -333,7 +334,8 @@ buildClosure sink wsDir storeRoot wsDb ghcVersion buildOpts = runResult $ do
         then reuseCached l key
         else withStoreLock storeRoot key $ do
           nowCached <- doesFileExist confPath
-          if nowCached
+          pulled <- if nowCached then pure False else tryRemotePull (lockName l) key confPath
+          if nowCached || pulled
             then reuseCached l key
             else do
               -- Per-package wall-clock build time (perf spec §3.2). Stamped onto
@@ -346,6 +348,25 @@ buildClosure sink wsDir storeRoot wsDb ghcVersion buildOpts = runResult $ do
                 Right (rep, _) | prStatus rep == Built -> emit sink (CompileDone (lockName l) ms False)
                 _ -> pure ()
               pure (fmap (\(rep, m) -> (rep {prTimeMs = Just ms}, m)) r)
+
+    -- L2 remote cache (vwn.4): on a local miss, try the configured backend
+    -- (ZINC_CACHE) before compiling. A hit unpacks the artifact into the local
+    -- store; we accept it only when it carries BOTH the .conf and the library
+    -- archive — a light integrity check; full signing/hash-verify is vwn.6.
+    -- Any miss/error falls back to a local compile, so the build always
+    -- succeeds offline and is unchanged when no remote is configured.
+    tryRemotePull name key confPath = do
+      mBackend <- remoteCacheFromEnv
+      case mBackend of
+        Nothing -> pure False
+        Just be -> do
+          outcome <- cbPull be key storeRoot
+          case outcome of
+            Pulled -> do
+              confOk <- doesFileExist confPath
+              aOk <- doesFileExist (storePkgPath storeRoot key </> ("libHS" ++ name ++ ".a"))
+              pure (confOk && aOk)
+            _ -> pure False
 
     reuseCached l key = do
       conf <- readFile (storeConfPath storeRoot key)
