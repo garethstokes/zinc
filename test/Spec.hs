@@ -2093,6 +2093,11 @@ main = hspec $ do
       writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Lexer (firstWord)\nmain :: IO ()\nmain = putStrLn firstWord\n"
       r <- buildAndRun ws []
       r `shouldBe` Right "hello\n"
+      -- c3g: the generated .hs must NOT land in the content-addressed src tree
+      -- (it would change the tree's hash and fail the lock sha256 on the next
+      -- build); preprocessor output goes to the dist dir instead.
+      polluted <- doesFileExist (storeSrcPath testStoreDir "lexdep" rev </> "src" </> "Lexer.hs")
+      polluted `shouldBe` False
 
   describe "per-dependency build overrides (end-to-end)" $
     it "applies extra ghc flags from [build-options] to a closure dep" $ do

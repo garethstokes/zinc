@@ -157,14 +157,19 @@ compileCSources lb comp = runResult (mapM_ one (compCSources comp))
       liftIO (createDirectoryIfMissing True (takeDirectory obj))
       orFailE (runGhc (lbName lb) (["-c", src, "-o", obj] ++ incs))
 
+-- | The preprocessor command for a source @file@ writing its generated @.hs@ to
+-- @out@ (alex/happy/hsc2hs), or 'Nothing' for a plain @.hs@.
+ppCommand :: FilePath -> FilePath -> Maybe (String, [String])
+ppCommand file out = case takeExtension file of
+  ".x"   -> Just ("alex", [file, "-o", out])
+  ".y"   -> Just ("happy", [file, "-o", out])
+  ".hsc" -> Just ("hsc2hs", [file, "-o", out])
+  _      -> Nothing
+
 -- | The preprocessor command for a source file, or 'Nothing' for plain .hs.
 -- Each turns @file.<ext>@ into the sibling @file.hs@.
 preprocessorFor :: FilePath -> Maybe (String, [String])
-preprocessorFor file = case takeExtension file of
-  ".x"   -> Just ("alex", [file, "-o", file -<.> "hs"])
-  ".y"   -> Just ("happy", [file, "-o", file -<.> "hs"])
-  ".hsc" -> Just ("hsc2hs", [file, "-o", file -<.> "hs"])
-  _      -> Nothing
+preprocessorFor file = ppCommand file (file -<.> "hs")
 
 -- | Run the preprocessor for a source file (no-op for plain .hs). The tools
 -- (alex/happy/hsc2hs) come from the Nix-provided toolchain.
@@ -249,7 +254,11 @@ buildLibArtifacts lb = runResult $ do
   -- Synthesize the Cabal-autogen files (Paths_<pkg>, cabal_macros.h) into a
   -- generated-source dir so the package's own modules can import/use them.
   let gen = lbDistDir lb </> "zinc-gen"
+      -- Generated .hs from preprocessors (alex/happy/hsc2hs) go here, off the
+      -- content-addressed src tree (zinc-c3g), and onto ghc's -i path below.
+      ppGen = lbDistDir lb </> "zinc-pp"
   liftIO $ createDirectoryIfMissing True gen
+  liftIO $ createDirectoryIfMissing True ppGen
   let comp = lbComponent lb
       -- One ref per package name (spec §2), so the unit-id is just the name;
       -- this also lets dependents reference it by name in their conf depends.
@@ -290,7 +299,7 @@ buildLibArtifacts lb = runResult $ do
         ["--make", "-j", "-hide-all-packages", "-package-db", lbPackageDb lb]
           ++ packageFlags (compDepends comp)
           ++ map (\d -> "-i" ++ (lbMemberDir lb </> d)) srcDirs
-          ++ ["-i" ++ gen, "-optP-include", "-optP" ++ macrosHeader]
+          ++ ["-i" ++ gen, "-i" ++ ppGen, "-optP-include", "-optP" ++ macrosHeader]
           -- C-header search dirs (cabal include-dirs) so CPP #include of the
           -- package's own headers (e.g. version-compatibility-macros.h) resolves.
           ++ concatMap (\d -> let p = lbMemberDir lb </> d in ["-I" ++ p, "-optP-I" ++ p]) (compIncludeDirs comp)
@@ -303,7 +312,7 @@ buildLibArtifacts lb = runResult $ do
   -- Generate sources from any .x/.y/.hsc the dep ships (e.g. toml-parser's
   -- alex/happy lexer+parser) so ghc --make finds the resulting .hs modules,
   -- then compile and archive. orFail short-circuits on the first failure.
-  orFail (runPreprocessorsIn (map (lbMemberDir lb </>) srcDirs))
+  orFail (runPreprocessorsTo ppGen (map (lbMemberDir lb </>) srcDirs))
   orFailE (runGhc (lbName lb) compileArgs)
   -- C sources (cabal c-sources, e.g. primitive's cbits/primitive-memops.c) are
   -- compiled in a SEPARATE `ghc -c` step into the dist dir, NOT via `ghc --make`:
@@ -432,14 +441,25 @@ preprocessableUnder root = do
       if isDir then go p else pure [p | isJust (preprocessorFor p)]
 
 -- | Run alex/happy/hsc2hs over every preprocessable source under the given
--- directories so .x/.y/.hsc become .hs before compilation. First failure wins.
-runPreprocessorsIn :: [FilePath] -> IO (Either String ())
-runPreprocessorsIn dirs = do
-  files <- concat <$> mapM preprocessableUnder dirs
-  go files
+-- dirs, writing each generated @.hs@ into @genRoot@
+-- (mirroring the file's path under its source dir) instead of beside the
+-- source. The fetched source tree is content-addressed; generating into it
+-- would change its hash and fail the lock's sha256 check on the next build
+-- (zinc-c3g). @genRoot@ must be on ghc's @-i@ search path so the generated
+-- modules are found. First failure wins.
+runPreprocessorsTo :: FilePath -> [FilePath] -> IO (Either String ())
+runPreprocessorsTo genRoot dirs = do
+  pairs <- concat <$> mapM (\d -> map ((,) d) <$> preprocessableUnder d) dirs
+  go pairs
   where
     go [] = pure (Right ())
-    go (f : fs) = runPreprocessor f >>= either (pure . Left) (const (go fs))
+    go ((dir, f) : rest) =
+      let out = genRoot </> (makeRelative dir f -<.> "hs")
+       in case ppCommand f out of
+            Nothing -> go rest
+            Just (prog, args) -> do
+              createDirectoryIfMissing True (takeDirectory out)
+              runUnit prog args >>= either (pure . Left) (const (go rest))
 
 -- | ghci argument list to load a component for @zinc repl@: the package db,
 -- isolation flags + exposed deps, source roots, and the targets to load (the
