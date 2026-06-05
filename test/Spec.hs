@@ -1388,6 +1388,48 @@ main = hspec $ do
       -- ... and the sub-library name dropped from build-depends (it is this unit)
       (sort . compDepends <$> libc) `shouldBe` Just ["array", "base", "bytestring"]
 
+    it "does NOT flatten a sub-library the main library doesn't depend on (ffm.5)" $ do
+      -- vector ships a public `library benchmarks-O2` used only by its benchmark
+      -- stanza, carrying bench-only deps (random, tasty). The main library does
+      -- not depend on it, so it must not be folded in — else those deps leak into
+      -- the library's build-depends and the build passes `-package random`.
+      let c =
+            unlines
+              [ "cabal-version: 2.4"
+              , "name: p"
+              , "version: 1"
+              , "library"
+              , "  hs-source-dirs: src"
+              , "  build-depends: base, deepseq"
+              , "  exposed-modules: P"
+              , "library bench-only"
+              , "  hs-source-dirs: bench"
+              , "  build-depends: base, p, random, tasty"
+              , "  exposed-modules: P.Bench"
+              ]
+          libc = either (const Nothing) (find ((== "lib") . compName)) (parseCabalComponents c)
+      (sort . compDepends <$> libc) `shouldBe` Just ["base", "deepseq"]
+      (sort . compModules <$> libc) `shouldBe` Just ["P"]
+
+    it "captures default-language as the LEADING -X flag, before extensions (ffm.5)" $ do
+      -- Without -XHaskell2010, GHC's default poly-kinds a phantom type variable
+      -- (s :: k instead of s :: *), breaking packages like vector that rely on
+      -- Haskell2010 kind defaulting. The language must precede extensions so it
+      -- sets the base edition rather than resetting an extension after the fact.
+      let c =
+            unlines
+              [ "cabal-version: 2.4"
+              , "name: p"
+              , "version: 1"
+              , "library"
+              , "  build-depends: base"
+              , "  default-language: Haskell2010"
+              , "  default-extensions: BangPatterns"
+              , "  exposed-modules: P"
+              ]
+          libc = either (const Nothing) (find ((== "lib") . compName)) (parseCabalComponents c)
+      (compExtensions <$> libc) `shouldBe` Just ["Haskell2010", "BangPatterns"]
+
   describe "synthesizePaths" $ do
     let src = synthesizePaths "my-pkg" [0, 1, 0]
 
@@ -2263,6 +2305,10 @@ main = hspec $ do
     fixtureRunsTo "hashable" "42\n"
     fixtureRunsTo "scientific" "3.14\n"
     fixtureRunsTo "attoparsec" "Right 42\n"
+    -- vector: monorepo subdir + a public bench-only sub-library (benchmarks-O2)
+    -- that must NOT be flattened in, and a default-language the build must honour
+    -- (else the Storable MVector phantom is poly-kinded) — zinc-ffm.5.
+    fixtureRunsTo "vector" "55\n"
 
   describe "content-hash verification on build (spec §8)" $
     it "rejects a fetched dep whose content hash does not match the lock" $ do
