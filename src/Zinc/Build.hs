@@ -142,6 +142,21 @@ runGhc pkg args = do
     ExitSuccess   -> Right ()
     ExitFailure _ -> Left (GhcCompile pkg err)
 
+-- | Compile a component's cabal @c-sources@ into the dist dir (each object
+-- mirroring its source path, e.g. @\<distDir\>\/cbits\/foo.o@), with the
+-- package's @include-dirs@ on the C search path. A separate @ghc -c@ step, so
+-- the objects land in the dist dir and get archived into the library — see the
+-- call site for why @ghc --make@ cannot place them there (zinc-i98).
+compileCSources :: LibBuild -> Component -> IO (Either ZincError ())
+compileCSources lb comp = runResult (mapM_ one (compCSources comp))
+  where
+    incs = ["-I" ++ (lbMemberDir lb </> d) | d <- compIncludeDirs comp]
+    one c = do
+      let src = lbMemberDir lb </> c
+          obj = lbDistDir lb </> (c -<.> "o")
+      liftIO (createDirectoryIfMissing True (takeDirectory obj))
+      orFailE (runGhc (lbName lb) (["-c", src, "-o", obj] ++ incs))
+
 -- | The preprocessor command for a source file, or 'Nothing' for plain .hs.
 -- Each turns @file.<ext>@ into the sibling @file.hs@.
 preprocessorFor :: FilePath -> Maybe (String, [String])
@@ -285,14 +300,18 @@ buildLibArtifacts lb = runResult $ do
           ++ map ("-optP" ++) (compCppOptions comp)
           ++ compGhcOptions comp
           ++ modules
-          -- C sources (cabal c-sources): ghc --make compiles each and ghc puts
-          -- the object in -outputdir, where findObjs collects it into the .a.
-          ++ map (lbMemberDir lb </>) (compCSources comp)
   -- Generate sources from any .x/.y/.hsc the dep ships (e.g. toml-parser's
   -- alex/happy lexer+parser) so ghc --make finds the resulting .hs modules,
   -- then compile and archive. orFail short-circuits on the first failure.
   orFail (runPreprocessorsIn (map (lbMemberDir lb </>) srcDirs))
   orFailE (runGhc (lbName lb) compileArgs)
+  -- C sources (cabal c-sources, e.g. primitive's cbits/primitive-memops.c) are
+  -- compiled in a SEPARATE `ghc -c` step into the dist dir, NOT via `ghc --make`:
+  -- --make writes a C object next to its (absolute) source — outside -outputdir
+  -- and into the content-addressed src tree — so findObjs would never archive it
+  -- and a dependent linking the library hits "undefined reference" (zinc-i98:
+  -- hsprimitive_memset_*, splitmix_init). Built with the package's include-dirs.
+  orFailE (compileCSources lb comp)
   objs <- liftIO (findObjs (lbDistDir lb))
   -- Re-archive only when an object is newer than the archive: ghc --make keeps
   -- objects incremental, so an unchanged lib's .a (and the exe linking it)

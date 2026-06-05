@@ -1,0 +1,279 @@
+[[locked]]
+name = "OneTuple"
+repo = "https://github.com/phadej/OneTuple.git"
+rev = "4fe671d2977a8bdb4fbf0369cd0bd264a93fb8c2"
+sha256 = "sha256:5f8ae0d6150e00caa98ab0b801ebd854b1ac1119c4c04ef0715da8c7704a1ddd"
+depends = []
+
+[[locked]]
+name = "QuickCheck"
+repo = "https://github.com/nick8325/quickcheck"
+rev = "19bf5722baebbfd545cadbfa5f29e50d0904b47f"
+sha256 = "sha256:c69a8b2a57da43bbf457d471aa94fba986d50f61f772b13f1c21e54cf89ba964"
+depends = ["random", "splitmix"]
+
+[[locked]]
+name = "StateVar"
+repo = "https://github.com/haskell-opengl/StateVar.git"
+rev = "8d2dd46838b448c810b36d32479fbb728b228f80"
+sha256 = "sha256:8936c6eefe710a21cd216ab5eea38332eb67dacccc9b44798a279667e0e67573"
+depends = []
+
+[[locked]]
+name = "aeson"
+repo = "https://github.com/haskell/aeson.git"
+rev = "c64d630f017a439c3bdfcb4138709ce0ea95e37f"
+sha256 = "sha256:b778ba28c260bf472e981d3c52be478900d4c17a1c4be5408ba0ef91603bc542"
+depends = ["OneTuple", "QuickCheck", "character-ps", "data-fix", "dlist", "hashable", "indexed-traversable", "integer-conversion", "integer-logarithms", "network-uri", "primitive", "scientific", "semialign", "strict", "tagged", "text-iso8601", "text-short", "th-abstraction", "these", "time-compat", "unordered-containers", "uuid-types", "vector", "witherable"]
+
+[[locked]]
+name = "assoc"
+repo = "https://github.com/phadej/assoc.git"
+rev = "f1eb64e34caa328344934d9cd3320a4afd8449b7"
+sha256 = "sha256:af55220e4ccf29eeef2976373c8fa44b6031510179219d10a2b352f342d7c346"
+depends = []
+
+[[locked]]
+name = "base-orphans"
+repo = "https://github.com/haskell-compat/base-orphans"
+rev = "14f89082857f9b96180203116e21c1f0632c8eb4"
+sha256 = "sha256:ff9b73f7dc531e836e8fba4182eb84f0108f09f6fd435c8b63d02ab7997169bf"
+depends = []
+
+[[locked]]
+name = "bifunctors"
+repo = "https://github.com/ekmett/bifunctors.git"
+rev = "4631b9d12b9ed2552b5d00610fb0036f533289f9"
+sha256 = "sha256:086348111909befccde764da4afd18a0c9dd4d72757ccd661517224d2ceb9e5c"
+depends = ["assoc", "comonad", "tagged", "th-abstraction"]
+
+[[locked]]
+name = "character-ps"
+repo = "https://github.com/phadej/character-ps.git"
+rev = "edaa756059d0ec390c7c44c741cd94b9e4f5903b"
+sha256 = "sha256:b7a12087b370441b12b49be1b07555e38966ec468519c4ec363ee60744eec825"
+depends = []
+
+[[locked]]
+name = "comonad"
+repo = "https://github.com/ekmett/comonad.git"
+rev = "56f225ed5a7d0e3bd7668055658c335d59e6bfb8"
+sha256 = "sha256:3c50ab3e08445dd877b5421ded0034b279af609819c9d0f91d7839bd4676d561"
+depends = ["distributive", "indexed-traversable", "tagged"]
+
+[[locked]]
+name = "contravariant"
+repo = "https://github.com/ekmett/contravariant.git"
+rev = "f5cc667461e4976f462b7e2f3777ef6ff7a74f8e"
+sha256 = "sha256:58bc1011545986e17c6c6e69906d8c22f91100e85b653095b879d4a0730de9f6"
+depends = ["StateVar"]
+
+[[locked]]
+name = "data-fix"
+repo = "https://github.com/spell-music/data-fix"
+rev = "c3f59d90f670f1a39d69116ab0147b0dce967c9d"
+sha256 = "sha256:23025d7b312ad79e293b500fb8f7ab6ab070eaef0e45a39f05fd9417fc00be4d"
+depends = ["hashable"]
+
+[[locked]]
+name = "distributive"
+repo = "https://github.com/ekmett/distributive.git"
+rev = "a3a83d2572946cdcbca9f4fd07ecbf8398656b0a"
+sha256 = "sha256:3a567595e146c4b7eece1a0b6c68da4d3051019ed0024b2a5b2718aec1d2dd31"
+depends = ["tagged"]
+
+[[locked]]
+name = "dlist"
+repo = "https://github.com/spl/dlist.git"
+rev = "157a97db62d7780e6793408b0bf408a11cd36f22"
+sha256 = "sha256:0384dc90ecf7b22797ab9732ae3c014bdd736865d6eba251a290bbd6b4cf6946"
+depends = []
+
+[[locked]]
+name = "hashable"
+repo = "https://github.com/haskell-unordered-containers/hashable.git"
+rev = "92bd55d1f1251d4c5666216aa8cf84143778d5d3"
+sha256 = "sha256:5a5b6040ec090745d5882465bbff845aee233858cfb351b36bbcf37a34f33bf3"
+depends = ["os-string"]
+
+[[locked]]
+name = "indexed-traversable"
+repo = "https://github.com/haskellari/indexed-traversable#indexed-traversable"
+rev = "7a10067530e527c639de326f400a7e087c150aaa"
+sha256 = "sha256:64496b1ecaa9d123688aa1500202d355a476c49319e14f31c0bb95738e139e93"
+depends = []
+
+[[locked]]
+name = "indexed-traversable-instances"
+repo = "https://github.com/haskellari/indexed-traversable#indexed-traversable-instances"
+rev = "31984c060563585f9d5e56e3316c12661380fdb3"
+sha256 = "sha256:b7b757a0da886c1a07bd7ef6b6297400d7285f00218a18473006d6057e159d2d"
+depends = ["OneTuple", "indexed-traversable", "tagged", "unordered-containers", "vector"]
+
+[[locked]]
+name = "integer-conversion"
+repo = "https://github.com/phadej/integer-conversion.git"
+rev = "63debf04ee147815ced227ab8c2a8409b2a14431"
+sha256 = "sha256:5195c023609571fd3f9797293087c3921540fb17b885e0eb6539758ae24be128"
+depends = ["primitive"]
+
+[[locked]]
+name = "integer-logarithms"
+repo = "https://github.com/haskellari/integer-logarithms"
+rev = "117aed8e5198ed116a5f73ed05f6c33205a0d562"
+sha256 = "sha256:1b459dd9c9c047dba6a05b8bfe29d3a081edce3ea97d046d18d1696d7d0fdb37"
+depends = []
+
+[[locked]]
+name = "network-uri"
+repo = "https://github.com/haskell/network-uri.git"
+rev = "4a95974352f70e849e7e618c2562b03da6feb4b3"
+sha256 = "sha256:9debb0f43b841bfc379663fa1d2cb119456c04dc55ec6d4f4e0609b3e16a9bd3"
+depends = ["th-compat"]
+
+[[locked]]
+name = "os-string"
+repo = "https://github.com/haskell/os-string"
+rev = "71f66e1af2288867becaa567dfb10c1d791b0343"
+sha256 = "sha256:af2dc7d8b4bed958d56b3ffa3381b8b289cf347f259ea4282a2f8f7710f4a4a0"
+depends = []
+
+[[locked]]
+name = "primitive"
+repo = "https://github.com/haskell/primitive"
+rev = "8ef29458e80c539261817dc057c9e784e1cbea36"
+sha256 = "sha256:61847e9b76370553c4d2a40133ad6e1f49eab863aacdb9f5e33e16e55021741a"
+depends = []
+
+[[locked]]
+name = "random"
+repo = "https://github.com/haskell/random.git"
+rev = "2df70699d2ec6c72fe913f45b8d75cf9b9fa6709"
+sha256 = "sha256:dbf77ffdd3991c1f7a9b5422e80bd44d8e075b5cb0f9613d5c1f7682f6239690"
+depends = ["splitmix"]
+
+[[locked]]
+name = "scientific"
+repo = "https://github.com/basvandijk/scientific.git"
+rev = "3274dbcf87e37f31de4473037f80363201177be1"
+sha256 = "sha256:96a8b7fff3ffc329a5431049083851a0024aea59f6385619e8941d2b39e9b123"
+depends = ["hashable", "integer-logarithms", "primitive"]
+
+[[locked]]
+name = "semialign"
+repo = "https://github.com/haskellari/these.git#semialign"
+rev = "1ca67c2996635e5a2797a52cfc2fb26e81058664"
+sha256 = "sha256:f6d7936fb96da5563e61c467421e5c4798e49d361b156d42e8b51278b9883ebf"
+depends = ["hashable", "indexed-traversable", "indexed-traversable-instances", "semigroupoids", "tagged", "these", "unordered-containers", "vector"]
+
+[[locked]]
+name = "semigroupoids"
+repo = "https://github.com/ekmett/semigroupoids.git"
+rev = "79429864138f4fa030846a6f97328b1b6da8aa1b"
+sha256 = "sha256:92290130099e4718ff2fc8dc45f4c520a0d82a234697e5c5343ce2cefc6d9ee5"
+depends = ["base-orphans", "bifunctors", "comonad", "contravariant", "hashable", "tagged", "transformers-compat", "unordered-containers"]
+
+[[locked]]
+name = "splitmix"
+repo = "https://github.com/haskellari/splitmix.git"
+rev = "419c763825d6e0dceb266ef64e9cbcb7e07a481f"
+sha256 = "sha256:ea61f886737bbb8ddedf92564fa64aca166b147e334c8c9a8f552dbc9477250d"
+depends = []
+
+[[locked]]
+name = "strict"
+repo = "https://github.com/haskell-strict/strict"
+rev = "3e580700effb16120b57c8f9a443dc26cdeeecd1"
+sha256 = "sha256:36db0cd35a0a331c9c9152cacdbe6febc95d46929d2f1376a1123abb00a080d3"
+depends = ["assoc", "hashable", "these"]
+
+[[locked]]
+name = "tagged"
+repo = "https://github.com/ekmett/tagged.git"
+rev = "5100b5d0f823c0d1b2c6758bef563b54e03cd72f"
+sha256 = "sha256:9793e96f019bd72f4d7fcd8b7a0fc27d97296404e991ef8ec38661fb8d27ff05"
+depends = []
+
+[[locked]]
+name = "text-iso8601"
+repo = "https://github.com/haskell/aeson.git#text-iso8601"
+rev = "c64d630f017a439c3bdfcb4138709ce0ea95e37f"
+sha256 = "sha256:b778ba28c260bf472e981d3c52be478900d4c17a1c4be5408ba0ef91603bc542"
+depends = ["integer-conversion", "time-compat"]
+
+[[locked]]
+name = "text-short"
+repo = "https://github.com/hvr/text-short.git"
+rev = "8f2b490133d06643a7abc0fe1ecc59231a8168df"
+sha256 = "sha256:1f8997186431523934b824796691cc6413e65b923d8ff52f7ab65b41e8ab6c3e"
+depends = ["hashable"]
+
+[[locked]]
+name = "th-abstraction"
+repo = "https://github.com/glguy/th-abstraction.git"
+rev = "6ba233e8734b43cbccf4cd4f7d9c4da0517f872b"
+sha256 = "sha256:5d9792c78cc3884a760c8afe3e90cd40c3bf5a0cb31c62a2d560a41f3f0334f0"
+depends = []
+
+[[locked]]
+name = "th-compat"
+repo = "https://github.com/haskell-compat/th-compat"
+rev = "ecbfd143f8f063ba6b667b2e553f3edbc14d9711"
+sha256 = "sha256:b61b72f25519978e3ad467f1b6b16f9190d43fce93f2c9a3a15cbcd4ced2cda4"
+depends = []
+
+[[locked]]
+name = "these"
+repo = "https://github.com/haskellari/these.git#these"
+rev = "d39a29a04c40498b12052e3f34088b8b9559bfa0"
+sha256 = "sha256:1785d89ba3787faeb64a48bbcecef17b72726d1c08e49279b5d9f9951e241d24"
+depends = ["assoc", "hashable"]
+
+[[locked]]
+name = "time-compat"
+repo = "https://github.com/haskellari/time-compat.git"
+rev = "eec6b9c5997300a9343a59ecd45689924da6f975"
+sha256 = "sha256:5ee6ab9a3c61fa24a6aea256e8fbce44af4fb582dafdeabc087d6baf94d682cf"
+depends = ["base-orphans", "hashable"]
+
+[[locked]]
+name = "transformers-compat"
+repo = "https://github.com/ekmett/transformers-compat.git"
+rev = "6fe07cbb7bf347f4775b13e4350789d607a0cb9b"
+sha256 = "sha256:ac820a3de3d8d57ac0861de808b5a193f34e8a7747dd3572dbbd5990550e5379"
+depends = []
+
+[[locked]]
+name = "unordered-containers"
+repo = "https://github.com/haskell-unordered-containers/unordered-containers.git"
+rev = "94811cb881cfb608f150b01535d9581b4bbfef5a"
+sha256 = "sha256:bf659818051747259a516b60b851d9ece70bfb82986d4db4cd9312661938ca3c"
+depends = ["hashable"]
+
+[[locked]]
+name = "uuid-types"
+repo = "https://github.com/haskell-hvr/uuid.git#uuid-types"
+rev = "cacb242660a8e441e4d9179237b5a42054fbe581"
+sha256 = "sha256:cd599d2d02cb38da22a26adcf734826ee8b4178183856e98b49fbb2e5057588a"
+depends = ["hashable", "random"]
+
+[[locked]]
+name = "vector"
+repo = "https://github.com/haskell/vector.git#vector"
+rev = "d9d0d46623fdecce7652f59caa4a28849292a0e7"
+sha256 = "sha256:53f842490e23299c27865445878950b70b25102a050435eed4fc427a34960c7e"
+depends = ["primitive", "vector-stream"]
+
+[[locked]]
+name = "vector-stream"
+repo = "https://github.com/haskell/vector.git#vector-stream"
+rev = "46513f6df208abe8af3df9b4cd220ae2639f6da5"
+sha256 = "sha256:ab2f9aaac3b6ce52e9b5ea976183ffbe822c9e134aeedb98d14d81ceedd8fe76"
+depends = []
+
+[[locked]]
+name = "witherable"
+repo = "https://github.com/fumieval/witherable.git#witherable"
+rev = "15958e7efd8136ac2495e8d4206ab162860409f0"
+sha256 = "sha256:c70984cb97fcc2f33cf0f259c1c33fab0e4e3b5ac2019d8fe8c43d2e7b11da5f"
+depends = ["base-orphans", "hashable", "indexed-traversable", "indexed-traversable-instances", "unordered-containers", "vector"]

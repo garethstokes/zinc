@@ -2180,6 +2180,33 @@ main = hspec $ do
       r <- buildAndRun ws []
       r `shouldBe` Right "7\n"
 
+  describe "closure builder compiles + links a dependency's C sources (i98)" $
+    it "archives a dep's cabal c-sources object so a dependent links its foreign symbol" $ do
+      -- A dep with c-sources (e.g. primitive's cbits/primitive-memops.c) must
+      -- have its C object archived into libHS<pkg>.a, or a dependent that
+      -- references the foreign symbol fails to link (undefined reference).
+      let base = "/tmp/zinc-csrc-ws"
+          dep = base ++ "/csym-repo"
+          ws = base ++ "/ws"
+      stale <- doesDirectoryExist base
+      when stale $ removeDirectoryRecursive base
+      writeFileIn (dep ++ "/zinc.toml") (unlines ["[package]", "name = \"csym\"", "version = \"1.0\"", "[build.lib]", "source-dirs = [\"src\"]", "exposed-modules = [\"CSym\"]", "c-sources = [\"cbits/foo.c\"]"])
+      writeFileIn (dep ++ "/cbits/foo.c") "int zinc_csym(void) { return 7; }\n"
+      writeFileIn (dep ++ "/src/CSym.hs") "{-# LANGUAGE ForeignFunctionInterface #-}\nmodule CSym (csym) where\nforeign import ccall unsafe \"zinc_csym\" csym :: Int\n"
+      let git args = readProcess "git" ("-C" : dep : args) ""
+      _ <- git ["init", "--quiet"]
+      _ <- git ["config", "user.email", "t@example.com"]
+      _ <- git ["config", "user.name", "Test"]
+      _ <- git ["add", "."]
+      _ <- git ["commit", "--quiet", "-m", "csym"]
+      rev <- trimStr <$> git ["rev-parse", "HEAD"]
+      writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" [Dependency "csym" (Rev rev) (Just dep) []]))
+      writeFileIn (ws ++ "/zinc.lock") (renderLock [LockedPackage "csym" (GitSource dep rev) "sha256:x" []])
+      writeFileIn (ws ++ "/packages/app/zinc.toml") (unlines ["[package]", "name = \"app\"", "version = \"1.0\"", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "depends = [\"csym\"]"])
+      writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport CSym (csym)\nmain :: IO ()\nmain = print csym\n"
+      r <- buildAndRun ws []
+      r `shouldBe` Right "7\n"
+
   -- Test ladder rung 2 (spec §12): a REAL Hackage leaf pulled from git and
   -- built via the Opt-2 .cabal reader. Network-gated so the default suite
   -- stays hermetic; run with ZINC_NET_TESTS=1 (the capability is also covered
@@ -2318,6 +2345,10 @@ main = hspec $ do
     -- that must NOT be flattened in, and a default-language the build must honour
     -- (else the Storable MVector phantom is poly-kinded) — zinc-ffm.5.
     fixtureRunsTo "vector" "55\n"
+    -- aeson: the deepest closure (40 packages). Exercises Latest tag selection
+    -- across a large transitive graph (zinc-myx) and C-source linking through
+    -- primitive/splitmix (zinc-i98). `print (encode (object ["zinc" .= 1]))`.
+    fixtureRunsTo "aeson" "\"{\\\"zinc\\\":1}\"\n"
 
   describe "content-hash verification on build (spec §8)" $
     it "rejects a fetched dep whose content hash does not match the lock" $ do
