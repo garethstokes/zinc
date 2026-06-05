@@ -14,8 +14,11 @@ module Zinc.Report
   , Timing (..)
   , cacheStatsOf
   , timingJson
+  , buildSummaryLine
+  , fmtMs
   ) where
 
+import Zinc.Ansi (dim, greenBold)
 import Zinc.Json (Json (..), object)
 import Zinc.Manifest (Ref (..))
 import Zinc.Resolve (ResolvedDep (..))
@@ -106,6 +109,31 @@ cacheStatsOf pkgs =
     cached = count Cached
     built = count Built
     count s = length (filter ((== s) . prStatus) pkgs)
+
+-- | The hw6.3 human build-finish line: a cargo-style speed + cache summary,
+-- e.g. @Finished in 3.2s · 22 packages (22 cached, 0 built)@. Surfaces zinc's
+-- build-once content-addressed store — most of a warm closure is reused, not
+-- rebuilt — and reproducibility (the same inputs hit the same cache). @color@
+-- gates ANSI; the verb is right-aligned in the same 12-col gutter as progress.
+buildSummaryLine :: Bool -> Timing -> String
+buildSummaryLine color t =
+  greenBold color (pad "Finished")
+    ++ " in "
+    ++ fmtMs (tiTotalMs t)
+    ++ " "
+    ++ dim color ("\183 " ++ show n ++ " package" ++ (if n == 1 then "" else "s") ++ " (" ++ show cached ++ " cached, " ++ show built ++ " built)")
+  where
+    pad s = replicate (max 0 (12 - length s)) ' ' ++ s
+    cached = csPkgsCached (tiCache t)
+    built = csPkgsBuilt (tiCache t)
+    n = cached + built
+
+-- | Render a millisecond duration compactly: @3.2s@ at or above a second
+-- (one decimal), else @450ms@.
+fmtMs :: Int -> String
+fmtMs ms
+  | ms >= 1000 = show (ms `div` 1000) ++ "." ++ show (ms `mod` 1000 `div` 100) ++ "s"
+  | otherwise  = show ms ++ "ms"
 
 -- | A 'Timing' as JSON: @{ totalMs, phases:{…}, cache:{…} }@.
 timingJson :: Timing -> Json

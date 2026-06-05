@@ -21,7 +21,7 @@ import Zinc.Orchestrate (checkLockDrift, resolveRunTarget, runBuildReport, runCl
 import Zinc.Output (OutputEvent (..), OutputMode (..), emit, resolveMode, withRenderer)
 import Zinc.Perf (perfSummaryJson, renderPerf, runPerf)
 import Zinc.Prime (runOnboard, runPrime)
-import Zinc.Report (PackageReport, PackageStatus (Built, Cached), boExes, boPackages, buildDataJson, packageReportJson, prName, prStatus, prTimeMs, timingJson)
+import Zinc.Report (PackageReport, PackageStatus (Built, Cached), boExes, boPackages, buildDataJson, buildSummaryLine, packageReportJson, prName, prStatus, prTimeMs, timingJson)
 import Zinc.Scaffold (materialize, scaffoldNew)
 
 -- | Thin executable shim: parse argv into the output flags + a 'Command',
@@ -90,8 +90,8 @@ dispatch mode (Build target) = do
   r <- withRenderer mode $ \sink -> do
     res <- runBuildReport sink "." target
     case res of
-      Right (outcome, _) -> emit sink (Finished ("Built " ++ show (length (boExes outcome)) ++ " executable(s)"))
-      Left _             -> pure ()
+      Right (_, timing) -> emit sink (Finished (buildSummaryLine False timing))
+      Left _            -> pure ()
     pure res
   case r of
     Left e
@@ -102,7 +102,8 @@ dispatch mode (Build target) = do
       if machine mode
         then putStrLn (renderJson (envelope "build" True (Just (buildDataJson outcome)) (Just (timingJson timing)) []))
         else do
-          putStrLn ("Built " ++ show (length (boExes outcome)) ++ " executable(s):")
+          -- hw6.3 spectacle: the speed + cache summary headline, then the exes.
+          putStrLn (buildSummaryLine (humanColor mode) timing)
           mapM_ (putStrLn . ("  " ++)) (boExes outcome)
 dispatch mode (Run target args) =
   resolveRunTarget "." target >>= \r -> case r of

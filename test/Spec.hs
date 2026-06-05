@@ -63,7 +63,7 @@ import Zinc.Macros (emitCabalMacros)
 import Zinc.Nix (generateFlake)
 import Zinc.Orchestrate (buildAndRun, lockDrift, orderMembers, parMapBounded, resolveTarget, runBuild, runBuildMember, runClean, runTests, runWarm)
 import Zinc.Paths (pathsModuleName, synthesizePaths)
-import Zinc.Report (BuildOutcome (..), CacheStats (..), PackageReport (..), PackageStatus (..), Timing (..), buildDataJson, cacheStatsOf, packageReportJson, renderResolution, statusText, timingJson)
+import Zinc.Report (BuildOutcome (..), CacheStats (..), PackageReport (..), PackageStatus (..), Timing (..), buildDataJson, buildSummaryLine, cacheStatsOf, fmtMs, packageReportJson, renderResolution, statusText, timingJson)
 import Zinc.SysLibs (toNixpkgs)
 import Zinc.Resolve (DepManifest (..), ResolvedDep (..), isBootLib, resolve, topoLevels, topoSort)
 import Zinc.Version (newestTag)
@@ -388,6 +388,19 @@ main = hspec $ do
       let out = humanError False (toDiagnostic (DepNoGitRepo "colour"))
       out `shouldSatisfy` isInfixOf "\10007 dependency has no git repository"
       out `shouldSatisfy` isInfixOf "help: "
+
+    it "fmtMs renders sub-second as ms and >=1s as one-decimal seconds (hw6.3)" $ do
+      fmtMs 450 `shouldBe` "450ms"
+      fmtMs 3200 `shouldBe` "3.2s"
+      fmtMs 1000 `shouldBe` "1.0s"
+
+    it "buildSummaryLine is a cargo-style speed + cache summary (hw6.3)" $
+      buildSummaryLine False (Timing 3200 [] (CacheStats 35 12 12 35))
+        `shouldBe` "    Finished in 3.2s \183 47 packages (35 cached, 12 built)"
+
+    it "buildSummaryLine singularizes a one-package closure (hw6.3)" $
+      buildSummaryLine False (Timing 800 [] (CacheStats 1 0 0 1))
+        `shouldBe` "    Finished in 800ms \183 1 package (1 cached, 0 built)"
 
   describe "closure discovery (49o)" $ do
     it "parses the `closure` subcommand (+ --json)" $ do
