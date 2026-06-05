@@ -3,7 +3,7 @@ members = ["app"]
 ghc = "9.6.5"
 
 [dependencies]
-vector = { tag = "vector-0.13.2.0" }
 
-[registry]
-vector = "https://github.com/haskell/vector#vector"
+[dependencies.vector]
+tag = "vector-0.13.2.0"
+repo = "https://github.com/haskell/vector.git#vector"

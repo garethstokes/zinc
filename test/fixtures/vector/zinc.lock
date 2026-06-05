@@ -1,0 +1,20 @@
+[[locked]]
+name = "primitive"
+repo = "https://github.com/haskell/primitive"
+rev = "8ef29458e80c539261817dc057c9e784e1cbea36"
+sha256 = "sha256:61847e9b76370553c4d2a40133ad6e1f49eab863aacdb9f5e33e16e55021741a"
+depends = []
+
+[[locked]]
+name = "vector"
+repo = "https://github.com/haskell/vector.git#vector"
+rev = "d9d0d46623fdecce7652f59caa4a28849292a0e7"
+sha256 = "sha256:53f842490e23299c27865445878950b70b25102a050435eed4fc427a34960c7e"
+depends = ["primitive", "vector-stream"]
+
+[[locked]]
+name = "vector-stream"
+repo = "https://github.com/haskell/vector.git#vector-stream"
+rev = "46513f6df208abe8af3df9b4cd220ae2639f6da5"
+sha256 = "sha256:ab2f9aaac3b6ce52e9b5ea976183ffbe822c9e134aeedb98d14d81ceedd8fe76"
+depends = []
