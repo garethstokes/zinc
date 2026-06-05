@@ -14,11 +14,11 @@ module Zinc.Store
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Lazy.Char8 as BL8
 import Data.Digest.Pure.SHA (sha256, showDigest)
-import Data.List (sort)
+import Data.List (sortOn)
 import Control.Concurrent (threadDelay)
 import Control.Exception (bracket)
 import Control.Monad (forM, when)
-import System.Directory (createDirectory, createDirectoryIfMissing, doesDirectoryExist, getHomeDirectory, listDirectory, removeDirectory)
+import System.Directory (createDirectory, createDirectoryIfMissing, doesDirectoryExist, getHomeDirectory, getSymbolicLinkTarget, listDirectory, pathIsSymbolicLink, removeDirectory)
 import System.Environment (lookupEnv)
 import System.IO.Error (catchIOError)
 import System.FilePath ((</>))
@@ -43,9 +43,14 @@ storeSrcPath root name rev = root </> "src" </> (name ++ "-" ++ rev)
 -- order. The @.git@ directory is excluded so the hash reflects source only.
 contentHash :: FilePath -> IO String
 contentHash dir = do
-  rels <- sort <$> listFiles dir
-  chunks <- forM rels $ \rel -> do
-    body <- BL.readFile (dir </> rel)
+  rels <- sortOn fst <$> listFiles dir
+  chunks <- forM rels $ \(rel, ent) -> do
+    -- A symlink's content is its target path (as git stores it) — never follow
+    -- it: the target may be outside the tree or dangling (e.g. monorepo cbits
+    -- symlinks), and following would be non-reproducible or crash.
+    body <- case ent of
+      RegularFile  -> BL.readFile (dir </> rel)
+      SymlinkTo tgt -> pure (BL8.pack tgt)
     pure (BL8.pack (rel ++ "\0") <> body <> BL8.pack "\0")
   pure ("sha256:" ++ showDigest (sha256 (BL.concat chunks)))
 
@@ -85,8 +90,16 @@ withStoreLock storeRoot key action = bracket acquire release (const action)
     maxAttempts = 2000 -- ~20s at 10ms
     pollMicros = 10000 -- 10ms
 
--- | Recursively list files as relative paths, skipping any @.git@ directory.
-listFiles :: FilePath -> IO [FilePath]
+-- | A tree entry to hash: a regular file (read its bytes) or a symlink (hash
+-- its target path, not the pointed-to content).
+data Entry = RegularFile | SymlinkTo String
+
+-- | Recursively list a tree's entries as @(relative path, kind)@, skipping any
+-- @.git@ directory. Symlinks are classified BEFORE the directory test so a
+-- symlink-to-directory is recorded as a link (its target hashed) rather than
+-- followed into — keeping the hash reproducible and crash-free on monorepo
+-- layouts that symlink shared @cbits@/sources across packages.
+listFiles :: FilePath -> IO [(FilePath, Entry)]
 listFiles root = go ""
   where
     go rel = do
@@ -96,5 +109,11 @@ listFiles root = go ""
           then pure []
           else do
             let r = if null rel then e else rel </> e
-            isDir <- doesDirectoryExist (root </> r)
-            if isDir then go r else pure [r]
+            isLink <- pathIsSymbolicLink (root </> r)
+            if isLink
+              then do
+                tgt <- getSymbolicLinkTarget (root </> r)
+                pure [(r, SymlinkTo tgt)]
+              else do
+                isDir <- doesDirectoryExist (root </> r)
+                if isDir then go r else pure [(r, RegularFile)]
