@@ -52,7 +52,7 @@ import Zinc.Manifest
   , parseWorkspace
   , renderWorkspace
   )
-import Zinc.Fetch (gitFetchManifest, packageDirIn)
+import Zinc.Fetch (gitFetchManifest, namedCabal, packageDirIn)
 import Zinc.GC (GCRoot (..), gcStore, runGc)
 import Zinc.Add (enrichWithRepos, freezeClosure, lockEntry, runAdd, runUpdate)
 import Zinc.Build (GhcInvocation (..), MemberBuild (..), PackageConf (..), archiveArgs, buildMember, ghcMakeArgs, installedVersions, preprocessorFor, registerPackage, renderConf, replArgs, runPreprocessor, writeFileIfChanged)
@@ -1663,15 +1663,20 @@ main = hspec $ do
     it "builds the Hackage .cabal URL" $
       hackageCabalUrl "aeson" `shouldBe` "https://hackage.haskell.org/package/aeson/aeson.cabal"
 
-  describe "packageDirIn (monorepo subdir detection, ffm.6)" $
-    it "uses an explicit #subdir, else the root manifest, else a <name>/ subdir" $ do
+  describe "monorepo cabal selection (ffm.6/ffm.7)" $ do
+    it "namedCabal picks <name>.cabal out of a multi-cabal dir, case-insensitively" $ do
+      namedCabal "text-iso8601" ["aeson.cabal", "text-iso8601.cabal"] `shouldBe` Just "text-iso8601.cabal"
+      namedCabal "QuickCheck" ["quickcheck.cabal"] `shouldBe` Just "quickcheck.cabal"
+      namedCabal "x" ["a.cabal", "b.cabal"] `shouldBe` Nothing
+
+    it "packageDirIn finds the dir holding THIS package's <name>.cabal" $ do
       let base = "/tmp/zinc-pkgdir-test"
       stale <- doesDirectoryExist base
       when stale (removeDirectoryRecursive base)
       -- an explicit url#subdir always wins
       createDirectoryIfMissing True (base </> "a" </> "sub")
       packageDirIn (base </> "a") "repo#sub" "a" >>= (`shouldBe` (base </> "a" </> "sub"))
-      -- a root .cabal -> the root
+      -- the package's own cabal at the root -> the root
       createDirectoryIfMissing True (base </> "b")
       writeFile (base </> "b" </> "b.cabal") "name: b\n"
       packageDirIn (base </> "b") "repo" "b" >>= (`shouldBe` (base </> "b"))
@@ -1679,6 +1684,12 @@ main = hspec $ do
       createDirectoryIfMissing True (base </> "c" </> "strict")
       writeFile (base </> "c" </> "strict" </> "strict.cabal") "name: strict\n"
       packageDirIn (base </> "c") "repo" "strict" >>= (`shouldBe` (base </> "c" </> "strict"))
+      -- a monorepo root holding only a SIBLING's cabal -> still descend to
+      -- <name>/ (the over-inclusion fix: don't read the sibling's deps)
+      createDirectoryIfMissing True (base </> "d" </> "pkg")
+      writeFile (base </> "d" </> "sibling.cabal") "name: sibling\n"
+      writeFile (base </> "d" </> "pkg" </> "pkg.cabal") "name: pkg\n"
+      packageDirIn (base </> "d") "repo" "pkg" >>= (`shouldBe` (base </> "d" </> "pkg"))
 
   describe "buildMember (real compile)" $
     it "compiles and links a hello-world member, which runs" $ do

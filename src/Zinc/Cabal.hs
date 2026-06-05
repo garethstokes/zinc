@@ -73,7 +73,12 @@ parseCabalComponentsForGhc ghcVersion src =
   case snd (runParseResult (parseGenericPackageDescription (BS.pack src))) of
     Left err -> Left ("cabal parse error: " ++ show err)
     Right gpd ->
-      case finalizePD mempty (ComponentRequestedSpec True True) (const True) buildPlatform ghc [] gpd of
+      -- Request the LIBRARY (+exes) only, NOT tests/benchmarks: zinc builds a
+      -- dependency's library, and finalizePD's automatic-flag resolution can
+      -- otherwise flip a shared flag to keep a test-suite buildable, dragging
+      -- test-only deps (QuickCheck, tasty -> ansi-terminal -> colour) into the
+      -- library's build-depends and the closure (zinc-ffm.7).
+      case finalizePD mempty (ComponentRequestedSpec False False) (const True) buildPlatform ghc [] gpd of
         Left missing -> Left ("cabal finalize error: unsatisfied " ++ show (map prettyShow missing))
         Right (pd, _flags) ->
           Right (libraryComponent pd ++ executableComponents pd ++ testComponents pd)

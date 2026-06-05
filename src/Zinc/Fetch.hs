@@ -6,11 +6,15 @@ module Zinc.Fetch
   ( gitFetchManifest
   , resolveRef
   , packageDirIn
+  , namedCabal
   ) where
 
+import Control.Applicative ((<|>))
 import Control.Monad (when)
 import Data.Bifunctor (first)
-import Data.List (nub)
+import Data.Char (toLower)
+import Data.List (find, nub)
+import Data.Maybe (listToMaybe)
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory, removeDirectoryRecursive)
 import System.FilePath (takeExtension, (</>))
 import Zinc.Cabal (cabalBuildType, parseCabalComponentsForGhc)
@@ -50,15 +54,27 @@ gitFetchManifest storeRoot ghcVersion name repo ref = runResult $ do
 cabalManifest :: String -> String -> FilePath -> IO (Either ZincError DepManifest)
 cabalManifest name ghcVersion pkgDir = runResult $ do
   entries <- liftIO (listDirectory pkgDir)
-  case filter ((== ".cabal") . takeExtension) entries of
-    [] -> failWith (name ++ ": no zinc.toml or .cabal in the checkout")
-    (cab : _) -> do
+  let cabals = filter ((== ".cabal") . takeExtension) entries
+  -- Pick THIS package's cabal (<name>.cabal) when present: a monorepo checkout
+  -- can hold several, and the first is not necessarily the dep being resolved —
+  -- reading a sibling's cabal leaks its foreign deps into the closure.
+  case namedCabal name cabals <|> listToMaybe cabals of
+    Nothing  -> failWith (name ++ ": no zinc.toml or .cabal in the checkout")
+    Just cab -> do
       src <- liftIO (readFile (pkgDir </> cab))
       when (cabalBuildType src == Right "Custom") $
         failWithError (BuildTypeCustom name)
       comps <- liftEither (first ((name ++ ": ") ++) (parseCabalComponentsForGhc ghcVersion src))
       let libDeps = nub (concat [compDepends c | c <- comps, compKind c == Library])
       pure (DepManifest [Dependency d Latest Nothing [] | d <- libDeps] [])
+
+-- | The @\<name\>.cabal@ in a list of cabal filenames (case-insensitively) — the
+-- file Cabal names after the package, used to pick the right one out of a
+-- multi-package monorepo checkout.
+namedCabal :: String -> [FilePath] -> Maybe FilePath
+namedCabal name = find ((== lower (name ++ ".cabal")) . lower)
+  where
+    lower = map toLower
 
 -- | Locate a package's manifest directory inside a fetched checkout. An
 -- explicit @url#subdir@ wins; otherwise the repo root if it holds a manifest;
@@ -72,15 +88,27 @@ packageDirIn dest repo name =
   case snd (splitRepoSubdir repo) of
     Just s  -> pure (dest </> s)
     Nothing -> do
-      rootOk <- hasManifest dest
-      if rootOk
-        then pure dest
-        else do
-          let sub = dest </> name
-          subOk <- hasManifest sub
-          pure (if subOk then sub else dest)
+      -- Prefer the dir that holds THIS package's manifest (<name>.cabal /
+      -- zinc.toml): the root, then a <name>/ subdir. Only when neither names
+      -- this package do we fall back to any-manifest dir, then the root.
+      named <- firstThatM hasNamedManifest cands
+      case named of
+        Just d  -> pure d
+        Nothing -> do
+          anyd <- firstThatM hasAnyManifest cands
+          pure (maybe dest id anyd)
   where
-    hasManifest d = do
+    cands = [dest, dest </> name]
+    hasNamedManifest d = do
+      z <- doesFileExist (d </> "zinc.toml")
+      if z
+        then pure True
+        else do
+          there <- doesDirectoryExist d
+          if there
+            then maybe False (const True) . namedCabal name . filter ((== ".cabal") . takeExtension) <$> listDirectory d
+            else pure False
+    hasAnyManifest d = do
       z <- doesFileExist (d </> "zinc.toml")
       if z
         then pure True
@@ -89,6 +117,13 @@ packageDirIn dest repo name =
           if there
             then any ((== ".cabal") . takeExtension) <$> listDirectory d
             else pure False
+
+-- | The first list element satisfying a monadic predicate.
+firstThatM :: Monad m => (a -> m Bool) -> [a] -> m (Maybe a)
+firstThatM _ [] = pure Nothing
+firstThatM p (x : xs) = do
+  ok <- p x
+  if ok then pure (Just x) else firstThatM p xs
 
 -- | The git checkout target for a ref. 'Latest' is resolved to the repo's
 -- newest release tag.
