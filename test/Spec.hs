@@ -24,7 +24,9 @@ import Test.Hspec
 import System.Exit (ExitCode (..))
 import Zinc.CLI (Command (..), parseArgs)
 import Zinc.Diagnostic (Diagnostic (..), Severity (..), ZincError (..), diagnosticJson, envelope, errorCode, exitCodeFor, renderError, toDiagnostic)
+import Control.Concurrent.STM (atomically, modifyTVar', newTVarIO, readTVarIO)
 import Zinc.Closure (discoverRepos, parseDependsField, pkgNameOf)
+import Zinc.Output (OutputEvent (..), OutputFlags (..), OutputMode (..), Sink (..), eventJson, nullSink, withRenderer)
 import Zinc.Docker (dockerfileText)
 import Zinc.Fmt (canonicalizeManifest)
 import Zinc.Doctor (doctorJson, doctorOk, flakesOffDiagnostic, lockDriftDiagnostic, renderDoctor, runDoctor)
@@ -294,6 +296,34 @@ main = hspec $ do
 
     it "lists candidates for an unknown target" $
       either errorCode (const "ok") (resolveTarget (Just "ghost") [("a", "/a")]) `shouldBe` "ZINC_AMBIGUOUS_TARGET"
+
+  describe "output foundation (hw6.1)" $ do
+    it "renders an event as a tagged JSONL object (stable field order)" $ do
+      renderJson (eventJson (CompileDone "aeson" 410 False))
+        `shouldBe` "{\"event\":\"compile-done\",\"package\":\"aeson\",\"timeMs\":410,\"cached\":false}"
+      renderJson (eventJson ResolveStart) `shouldBe` "{\"event\":\"resolve-start\"}"
+
+    it "Sink fans out to every consumer (Monoid) and nullSink drops events" $ do
+      r1 <- newTVarIO []
+      r2 <- newTVarIO []
+      let rec ref = Sink (\e -> modifyTVar' ref (e :))
+          s = rec r1 <> nullSink <> rec r2
+      atomically (runSink s (CompileDone "aeson" 5 False))
+      atomically (runSink s ResolveStart)
+      v1 <- readTVarIO r1
+      v2 <- readTVarIO r2
+      (reverse v1, reverse v2)
+        `shouldBe` ([CompileDone "aeson" 5 False, ResolveStart], [CompileDone "aeson" 5 False, ResolveStart])
+
+    it "withRenderer runs the body, drains events, and returns without hanging" $ do
+      r <- withRenderer (Human False True) $ \sink -> do
+        atomically (runSink sink (CompileStart "x"))
+        atomically (runSink sink (CompileDone "x" 1 True))
+        pure (42 :: Int)
+      r `shouldBe` 42
+
+    it "OutputFlags has the expected shape" $
+      (ofJson (OutputFlags True False), ofQuiet (OutputFlags True False)) `shouldBe` (True, False)
 
   describe "closure discovery (49o)" $ do
     it "parses the `closure` subcommand (+ --json)" $ do

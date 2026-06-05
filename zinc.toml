@@ -14,7 +14,7 @@ source-dirs = ["src"]
 # Modules are auto-discovered from source-dirs (spec §4, no module hiding).
 depends = [
   "base", "Cabal", "SHA", "bytestring", "containers", "directory",
-  "filepath", "optparse-applicative", "process", "time", "toml-parser", "transformers"
+  "filepath", "optparse-applicative", "process", "stm", "time", "toml-parser", "transformers"
 ]
 
 [build.exe.zinc]
