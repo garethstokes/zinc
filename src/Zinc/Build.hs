@@ -251,8 +251,14 @@ buildLibArtifacts lb = runResult $ do
       depConfId d
         | isBootLib d = d ++ "-" ++ intercalate "." (map show (depVersion d))
         | otherwise = d
+  -- Emit cabal_macros.h for the package's OWN version only. GHC 8.0+
+  -- auto-generates VERSION_<dep>/MIN_VERSION_<dep> for every -package dep, so
+  -- emitting our own (from the GLOBAL ghc-pkg, which can lag a closure-built
+  -- dep — e.g. primitive 0.8.0.0 vs the built 0.9.1.0) only causes a CPP
+  -- redefinition conflict with GHC's correct value. Self macros stay (GHC does
+  -- not define them for the home unit). (zinc-ffm.4)
   _ <- liftIO $ writeFileIfChanged macrosHeader $
-    emitCabalMacros ((lbName lb, versionInts (lbVersion lb)) : [(d, depVersion d) | d <- compDepends comp])
+    emitCabalMacros [(lbName lb, versionInts (lbVersion lb))]
   let srcDirs = if null (compSourceDirs comp) then ["."] else compSourceDirs comp
   -- A library's modules: the explicit list, or auto-discovered by walking its
   -- source dirs (spec §4 "no module hiding" — zinc-native packages list none;
