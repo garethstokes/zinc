@@ -65,7 +65,7 @@ import Zinc.Fetch (gitFetchManifest, isHpackOnly, namedCabal, packageDirIn)
 import Zinc.GC (GCRoot (..), gcStore, runGc)
 import Zinc.Add (enrichWithRepos, freezeClosure, lockEntry, runAdd, runUpdate, runVendor, splitNameVersion)
 import Zinc.Build (GhcInvocation (..), MemberBuild (..), PackageConf (..), archiveArgs, buildMember, ghcMakeArgs, installedVersions, preprocessorFor, registerPackage, renderConf, replArgs, runPreprocessor, writeFileIfChanged)
-import Zinc.Cache (BuildKey (..), buildCacheKey, cacheHit, storeConfPath, storePkgPath, writeCachedConf)
+import Zinc.Cache (BuildKey (..), buildCacheKey, buildCacheKeyFor, cacheHit, storeConfPath, storePkgPath, writeCachedConf)
 import Zinc.Cabal (cabalBuildType, cabalVersion, parseCabalComponents, parseCabalComponentsForGhc)
 import Zinc.Env (devEnvVars, envCacheKey, envCacheKeyFor, nixPrintDevEnv, provisionEnv, toolchainPath, toolchainVars)
 import Zinc.Macros (emitCabalMacros)
@@ -2141,6 +2141,11 @@ main = hspec $ do
 
     it "changes with the package name — monorepo siblings sharing a commit don't collide (qln)" $
       (buildCacheKey (BuildKey "other" "abc" "9.6.5" ["base-4", "aeson-2"] ["-O2"]) == k1) `shouldBe` False
+
+    it "is target-keyed: native is byte-identical, wasm differs (9po.2)" $ do
+      let bk = BuildKey "pkg" "abc" "9.6.5" ["base-4"] ["-O2"]
+      buildCacheKeyFor Native bk `shouldBe` buildCacheKey bk -- native: no cache invalidation
+      (buildCacheKeyFor Wasm32Wasi bk == buildCacheKey bk) `shouldBe` False -- wasm never collides with native
 
     it "lays out the package store path" $
       storePkgPath "/store" "deadbeef" `shouldBe` "/store/pkg/deadbeef"

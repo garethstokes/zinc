@@ -4,6 +4,7 @@
 module Zinc.Cache
   ( BuildKey (..)
   , buildCacheKey
+  , buildCacheKeyFor
   , storePkgPath
   , storeConfPath
   , cacheHit
@@ -15,6 +16,7 @@ import Data.Digest.Pure.SHA (sha256, showDigest)
 import Data.List (intercalate, sort)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist)
 import System.FilePath ((</>))
+import Zinc.Target (Target (..), targetTriple)
 
 -- | Everything that determines a built package's output.
 data BuildKey = BuildKey
@@ -30,19 +32,28 @@ data BuildKey = BuildKey
 -- part of the key: a monorepo's sub-packages share one commit (and often the
 -- same deps/options), so without it @effectful@ and @effectful-core@ would
 -- collide on one store entry and the second would reuse the first's artifact
--- (zinc-qln).
+-- (zinc-qln). Native target (see 'buildCacheKeyFor').
 buildCacheKey :: BuildKey -> String
-buildCacheKey bk = showDigest (sha256 (BL8.pack payload))
+buildCacheKey = buildCacheKeyFor Native
+
+-- | As 'buildCacheKey', but target-aware (zinc-9po.2): a non-native target adds
+-- its triple so wasm artifacts never collide with native in the store —
+-- @~\/.zinc\/store@ holds both. @Native@ appends nothing, so its key (and every
+-- existing native artifact) is byte-identical: no cache invalidation.
+buildCacheKeyFor :: Target -> BuildKey -> String
+buildCacheKeyFor target bk = showDigest (sha256 (BL8.pack payload))
   where
     payload =
-      intercalate
-        "\0"
+      intercalate "\0" $
         [ bkName bk
         , bkRev bk
         , bkGhcVersion bk
         , intercalate "," (sort (bkDepUnitIds bk))
         , intercalate "," (sort (bkOptions bk))
         ]
+          ++ case target of
+            Native -> []
+            _      -> ["target:" ++ targetTriple target]
 
 -- | Location of a cached built package within the store.
 storePkgPath :: FilePath -> String -> FilePath
