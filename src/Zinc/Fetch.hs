@@ -7,6 +7,7 @@ module Zinc.Fetch
   , resolveRef
   , packageDirIn
   , namedCabal
+  , isHpackOnly
   ) where
 
 import Control.Applicative ((<|>))
@@ -21,7 +22,7 @@ import Zinc.Cabal (cabalBuildType, parseCabalComponentsForGhc)
 import Zinc.Diagnostic (ZincError (BuildTypeCustom))
 import Zinc.Except (failWith, failWithError, liftEither, liftIO, orFail, orFailE, runResult)
 import Zinc.Git (cloneAt, listTags, splitRepoSubdir)
-import Zinc.Hackage (fetchHackageTarball)
+import Zinc.Hackage (fetchHackageTarball, hackageCabal)
 import Zinc.Manifest (Component (compDepends, compKind), ComponentKind (Library), Dependency (..), Ref (..), parseDependencies)
 import Zinc.Resolve (DepManifest (..))
 import Zinc.Version (newestTagFor)
@@ -66,14 +67,40 @@ cabalManifest name ghcVersion pkgDir = runResult $ do
   -- can hold several, and the first is not necessarily the dep being resolved —
   -- reading a sibling's cabal leaks its foreign deps into the closure.
   case namedCabal name cabals <|> listToMaybe cabals of
-    Nothing  -> failWith (name ++ ": no zinc.toml or .cabal in the checkout")
     Just cab -> do
       src <- liftIO (readFile (pkgDir </> cab))
+      depsFromCabal src
+    Nothing -> do
+      -- No committed .cabal. If it's an hpack package (package.yaml), read its
+      -- deps from the Hackage-published (generated) .cabal so the closure walk
+      -- can continue; the source itself is vendored from the sdist at freeze
+      -- time (zinc-pzu). Otherwise it's genuinely unbuildable.
+      hpack <- liftIO (isHpackOnly pkgDir)
+      if not hpack
+        then failWith (name ++ ": no zinc.toml or .cabal in the checkout")
+        else do
+          src <- orFail (first ((name ++ ": ") ++) <$> hackageCabal name)
+          depsFromCabal src
+  where
+    depsFromCabal src = do
       when (cabalBuildType src == Right "Custom") $
         failWithError (BuildTypeCustom name)
       comps <- liftEither (first ((name ++ ": ") ++) (parseCabalComponentsForGhc ghcVersion src))
       let libDeps = nub (concat [compDepends c | c <- comps, compKind c == Library])
       pure (DepManifest [Dependency d Latest Nothing [] | d <- libDeps] [])
+
+-- | An hpack package: a @package.yaml@ but no committed @.cabal@. zinc reads
+-- @.cabal@, not @package.yaml@, so such a checkout can't be built directly — its
+-- generated cabal comes from the Hackage sdist (vendored at freeze; zinc-pzu).
+isHpackOnly :: FilePath -> IO Bool
+isHpackOnly pkgDir = do
+  yaml <- doesFileExist (pkgDir </> "package.yaml")
+  if not yaml
+    then pure False
+    else do
+      there <- doesDirectoryExist pkgDir
+      cabals <- if there then filter ((== ".cabal") . takeExtension) <$> listDirectory pkgDir else pure []
+      pure (null cabals)
 
 -- | The @\<name\>.cabal@ in a list of cabal filenames (case-insensitively) — the
 -- file Cabal names after the package, used to pick the right one out of a

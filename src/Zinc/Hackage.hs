@@ -5,6 +5,7 @@
 module Zinc.Hackage
   ( sourceRepoOf
   , hackageCabalUrl
+  , hackageCabal
   , hackageSourceRepo
   , hackageTarballUrl
   , fetchHackageTarball
@@ -13,10 +14,10 @@ module Zinc.Hackage
 
 import Control.Applicative ((<|>))
 import Control.Monad (when)
-import Data.Char (toLower)
+import Data.Char (isSpace, toLower)
 import qualified Data.ByteString.Char8 as BS
 import Data.Maybe (listToMaybe)
-import Data.List (isInfixOf, isPrefixOf, stripPrefix)
+import Data.List (dropWhileEnd, isInfixOf, isPrefixOf, stripPrefix)
 import Distribution.PackageDescription (homepage, packageDescription, sourceRepos)
 import Distribution.PackageDescription.Parsec (parseGenericPackageDescription, runParseResult)
 import Distribution.Types.SourceRepo (RepoKind (RepoHead), SourceRepo (repoKind, repoLocation, repoSubdir))
@@ -105,6 +106,17 @@ breakOnSub needle = go ""
 hackageCabalUrl :: String -> String
 hackageCabalUrl pkg = "https://hackage.haskell.org/package/" ++ pkg ++ "/" ++ pkg ++ ".cabal"
 
+-- | Fetch a package's preferred @.cabal@ text from Hackage. For an hpack
+-- package (no committed @.cabal@ in its repo) this is the GENERATED cabal, so
+-- it's how zinc reads such a package's @build-depends@ at resolve time
+-- (zinc-pzu); the source is then vendored from the matching sdist.
+hackageCabal :: String -> IO (Either String String)
+hackageCabal pkg = do
+  (code, out, err) <- readProcessWithExitCode "curl" ["-fsSL", hackageCabalUrl pkg] ""
+  pure $ case code of
+    ExitSuccess   -> Right out
+    ExitFailure _ -> Left ("fetch " ++ pkg ++ " .cabal from Hackage: " ++ err)
+
 -- | Fetch a package's @.cabal@ from Hackage and extract its source repo.
 -- @Right Nothing@ means fetched but no repo declared.
 hackageSourceRepo :: String -> IO (Either String (Maybe String))
@@ -126,11 +138,15 @@ hackageLatestVersion pkg = do
   where
     versionOf src =
       listToMaybe
-        [ dropWhile (== ' ') (drop 1 rest)
+        -- trim trailing whitespace too: Hackage cabals can use CRLF, and a
+        -- stray '\r' on the version makes a malformed sdist URL (zinc-pzu).
+        [ v
         | l <- lines src
         , let (key, rest) = break (== ':') l
         , map toLower (dropWhile (== ' ') key) == "version"
         , not (null rest)
+        , let v = dropWhileEnd isSpace (dropWhile (== ' ') (drop 1 rest))
+        , not (null v)
         ]
 
 -- | URL of a package's sdist tarball (@\<name\>-\<version\>.tar.gz@) on Hackage —

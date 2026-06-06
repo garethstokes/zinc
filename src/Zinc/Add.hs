@@ -24,9 +24,9 @@ import Zinc.Closure (ClosureReport (crMembers, crNeedsVendoring), installedVersi
 import Zinc.Delta (ClosureDelta, closureDelta)
 import Zinc.Diagnostic (ZincError (DepNoGitRepo, ManifestParse, NoZincToml))
 import Zinc.Except (Result, failWith, failWithError, liftEitherE, liftIO, orFail, orFailE, runResult)
-import Zinc.Fetch (gitFetchManifest, resolveRef)
+import Zinc.Fetch (gitFetchManifest, isHpackOnly, packageDirIn, resolveRef)
 import Zinc.Git (cloneAt)
-import Zinc.Hackage (fetchHackageTarball, hackageSourceRepo)
+import Zinc.Hackage (fetchHackageTarball, hackageLatestVersion, hackageSourceRepo)
 import Zinc.Lock (LockedPackage (..), Source (..), parseLock, renderLock)
 import Zinc.Manifest
   ( Dependency (depName, depRef)
@@ -77,8 +77,21 @@ freezeClosure storeRoot = runResult . traverse freezeOne
             stale <- doesDirectoryExist dest
             when stale (removeDirectoryRecursive dest)
           rev <- orFail (first (("freeze " ++ rdName dep ++ ": ") ++) <$> cloneAt (rdRepo dep) refStr dest)
-          sha <- liftIO (contentHash dest)
-          pure (lockEntry dep rev sha)
+          pkgDir <- liftIO (packageDirIn dest (rdRepo dep) (rdName dep))
+          hpack <- liftIO (isHpackOnly pkgDir)
+          if hpack
+            then do
+              -- hpack package with no committed .cabal: zinc reads .cabal, not
+              -- package.yaml, so pin the Hackage sdist (which carries the
+              -- generated .cabal) as a vendored tarball rather than the git
+              -- checkout (zinc-pzu). The sdist replaces the clone in the store.
+              ver <- orFail (maybe (Left (rdName dep ++ ": hpack package has no .cabal and no Hackage release to vendor")) Right <$> hackageLatestVersion (rdName dep))
+              _ <- orFail (first (("vendor " ++ rdName dep ++ ": ") ++) <$> fetchHackageTarball (rdName dep) ver dest)
+              sha <- liftIO (contentHash dest)
+              pure (LockedPackage (rdName dep) (TarballSource ver) sha (rdDepends dep))
+            else do
+              sha <- liftIO (contentHash dest)
+              pure (lockEntry dep rev sha)
 
 -- | Resolve a workspace's dependency closure (real git fetch), freeze it, and
 -- write @zinc.lock@; returns the resolution table for display. Shared by

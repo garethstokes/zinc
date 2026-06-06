@@ -59,7 +59,7 @@ import Zinc.Manifest
   , parseWorkspace
   , renderWorkspace
   )
-import Zinc.Fetch (gitFetchManifest, namedCabal, packageDirIn)
+import Zinc.Fetch (gitFetchManifest, isHpackOnly, namedCabal, packageDirIn)
 import Zinc.GC (GCRoot (..), gcStore, runGc)
 import Zinc.Add (enrichWithRepos, freezeClosure, lockEntry, runAdd, runUpdate, runVendor, splitNameVersion)
 import Zinc.Build (GhcInvocation (..), MemberBuild (..), PackageConf (..), archiveArgs, buildMember, ghcMakeArgs, installedVersions, preprocessorFor, registerPackage, renderConf, replArgs, runPreprocessor, writeFileIfChanged)
@@ -2104,6 +2104,24 @@ main = hspec $ do
       writeFile (base </> "d" </> "sibling.cabal") "name: sibling\n"
       writeFile (base </> "d" </> "pkg" </> "pkg.cabal") "name: pkg\n"
       packageDirIn (base </> "d") "repo" "pkg" >>= (`shouldBe` (base </> "d" </> "pkg"))
+
+    it "isHpackOnly detects a package.yaml with no committed .cabal (pzu)" $ do
+      let base = "/tmp/zinc-hpack-test"
+      stale <- doesDirectoryExist base
+      when stale (removeDirectoryRecursive base)
+      -- package.yaml + no .cabal -> hpack (must vendor from Hackage)
+      createDirectoryIfMissing True (base </> "hp")
+      writeFile (base </> "hp" </> "package.yaml") "name: hp\n"
+      isHpackOnly (base </> "hp") >>= (`shouldBe` True)
+      -- package.yaml AND a committed .cabal -> not hpack-only (read the cabal)
+      createDirectoryIfMissing True (base </> "both")
+      writeFile (base </> "both" </> "package.yaml") "name: both\n"
+      writeFile (base </> "both" </> "both.cabal") "name: both\n"
+      isHpackOnly (base </> "both") >>= (`shouldBe` False)
+      -- a plain cabal package -> not hpack
+      createDirectoryIfMissing True (base </> "cab")
+      writeFile (base </> "cab" </> "cab.cabal") "name: cab\n"
+      isHpackOnly (base </> "cab") >>= (`shouldBe` False)
 
   describe "buildMember (real compile)" $
     it "compiles and links a hello-world member, which runs" $ do
