@@ -42,7 +42,7 @@ import System.Process (callProcess, readProcess, readProcessWithExitCode)
 import Zinc.Build (LibBuild (..), MemberBuild (..), buildLib, buildLibArtifacts, buildMember, initPackageDb, isRegistered, registerPackage, replArgs)
 import Zinc.Cabal (cabalBuildType, cabalVersion, parseCabalComponentsForGhc)
 import Zinc.Cache (BuildKey (..), buildCacheKey, storeConfPath, storePkgPath)
-import Zinc.CacheBackend (CacheBackend (cbPull, cbPush), PullOutcome (Pulled), remoteCacheFromEnv)
+import Zinc.CacheBackend (CacheBackend (cbPull, cbPush), CacheConfig (ccReadUrls, ccWriteUrl), PullOutcome (Pulled), httpBackend, resolveCacheConfig)
 import Zinc.Fetch (packageDirIn)
 import Zinc.Git (cloneAt)
 import Zinc.Hackage (fetchHackageTarball)
@@ -357,17 +357,18 @@ buildClosure sink wsDir storeRoot wsDb ghcVersion buildOpts = runResult $ do
     -- Any miss/error falls back to a local compile, so the build always
     -- succeeds offline and is unchanged when no remote is configured.
     tryRemotePull name key confPath = do
-      mBackend <- remoteCacheFromEnv
-      case mBackend of
-        Nothing -> pure False
-        Just be -> do
-          outcome <- cbPull be key storeRoot
-          case outcome of
-            Pulled -> do
-              confOk <- doesFileExist confPath
-              aOk <- doesFileExist (storePkgPath storeRoot key </> ("libHS" ++ name ++ ".a"))
-              pure (confOk && aOk)
-            _ -> pure False
+      cfg <- resolveCacheConfig wsDir
+      let verified = do
+            confOk <- doesFileExist confPath
+            aOk <- doesFileExist (storePkgPath storeRoot key </> ("libHS" ++ name ++ ".a"))
+            pure (confOk && aOk)
+          tryUrls [] = pure False
+          tryUrls (url : rest) = do
+            outcome <- cbPull (httpBackend url) key storeRoot
+            case outcome of
+              Pulled  -> verified >>= \ok -> if ok then pure True else tryUrls rest
+              _       -> tryUrls rest
+      tryUrls (ccReadUrls cfg)
 
     reuseCached l key = do
       conf <- readFile (storeConfPath storeRoot key)
@@ -453,8 +454,8 @@ buildClosure sink wsDir storeRoot wsDb ghcVersion buildOpts = runResult $ do
 -- Returns the pushed dependency names.
 runCachePush :: FilePath -> IO (Either ZincError [String])
 runCachePush wsDir = runResult $ do
-  mBackend <- liftIO remoteCacheFromEnv
-  be <- maybe (failWith "no remote cache configured (set ZINC_CACHE)") pure mBackend
+  cfg <- liftIO (resolveCacheConfig wsDir)
+  be <- maybe (failWith "no remote cache write-url configured (set [cache].write-url, ZINC_CACHE_URL, or ZINC_CACHE)") (pure . httpBackend) (ccWriteUrl cfg)
   let lockFile = wsDir </> "zinc.lock"
   haveLock <- liftIO (doesFileExist lockFile)
   locks <- if haveLock then liftEither . parseLock =<< liftIO (readFile lockFile) else pure []

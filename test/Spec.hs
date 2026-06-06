@@ -39,7 +39,7 @@ import Zinc.Git (cloneAt, gitEnv, gitInitIfNeeded, isInsideRepo, listTags, split
 import Zinc.Hackage (hackageCabalUrl, hackageTarballUrl, sourceRepoOf)
 import Zinc.Outdated (OutdatedDep (..), Status (..), classify)
 import Zinc.Delta (Change (..), ClosureDelta (..), closureDelta, isEmptyDelta)
-import Zinc.CacheBackend (CacheBackend (..), PullOutcome (..), artifactUrl, curlOutcome, httpBackend)
+import Zinc.CacheBackend (CacheBackend (..), CacheConfig (..), PullOutcome (..), artifactUrl, curlOutcome, httpBackend, parseCacheTable, resolveCacheConfig)
 import Zinc.Store (contentHash, resolveStoreRoot, storeSrcPath, verifyContent, withStoreLock)
 import Zinc.Manifest
   ( Component (..)
@@ -1389,6 +1389,24 @@ main = hspec $ do
       out <- cbPull be key store2
       got <- readFile (storePkgPath store2 key </> "package.conf")
       (pushed, out, "name: rt" `isInfixOf` got) `shouldBe` (Right (), Pulled, True)
+
+    it "parses a [cache] table: urls, write-url, private-only (vwn.6)" $ do
+      let src = unlines ["[cache]", "urls = [\"https://a/z\", \"https://b/z\"]", "write-url = \"https://w/z\"", "private-only = true"]
+      parseCacheTable src `shouldBe` Just (CacheConfig ["https://a/z", "https://b/z"] (Just "https://w/z") True)
+      parseCacheTable "[workspace]\nmembers = []\nghc = \"9.6.5\"\n" `shouldBe` Nothing
+
+    it "resolveCacheConfig prefers [cache], falls back to the env var (vwn.6)" $ do
+      let dir = "/tmp/zinc-cachecfg"
+      doesDirectoryExist dir >>= \e -> when e (removeDirectoryRecursive dir)
+      createDirectoryIfMissing True dir
+      setEnv "ZINC_CACHE" "https://env/z"
+      writeFile (dir </> "zinc.toml") (unlines ["[cache]", "urls = [\"https://file/z\"]"])
+      fromTable <- resolveCacheConfig dir
+      writeFile (dir </> "zinc.toml") "[workspace]\nmembers = []\nghc = \"9.6.5\"\n"
+      fromEnv <- resolveCacheConfig dir
+      unsetEnv "ZINC_CACHE"
+      (ccReadUrls fromTable, ccReadUrls fromEnv, ccWriteUrl fromEnv)
+        `shouldBe` (["https://file/z"], ["https://env/z"], Just "https://env/z")
 
   describe "manifest parse diagnostics on read-only paths (szn)" $
     it "a malformed zinc.toml yields ZINC_MANIFEST_PARSE, not a generic error" $ do

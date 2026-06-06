@@ -15,17 +15,23 @@ module Zinc.CacheBackend
   , artifactUrl
   , curlOutcome
   , httpBackend
-  , remoteCacheFromEnv
+  , CacheConfig (..)
+  , parseCacheTable
+  , resolveCacheConfig
   ) where
 
 import Control.Monad (when)
+import qualified Data.Map as Map
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, removeDirectoryRecursive, removeFile)
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
-import System.FilePath (takeDirectory)
+import System.FilePath (takeDirectory, (</>))
 import System.IO.Error (catchIOError)
 import System.Process (readProcessWithExitCode)
+import qualified Toml
+import Toml.Value (Value (..))
 import Zinc.Cache (storePkgPath)
+import Zinc.TOML (optStringArray)
 
 -- | The result of attempting a remote pull for one build key.
 data PullOutcome
@@ -104,12 +110,42 @@ httpBackend base = CacheBackend {cbName = "http " ++ base, cbPull = pull, cbPush
             ExitFailure _ -> PullFailed ("unpack " ++ key ++ ": " ++ xe)
     removeIfExists f = removeFile f `catchIOError` const (pure ())
 
--- | The remote cache the build should consult, from the @ZINC_CACHE@ env var (a
--- base URL); 'Nothing' when unset, so the build is unchanged by default
--- (opt-in). The trust model (private-only, hash-verify) is zinc-vwn.6.
-remoteCacheFromEnv :: IO (Maybe CacheBackend)
-remoteCacheFromEnv = do
-  mUrl <- lookupEnv "ZINC_CACHE"
-  pure $ case mUrl of
-    Just url | not (null url) -> Just (httpBackend url)
-    _                         -> Nothing
+-- | A workspace's remote-cache configuration (zinc-vwn.6). Trust model for v1 is
+-- private/trusted caches only: you pull from / push to caches you control, so
+-- integrity rests on the transport (TLS) + the host being private. There is no
+-- cross-org artifact verification yet — signing is a separate fast-follow; the
+-- light conf+@.a@ check at pull time only rejects malformed artifacts.
+data CacheConfig = CacheConfig
+  { ccReadUrls    :: [String]     -- ^ pull from these base URLs, in order
+  , ccWriteUrl    :: Maybe String -- ^ publish here (@zinc cache push@)
+  , ccPrivateOnly :: Bool         -- ^ reserved: v1 only supports private caches
+  }
+  deriving (Eq, Show)
+
+-- | Parse the optional @[cache]@ table from a @zinc.toml@ source: @urls@ (read),
+-- @write-url@, @private-only@ (defaults 'True'). 'Nothing' if there is no
+-- @[cache]@ table (so the env fallback can apply).
+parseCacheTable :: String -> Maybe CacheConfig
+parseCacheTable src = case Toml.parse src of
+  Right top | Just (Table t) <- Map.lookup "cache" top ->
+    Just (CacheConfig (either (const []) id (optStringArray "urls" t)) (strField "write-url" t) (boolField "private-only" t))
+  _ -> Nothing
+  where
+    strField k t = case Map.lookup k t of Just (String s) -> Just s; _ -> Nothing
+    boolField k t = case Map.lookup k t of Just (Bool b) -> b; _ -> True
+
+-- | The cache config for a workspace: the @[cache]@ table if present, otherwise
+-- the @ZINC_CACHE_URL@ / @ZINC_CACHE@ env var as a single read+write URL
+-- (back-compat). An empty config (no URLs) leaves the build unchanged.
+resolveCacheConfig :: FilePath -> IO CacheConfig
+resolveCacheConfig wsDir = do
+  src <- readFile (wsDir </> "zinc.toml") `catchIOError` const (pure "")
+  case parseCacheTable src of
+    Just cc -> pure cc
+    Nothing -> do
+      envUrl <- firstNonEmpty <$> mapM lookupEnv ["ZINC_CACHE_URL", "ZINC_CACHE"]
+      pure $ case envUrl of
+        Just u  -> CacheConfig [u] (Just u) True
+        Nothing -> CacheConfig [] Nothing True
+  where
+    firstNonEmpty = foldr (\x acc -> case x of Just s | not (null s) -> Just s; _ -> acc) Nothing
