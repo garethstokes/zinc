@@ -29,14 +29,22 @@ module Zinc.Deploy
   , deployReadyJson
   , initSnippet
   , runInit
+  , nixCopyStoreUri
+  , nixCopyArgs
+  , nixCopyEnv
+  , profileName
+  , profileInstallScript
+  , runNixCopy
+  , runProfileInstall
   ) where
 
 import Data.Char (isDigit)
 import Data.List (find)
-import System.Exit (ExitCode (ExitFailure))
-import System.Process (readProcessWithExitCode)
+import System.Environment (getEnvironment)
+import System.Exit (ExitCode (ExitFailure, ExitSuccess))
+import System.Process (CreateProcess (env), proc, readCreateProcessWithExitCode, readProcessWithExitCode)
 import Zinc.Diagnostic
-  ( ZincError (DeployNoLinger, DeployNoNix, DeployNotTrusted, DeploySsh)
+  ( ZincError (DeployCopy, DeployNoLinger, DeployNoNix, DeployNotTrusted, DeploySsh)
   )
 import Zinc.Json (Json (..), object)
 import Zinc.Manifest (DeployTarget (..))
@@ -225,6 +233,66 @@ runInit h =
         _ -> case words out of
           (u : _) -> Right (initSnippet u)
           []      -> Left (DeploySsh (dhHost h) "could not determine the remote username")
+
+-- | The @ssh-ng://@ Nix store URI for a host (deploy-host spec §5 step 3). The
+-- port is NOT embedded here — Nix's @ssh-ng@ shells out to @ssh@, which takes
+-- the port via @NIX_SSHOPTS@ (see 'nixCopyEnv'), not the URI.
+nixCopyStoreUri :: DeployHost -> String
+nixCopyStoreUri h = "ssh-ng://" ++ maybe "" (++ "@") (dhUser h) ++ dhHost h
+
+-- | The @nix copy@ argv that pushes a store path's closure to the host. Only
+-- store paths the host is missing transfer (content-addressed dedup, spec §5).
+nixCopyArgs :: DeployHost -> FilePath -> [String]
+nixCopyArgs h path =
+  ["--extra-experimental-features", "nix-command flakes", "copy", "--to", nixCopyStoreUri h, path]
+
+-- | Extra env for the @nix copy@ process: a non-default port reaches Nix's
+-- underlying @ssh@ via @NIX_SSHOPTS@ (the URI carries no port).
+nixCopyEnv :: DeployHost -> [(String, String)]
+nixCopyEnv h = maybe [] (\p -> [("NIX_SSHOPTS", "-p " ++ show p)]) (dhPort h)
+
+-- | The dedicated user-profile name for a service (spec §5 step 4):
+-- @\~\/.local\/state\/nix\/profiles\/zinc-\<service\>@ pins the closure against
+-- GC and yields generations (the rollback substrate, nbk.4) for free.
+profileName :: String -> String
+profileName service = "zinc-" ++ service
+
+-- | The remote shell script that installs a (already-copied) store path into the
+-- service's user profile — the GC-root + generation step. Runs on the host via
+-- SSH, so @$HOME@ expands there.
+profileInstallScript :: String -> FilePath -> String
+profileInstallScript service path =
+  unlines
+    [ "set -e"
+    , "prof=\"$HOME/.local/state/nix/profiles/" ++ profileName service ++ "\""
+    , "mkdir -p \"$(dirname \"$prof\")\""
+    , "nix --extra-experimental-features 'nix-command flakes' profile install --profile \"$prof\" " ++ path
+    ]
+
+-- | Push a built store closure to the host with @nix copy@ (deploy sequence
+-- step 3). NOTE (nbk.2): the command construction is unit-tested, but this IO
+-- path is UNVERIFIED without a real NixOS host — see the issue's discovery notes.
+runNixCopy :: DeployHost -> FilePath -> IO (Either ZincError ())
+runNixCopy h path = do
+  base <- getEnvironment
+  (code, _out, err) <-
+    readCreateProcessWithExitCode
+      (proc "nix" (nixCopyArgs h path)) {env = Just (base ++ nixCopyEnv h)}
+      ""
+  pure $ case code of
+    ExitSuccess   -> Right ()
+    ExitFailure _ -> Left (DeployCopy (dhHost h) (firstLine err))
+
+-- | Install a copied store path into the service's user profile over SSH
+-- (deploy sequence step 4). NOTE (nbk.2): unit-tested command construction; the
+-- IO path is UNVERIFIED without a real NixOS host.
+runProfileInstall :: DeployHost -> String -> FilePath -> IO (Either ZincError ())
+runProfileInstall h service path = do
+  (code, _out, err) <-
+    readProcessWithExitCode "ssh" (sshArgs h ["sh", "-s"]) (profileInstallScript service path)
+  pure $ case code of
+    ExitSuccess   -> Right ()
+    ExitFailure _ -> Left (DeployCopy (dhHost h) (firstLine err))
 
 -- | The @--json@ data block for a ready host.
 deployReadyJson :: DeployHost -> ProbeChecks -> Json

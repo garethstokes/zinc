@@ -39,6 +39,11 @@ import Zinc.Deploy
   , ResolvedDeploy (..)
   , initSnippet
   , interpretProbe
+  , nixCopyArgs
+  , nixCopyEnv
+  , nixCopyStoreUri
+  , profileInstallScript
+  , profileName
   , parseDeployHost
   , parseProbeOutput
   , probeScript
@@ -3293,6 +3298,30 @@ main = hspec $ do
 
     it "lets --service override the configured service" $
       rdService (resolveDeploy [t] "homelab" (Just "override")) `shouldBe` Just "override"
+
+  describe "Zinc.Deploy nix copy + profile (nbk.2)" $ do
+    it "builds the ssh-ng store URI from the target (port goes via NIX_SSHOPTS, not the URI)" $ do
+      nixCopyStoreUri (DeployHost (Just "gareth") "box" Nothing) `shouldBe` "ssh-ng://gareth@box"
+      nixCopyStoreUri (DeployHost Nothing "box" (Just 2222)) `shouldBe` "ssh-ng://box"
+
+    it "builds the nix copy argv with experimental features enabled" $
+      nixCopyArgs (DeployHost (Just "gareth") "box" Nothing) "/nix/store/abc-app"
+        `shouldBe` ["--extra-experimental-features", "nix-command flakes", "copy", "--to", "ssh-ng://gareth@box", "/nix/store/abc-app"]
+
+    it "passes a non-default port to nix's ssh via NIX_SSHOPTS" $ do
+      nixCopyEnv (DeployHost Nothing "box" (Just 2222)) `shouldBe` [("NIX_SSHOPTS", "-p 2222")]
+      nixCopyEnv (DeployHost Nothing "box" Nothing) `shouldBe` []
+
+    it "names the per-service profile and installs into it (GC-root + generations)" $ do
+      profileName "myapp" `shouldBe` "zinc-myapp"
+      let s = profileInstallScript "myapp" "/nix/store/abc-app"
+      all
+        (`isInfixOf` s)
+        [ ".local/state/nix/profiles/zinc-myapp"
+        , "profile install --profile"
+        , "/nix/store/abc-app"
+        ]
+        `shouldBe` True
 
   describe "Zinc.Cabal.bootConflicts (sib)" $ do
     let isBoot = (`elem` ["transformers", "base"])

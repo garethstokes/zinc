@@ -72,6 +72,7 @@ data ZincError
   | DeployNoNix String                -- ^ host (no Nix daemon on the target)
   | DeployNotTrusted String           -- ^ user (not in the host's trusted-users)
   | DeployNoLinger String             -- ^ user (lingering disabled on the host)
+  | DeployCopy String String          -- ^ host, detail (nix copy / profile install failed, zinc-nbk.2)
   | OtherError String                 -- ^ escape hatch for not-yet-migrated messages
   deriving (Eq, Show)
 
@@ -182,6 +183,7 @@ errorCode e = case e of
   DeployNoNix {}         -> "ZINC_DEPLOY_NO_NIX"
   DeployNotTrusted {}    -> "ZINC_DEPLOY_NOT_TRUSTED"
   DeployNoLinger {}      -> "ZINC_DEPLOY_NO_LINGER"
+  DeployCopy {}          -> "ZINC_DEPLOY_COPY"
   OtherError {}          -> "ZINC_ERROR"
 
 -- | The single boundary renderer: 'ZincError' to the agent-facing 'Diagnostic'.
@@ -262,6 +264,9 @@ toDiagnostic e =
       DeployNotTrusted user ->
         ( "deploy user is not trusted on the host", Just (user ++ " is not in the host's trusted-users"), Nothing, Nothing
         , Just ("add " ++ user ++ " to `nix.settings.trusted-users` (`zinc deploy --init` prints the snippet)") )
+      DeployCopy host d ->
+        ( "could not copy the build to the host", Just (host ++ ": " ++ d), Nothing, Nothing
+        , Just "check the host is in trusted-users (`zinc deploy --init`) and reachable; nix copy uses ssh-ng" )
       DeployNoLinger user ->
         ( "user lingering is disabled on the host", Just ("services for " ++ user ++ " will not run without an active login"), Nothing, Nothing
         , Just ("set `users.users." ++ user ++ ".linger = true` (`zinc deploy --init` prints the snippet)") )
@@ -349,6 +354,7 @@ exitCodeFor e = ExitFailure $ case e of
   DeployNoNix {}         -> 5
   DeployNotTrusted {}    -> 5
   DeployNoLinger {}      -> 5
+  DeployCopy {}          -> 5
   ContentHashMismatch {} -> 6
   OtherError {}          -> 1
 
