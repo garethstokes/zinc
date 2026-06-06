@@ -41,7 +41,7 @@ primeText ws =
   unlines
     [ "# zinc workspace orientation"
     , ""
-    , "Toolchain: GHC " ++ wsGhc ws ++ " — provisioned via Nix. Enter the dev shell with `nix develop`."
+    , "Toolchain: GHC " ++ wsGhc ws ++ " — auto-provisioned via Nix at build time (no manual `nix develop`; it stays as a manual escape hatch)."
     , "Members:   " ++ memberList ws
     , ""
     , "Build / run / test:"
@@ -77,7 +77,7 @@ onboardText ws =
     [ "## Building (zinc)"
     , ""
     , "This project builds with **zinc** (a git-native, Nix-assisted Haskell build tool) —"
-    , "not cabal or stack. Toolchain: GHC " ++ wsGhc ws ++ " via Nix (`nix develop`)."
+    , "not cabal or stack. Toolchain: GHC " ++ wsGhc ws ++ ", auto-provisioned via Nix at build time."
     , ""
     , "- `zinc build` — build all members (`--json` for a machine report)"
     , "- `zinc test` — run the test suites"

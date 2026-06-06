@@ -216,10 +216,10 @@ toDiagnostic e =
         , Just "fix the TOML in the manifest" )
       NixAbsent ->
         ( "Nix is not available", Nothing, Nothing, Nothing
-        , Just "install Nix (flakes enabled) or enter the dev shell with `nix develop`" )
+        , Just "install Nix (flakes enabled) so zinc can auto-provision the toolchain, or put GHC on PATH yourself" )
       ToolchainMissing tool ->
         ( "required toolchain not found", Just (tool ++ " is not on PATH"), Nothing, Nothing
-        , Just "enter the dev shell with `nix develop` (it provides GHC), or install GHC onto PATH" )
+        , Just "install Nix (flakes enabled) — zinc auto-provisions GHC at build time — or put GHC on PATH (`nix develop` still works as a manual escape hatch)" )
       NoZincToml dir ->
         ( "no zinc.toml found", Just ("expected a workspace manifest in " ++ dir), Nothing, Nothing
         , Just "run `zinc new <name>` to scaffold a workspace, or cd into one" )
