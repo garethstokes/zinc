@@ -105,6 +105,7 @@ data Component = Component
   , compIncludeDirs    :: [String]     -- ^ C-header search dirs for CPP, relative to the package
   , compCppOptions     :: [String]     -- ^ CPP @-D@ defines (cabal cpp-options), passed via @-optP@
   , compCSources       :: [String]     -- ^ C sources to compile + archive (cabal c-sources), relative to the package
+  , compReexports      :: [(String, Maybe String, String)] -- ^ cabal reexported-modules as (newName, originalPackage?, originalName); origin pkg is Nothing for a bare reexport, resolved at conf time (zinc-jdf)
   }
   deriving (Eq, Show)
 
@@ -157,6 +158,7 @@ mkComponent kind name t =
     , compIncludeDirs = strs "include-dirs"
     , compCppOptions = strs "cpp-options"
     , compCSources = strs "c-sources"
+    , compReexports = [] -- zinc-native components don't reexport (cabal-only, zinc-jdf)
     }
   where
     strs k = either (const []) id (optStringArray k t)

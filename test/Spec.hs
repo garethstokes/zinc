@@ -1139,6 +1139,7 @@ main = hspec $ do
             , compIncludeDirs = []
             , compCppOptions = []
             , compCSources = []
+            , compReexports = []
             }
 
     it "parses a named executable component" $
@@ -1697,6 +1698,7 @@ main = hspec $ do
             , compIncludeDirs = []
             , compCppOptions = []
             , compCSources = []
+            , compReexports = []
             }
 
     it "derives an executable component" $
@@ -1970,6 +1972,7 @@ main = hspec $ do
                 , confLibraryDirs = ["/lib"]
                 , confHsLibraries = ["HSmyapp-0.1.0-abc"]
                 , confDepends = []
+                , confReexports = []
                 }
        in all
             (`isInfixOf` out)
@@ -1979,6 +1982,22 @@ main = hspec $ do
             , "hs-libraries: HSmyapp-0.1.0-abc"
             ]
             `shouldBe` True
+
+    it "renderConf emits reexports inline in exposed-modules as `New from unit:Orig` (jdf)" $
+      let out =
+            renderConf
+              PackageConf
+                { confName = "facade"
+                , confVersion = "1.0"
+                , confId = "facade"
+                , confExposedModules = ["Own"]
+                , confImportDirs = ["/d"]
+                , confLibraryDirs = ["/d"]
+                , confHsLibraries = ["HSfacade"]
+                , confDepends = ["effectful-core"]
+                , confReexports = [("Effectful", "effectful-core", "Effectful")]
+                }
+       in ("exposed-modules: Own Effectful from effectful-core:Effectful" `isInfixOf` out) `shouldBe` True
 
     it "registers a synthesized conf (accepted by ghc-pkg)" $ do
       let base = "/tmp/zinc-pkgdb-test"
@@ -1996,6 +2015,7 @@ main = hspec $ do
                 , confLibraryDirs = [base ++ "/lib"]
                 , confHsLibraries = ["HSdemo-1.0-deadbeef"]
                 , confDepends = []
+                , confReexports = []
                 }
       r <- registerPackage db conf
       r `shouldBe` Right ()
@@ -2356,6 +2376,7 @@ main = hspec $ do
               , compIncludeDirs = []
               , compCppOptions = []
               , compCSources = []
+              , compReexports = []
               }
       r <- buildMember (MemberBuild dir (dir ++ "/build") Nothing comp)
       case r of
@@ -2382,7 +2403,7 @@ main = hspec $ do
   describe "orderMembers" $
     it "orders a member after the siblings it depends on" $ do
       let comp deps =
-            Component Library "x" [] [] Nothing [] [] deps [] [] [] []
+            Component Library "x" [] [] Nothing [] [] deps [] [] [] [] []
           core = ("packages/core", MemberManifest "core" "1.0" [comp []])
           app = ("packages/app", MemberManifest "app" "1.0" [comp ["core"]])
       map (pkgName . snd) (orderMembers [app, core]) `shouldBe` ["core", "app"]
@@ -2502,7 +2523,7 @@ main = hspec $ do
 
   describe "replArgs" $ do
     let exeComp =
-          Component Executable "app" ["app"] [] (Just "Main.hs") [] [] [] [] [] [] []
+          Component Executable "app" ["app"] [] (Just "Main.hs") [] [] [] [] [] [] [] []
 
     it "builds ghci args loading the member's main" $
       replArgs (Just "/db") "/m" exeComp
@@ -2516,7 +2537,7 @@ main = hspec $ do
       materialize dir (scaffoldNew "demo")
       -- flat scaffold: the member is the repo root itself (member "."), source at app/
       let memberDir = dir
-          comp = Component Executable "demo" ["app"] [] (Just "Main.hs") [] [] [] [] [] [] []
+          comp = Component Executable "demo" ["app"] [] (Just "Main.hs") [] [] [] [] [] [] [] []
       out <- readProcess "ghci" (replArgs Nothing memberDir comp ++ ["-e", "main"]) ""
       out `shouldBe` "Hello from demo!\n"
 
@@ -3328,6 +3349,21 @@ main = hspec $ do
         ]
         `shouldBe` True
 
+  describe "Zinc.Cabal reexported-modules (jdf)" $ do
+    it "reads bare and renamed reexports from a library .cabal" $ do
+      let cabal =
+            unlines
+              [ "cabal-version: 2.4"
+              , "name: facade"
+              , "version: 1.0"
+              , "library"
+              , "  build-depends: base"
+              , "  reexported-modules: Effectful, Orig as Renamed"
+              , "  default-language: Haskell2010"
+              ]
+      fmap (concatMap compReexports . filter ((== Library) . compKind)) (parseCabalComponents cabal)
+        `shouldBe` Right [("Effectful", Nothing, "Effectful"), ("Renamed", Nothing, "Orig")]
+
   describe "Zinc.Build wasm support gate (9po.3)" $ do
     let pureLib =
           Component
@@ -3343,6 +3379,7 @@ main = hspec $ do
             , compIncludeDirs = []
             , compCppOptions = []
             , compCSources = []
+            , compReexports = []
             }
         code = either (Just . errorCode) (const Nothing)
     it "passes a pure-Haskell component for both native and wasm" $

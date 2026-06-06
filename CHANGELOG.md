@@ -41,13 +41,21 @@ The first self-hosting, agent-first release.
 - Structured error taxonomy (`ZINC_*` codes) with a `nextAction` and stable
   category exit codes (2 usage · 3 resolution · 4 build · 5 environment ·
   6 integrity).
-- `ZINC_DEP_BOOT_CONFLICT`: when a dependency's resolved tag pins a GHC boot
-  library below what the toolchain ships (the classic "newest tag is stale" trap
-  — e.g. monad-control's tag pins `transformers <0.6` against a 0.6 toolchain),
-  zinc fails with a named diagnostic — package, boot lib, both versions — instead
-  of a cryptic `ErrorT not in scope`, and probes the dependency's HEAD to suggest
-  the exact forward-pin commit. Bounds stay advisory (read for diagnostics, never
-  fed to resolution).
+- Package exposure honours Cabal `reexported-modules:` — an umbrella package
+  (e.g. `effectful` re-exporting `Effectful` from `effectful-core`) now lets a
+  consumer that depends only on the umbrella `import` the re-exported module.
+  zinc reads the reexports, resolves each origin to the dependency that exposes
+  it, and emits ghc-pkg's `exposed-modules: New from unit:Orig` syntax in the
+  generated `.conf`.
+- `ZINC_DEP_BOOT_CONFLICT`: when a dependency fails to compile *because* its
+  resolved tag pins a GHC boot library below what the toolchain ships (the
+  classic "newest tag is stale" trap — e.g. monad-control's tag pins
+  `transformers <0.6` against a 0.6 toolchain), zinc replaces the cryptic
+  `ErrorT not in scope` with a named diagnostic — package, boot lib, both
+  versions — and probes the dependency's HEAD to suggest the exact forward-pin
+  commit. Bounds stay advisory: the check fires only on an actual compile
+  failure, so a conservative-but-harmless bound (e.g. a stale `base <4.17`) never
+  blocks a build that would otherwise succeed.
 - Introspection: `status`, `graph`, `explain`. Diagnostics: `doctor` (env +
   project health), `perf` (latency p50/p95, cache hit-rate, regressions over a
   rolling baseline). Orientation: `prime`, `onboard`, `dockerfile`.

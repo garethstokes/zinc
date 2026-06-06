@@ -52,7 +52,8 @@ import Distribution.Pretty (prettyShow)
 import Distribution.System (buildPlatform)
 import Distribution.Types.ComponentRequestedSpec (ComponentRequestedSpec (ComponentRequestedSpec))
 import Distribution.Types.Dependency (depLibraries, depPkgName, depVerRange)
-import Distribution.Types.Library (libName)
+import Distribution.Types.Library (libName, reexportedModules)
+import Distribution.Types.ModuleReexport (ModuleReexport (moduleReexportName, moduleReexportOriginalName, moduleReexportOriginalPackage))
 import Distribution.Types.LibraryName (LibraryName (LSubLibName))
 import Distribution.Types.PackageId (pkgName, pkgVersion)
 import Distribution.Types.PackageName (unPackageName)
@@ -209,6 +210,7 @@ mergeLib sub acc =
     , compCppOptions  = compCppOptions acc ++ compCppOptions sub
     , compCSources    = nub (compCSources acc ++ compCSources sub)
     , compSystemLibs  = nub (compSystemLibs acc ++ compSystemLibs sub)
+    , compReexports   = nub (compReexports acc ++ compReexports sub)
     }
 
 executableComponents :: PackageDescription -> [Component]
@@ -233,7 +235,19 @@ testMain ts = case testInterface ts of
 fromLibrary :: Library -> Component
 fromLibrary lib =
   let c = fromBuildInfo Library "lib" (libBuildInfo lib)
-   in c {compModules = map prettyShow (exposedModules lib) ++ compModules c}
+   in c
+        { compModules = map prettyShow (exposedModules lib) ++ compModules c
+        , -- Cabal reexported-modules (zinc-jdf): a bare reexport has no origin
+          -- package (Nothing — resolved at conf time from the deps that expose
+          -- it); @Orig as New@ / @pkg:Orig as New@ name it explicitly.
+          compReexports =
+            [ ( prettyShow (moduleReexportName r)
+              , unPackageName <$> moduleReexportOriginalPackage r
+              , prettyShow (moduleReexportOriginalName r)
+              )
+            | r <- reexportedModules lib
+            ]
+        }
 
 -- | The fields common to every component, pulled from a 'BuildInfo'.
 fromBuildInfo :: ComponentKind -> String -> BuildInfo -> Component
@@ -257,6 +271,7 @@ fromBuildInfo kind name bi =
     , compIncludeDirs = includeDirs bi
     , compCppOptions = cppOptions bi
     , compCSources = cSources bi
+    , compReexports = [] -- set by 'fromLibrary' (only libraries reexport); exes/tests have none
     }
   where
     pkgconfigNames b = [unPkgconfigName n | PkgconfigDependency n _ <- pkgconfigDepends b]

@@ -29,7 +29,7 @@ module Zinc.Build
   , installedVersionsFor
   ) where
 
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (fromMaybe, isJust, listToMaybe)
 import Control.Monad (unless, when)
 import Data.List (find, intercalate, isInfixOf, isPrefixOf, nub)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getModificationTime, listDirectory)
@@ -83,6 +83,7 @@ data PackageConf = PackageConf
   , confLibraryDirs    :: [FilePath]
   , confHsLibraries    :: [String]
   , confDepends        :: [String]   -- ^ dependency unit-ids
+  , confReexports      :: [(String, String, String)] -- ^ resolved reexports: (newName, originUnitId, originName) — emitted inline in exposed-modules (zinc-jdf)
   }
   deriving (Eq, Show)
 
@@ -95,7 +96,10 @@ renderConf c =
     , "id: " ++ confId c
     , "key: " ++ confId c
     , "exposed: True"
-    , "exposed-modules: " ++ unwords (confExposedModules c)
+    , -- Reexports ride in exposed-modules using ghc-pkg's @New from unit:Orig@
+      -- syntax, so a consumer that depends only on this package can import a
+      -- module the package re-exports from a dependency (zinc-jdf).
+      "exposed-modules: " ++ unwords (confExposedModules c ++ [new ++ " from " ++ unit ++ ":" ++ orig | (new, unit, orig) <- confReexports c])
     , "import-dirs: " ++ unwords (confImportDirs c)
     , "library-dirs: " ++ unwords (confLibraryDirs c)
     , "hs-libraries: " ++ unwords (confHsLibraries c)
@@ -383,6 +387,11 @@ buildLibArtifactsFor target lb = runResult $ do
   let aPath = lbDistDir lb </> ("libHS" ++ unitId ++ ".a")
   stale <- liftIO (archiveStale aPath objs)
   when stale $ orFail (runUnit "ar" (archiveArgs (lbDistDir lb) unitId objs))
+  -- Resolve cabal reexported-modules to (new, originUnitId, orig) by finding
+  -- which already-registered dependency exposes each origin module (zinc-jdf),
+  -- so the conf can carry `New from unit:Orig` and a consumer importing the
+  -- re-exported module needs only this package on its -package list.
+  reexports <- liftIO (resolveReexports target (lbPackageDb lb) (nub (compDepends comp)) (compReexports comp))
   let confText =
         renderConf
           PackageConf
@@ -396,6 +405,7 @@ buildLibArtifactsFor target lb = runResult $ do
             , -- Direct deps as installed unit-ids so dependents link them:
               -- zinc deps by bare name, non-base boot libs by real id.
               confDepends = [depConfId d | d <- nub (compDepends comp), d /= "base"]
+            , confReexports = reexports
             }
   -- Persist the conf alongside the build (the artifact cache re-registers it
   -- without recompiling); report whether it changed so a sibling lib can skip
@@ -554,6 +564,27 @@ versionInts = map readInt . splitDots
 
 -- | Versions of packages currently visible to ghc-pkg (boot libs + already
 -- registered deps), for emitting correct MIN_VERSION_* CPP macros.
+-- | Resolve cabal reexports to @(newName, originUnitId, originName)@ for the
+-- @.conf@ (zinc-jdf). A reexport that names its origin package uses it directly
+-- (zinc's unit-id is the bare package name); a bare reexport is resolved by
+-- finding which dependency already registered in @db@ exposes the origin module.
+-- Unresolvable reexports are dropped (rather than emit a conf ghc-pkg rejects).
+resolveReexports :: Target -> FilePath -> [String] -> [(String, Maybe String, String)] -> IO [(String, String, String)]
+resolveReexports _ _ _ [] = pure []
+resolveReexports target db deps reexs = do
+  exposedByDep <- mapM (\d -> (,) d <$> exposedModulesOf target db d) deps
+  let originOf orig = listToMaybe [d | (d, mods) <- exposedByDep, orig `elem` mods]
+  pure [(new, unit, orig) | (new, mPkg, orig) <- reexs, Just unit <- [maybe (originOf orig) Just mPkg]]
+
+-- | The module names a registered package exposes (own + its own reexports),
+-- via @ghc-pkg field <pkg> exposed-modules@. Reexport @from@ annotations are
+-- left as separate tokens (harmless for membership lookup).
+exposedModulesOf :: Target -> FilePath -> String -> IO [String]
+exposedModulesOf target db pkg = do
+  (_, out, _) <- readProcessWithExitCode (ghcPkgFor target) ["--package-db", db, "field", pkg, "exposed-modules"] ""
+  let body = drop 1 (dropWhile (/= ':') out) -- after the "exposed-modules:" label
+  pure (words (map (\ch -> if ch == ',' then ' ' else ch) body))
+
 installedVersions :: IO [(String, [Int])]
 installedVersions = installedVersionsFor Native
 

@@ -460,19 +460,22 @@ buildClosure sink target wsDir storeRoot wsDb ghcVersion buildOpts mAcc = runRes
       case filter ((== Library) . compKind) components of
         []        -> pure (report Skipped, Nothing) -- no library to build
         (lib : _) -> do
-          -- sib: detect a stale tag whose declared boot-library bound conflicts
-          -- with the toolchain BEFORE compiling, so the user gets a typed
-          -- ZINC_DEP_BOOT_CONFLICT (naming the package, the boot lib + both
-          -- versions, and a forward-pin suggestion) instead of a cryptic
-          -- downstream "ErrorT not in scope" GHC failure. The bound is read for
-          -- this diagnostic only — never fed back into resolution.
-          orFailE (checkBootConflict l pkgDir)
           -- Apply any per-dependency build overrides (extra ghc flags,
           -- e.g. -XSafe) from the workspace [build-options].
           let lib' = lib {compGhcOptions = compGhcOptions lib ++ overrideFor l}
           liftIO (emit sink (CompileStart (lockName l)))
-          (conf, _) <- orFailE (accuminto mAcc "compile" (buildLibArtifactsFor target (LibBuild pkgDir pkgOut wsDb (lockName l) version lib')))
-          pure (report Built, Just (lockName l, pkgOut, conf))
+          built <- liftIO (accuminto mAcc "compile" (buildLibArtifactsFor target (LibBuild pkgDir pkgOut wsDb (lockName l) version lib')))
+          case built of
+            Right (conf, _) -> pure (report Built, Just (lockName l, pkgOut, conf))
+            -- sib: cabal version bounds are ADVISORY (GHC ignores them), so we
+            -- never block a build that would succeed. Only when the compile
+            -- actually FAILS do we check whether a stale boot-library bound
+            -- explains it — and if so, replace the cryptic GHC error (e.g.
+            -- "ErrorT not in scope") with a typed ZINC_DEP_BOOT_CONFLICT naming
+            -- the package, the boot lib + both versions, and the forward-pin.
+            Left e -> do
+              conflict <- liftIO (checkBootConflict l pkgDir)
+              orFailE (pure (Left (either id (const e) conflict)))
 
     -- sib: for a cabal-based dep, fail with a typed ZINC_DEP_BOOT_CONFLICT if its
     -- declared bound on a GHC boot library excludes the toolchain's version (a
