@@ -26,7 +26,7 @@ import System.Process (readProcess)
 import Test.Hspec
 import System.Exit (ExitCode (..))
 import Zinc.CLI (Command (..), helpOverview, parseArgs)
-import Zinc.Diagnostic (Diagnostic (..), Severity (..), SourceLocation (..), ZincError (..), diagnosticJson, envelope, errorCode, exitCodeFor, ghcLocation, humanError, renderError, toDiagnostic, tomlLocation, zincVersion, zincVersionLine)
+import Zinc.Diagnostic (Diagnostic (..), Severity (..), SourceLocation (..), ZincError (..), diagnosticJson, envelope, errorCode, exitCodeFor, ghcLocation, humanError, rawToolOutput, renderError, toDiagnostic, tomlLocation, zincVersion, zincVersionLine)
 import Control.Concurrent.STM (atomically, modifyTVar', newTVarIO, readTVarIO)
 import Zinc.Closure (discoverRepos, parseDependsField, pkgNameOf)
 import Zinc.Ansi (greenBold, style)
@@ -432,6 +432,12 @@ main = hspec $ do
       -- caret width = endCol(26) - col(22) = 4, annotated with the primary cause
       out `shouldSatisfy` isInfixOf "^^^^ Couldn't match type 'Bool' with '[Char]'"
       out `shouldSatisfy` isInfixOf "help: fix the type"
+
+    it "rawToolOutput exposes the full compiler stderr for a build failure (rxa)" $ do
+      rawToolOutput (GhcCompile "demo" "line1\nCould not find module 'Foo'\n  it is a member of the hidden package 'bar'\nfull -v dump")
+        `shouldBe` Just "line1\nCould not find module 'Foo'\n  it is a member of the hidden package 'bar'\nfull -v dump"
+    it "rawToolOutput has no raw tool output for non-compiler errors (rxa)" $
+      rawToolOutput (NoZincToml "/x") `shouldBe` Nothing
 
     it "humanError degrades to status + detail when there is no source excerpt" $ do
       let out = humanError False (toDiagnostic (DepNoGitRepo "colour"))

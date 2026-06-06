@@ -56,6 +56,11 @@ The first self-hosting, agent-first release.
   commit. Bounds stay advisory: the check fires only on an actual compile
   failure, so a conservative-but-harmless bound (e.g. a stale `base <4.17`) never
   blocks a build that would otherwise succeed.
+- `ZINC_VERBOSE`: on a build failure the concise caret view is summarised; set
+  `ZINC_VERBOSE=1` to print GHC's full, untruncated stderr (the `-package-id` /
+  module-not-found detail, plus any `-v` output a package's `ghc-options`
+  enabled). A hint at the failure points to it. (`ghc-options` already reach the
+  member compile — the output was simply hidden before.)
 - Introspection: `status`, `graph`, `explain`. Diagnostics: `doctor` (env +
   project health), `perf` (latency p50/p95, cache hit-rate, regressions over a
   rolling baseline). Orientation: `prime`, `onboard`, `dockerfile`.

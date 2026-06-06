@@ -15,6 +15,7 @@ module Zinc.Diagnostic
   , toDiagnostic
   , renderError
   , humanError
+  , rawToolOutput
   , errorCode
   , exitCodeFor
   , diagnosticJson
@@ -277,6 +278,16 @@ toDiagnostic e =
         , Just ("set `users.users." ++ user ++ ".linger = true` (`zinc deploy --init` prints the snippet)") )
       OtherError msg ->
         ( msg, Nothing, Nothing, Nothing, Nothing )
+
+-- | The raw, untruncated tool output behind an error, when there is one — the
+-- full compiler stderr for a 'GhcCompile' failure (zinc-rxa). The human renderer
+-- shows only a concise caret summary; under @ZINC_VERBOSE@ the CLI prints this so
+-- the user can see GHC's complete diagnostic (e.g. a @-package-id@ / module-not-
+-- found explanation that the caret view omits). 'Nothing' for errors that carry
+-- no raw tool output.
+rawToolOutput :: ZincError -> Maybe String
+rawToolOutput (GhcCompile _ detail) = Just detail
+rawToolOutput _                     = Nothing
 
 -- | A human one-line rendering of an error, for the plain-text CLI surface and
 -- test failure messages: @title@ (plus @detail@ when present). The next-action

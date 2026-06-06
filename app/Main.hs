@@ -4,14 +4,14 @@ import Control.Monad (unless, when)
 import System.IO.Error (catchIOError)
 import Data.List (intercalate)
 import Data.Maybe (maybeToList)
-import System.Environment (getArgs)
+import System.Environment (getArgs, lookupEnv)
 import System.Exit (ExitCode (ExitFailure), exitWith)
 import System.IO (hPutStrLn, stderr)
 import System.Process (CreateProcess (std_err, std_in, std_out), StdStream (Inherit), createProcess, proc, waitForProcess)
 import Zinc.Add (addInWorkspace, updateInWorkspace, vendorInWorkspace)
 import Zinc.CLI (Command (..), helpOverview, parseArgs)
 import Zinc.Closure (closureReportJson, renderClosure, runClosure)
-import Zinc.Diagnostic (ZincError, envelope, exitCodeFor, humanError, toDiagnostic, zincVersion, zincVersionLine)
+import Zinc.Diagnostic (ZincError, envelope, exitCodeFor, humanError, rawToolOutput, toDiagnostic, zincVersion, zincVersionLine)
 import Zinc.Delta (deltaJson, renderDelta)
 import Zinc.Deploy (ProbeChecks (..), ResolvedDeploy (..), deployReadyJson, dhHost, resolveDeploy, runDeploy, runInit)
 import Zinc.Docker (runDockerfile)
@@ -108,7 +108,20 @@ humanColor _ = False
 failCmd :: OutputMode -> ZincError -> IO ()
 failCmd mode e = do
   hPutStrLn stderr (humanError (humanColor mode) (toDiagnostic e))
+  -- ZINC_VERBOSE: print the full, untruncated tool output (e.g. GHC's complete
+  -- stderr) so a failure the concise caret view summarizes can be fully
+  -- inspected — the package-id / module-not-found detail consumers need (rxa).
+  verbose <- isVerbose
+  case rawToolOutput e of
+    Just raw | verbose -> hPutStrLn stderr ("\n--- full compiler output (ZINC_VERBOSE) ---\n" ++ raw)
+    Just _             -> hPutStrLn stderr "   (set ZINC_VERBOSE=1 to see the full compiler output)"
+    Nothing            -> pure ()
   exitWith (exitCodeFor e)
+
+-- | Whether @ZINC_VERBOSE@ is set (any non-empty value) — the verbosity
+-- passthrough that surfaces full tool output on failure (zinc-rxa).
+isVerbose :: IO Bool
+isVerbose = maybe False (not . null) <$> lookupEnv "ZINC_VERBOSE"
 
 -- | Emit a read-only command's result: the JSON envelope in machine mode
 -- (failures carry the diagnostic + category exit code), or human text.
