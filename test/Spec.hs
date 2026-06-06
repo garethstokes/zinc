@@ -36,11 +36,13 @@ import Zinc.Deploy
   ( DeployHost (..)
   , ProbeChecks (..)
   , ProbeOutcome (..)
+  , ResolvedDeploy (..)
   , initSnippet
   , interpretProbe
   , parseDeployHost
   , parseProbeOutput
   , probeScript
+  , resolveDeploy
   , sshArgs
   )
 import Zinc.Fmt (canonicalizeManifest, setManifestDependencies)
@@ -60,6 +62,7 @@ import Zinc.Manifest
   ( Component (..)
   , ComponentKind (..)
   , Dependency (..)
+  , DeployTarget (..)
   , MemberManifest (..)
   , Ref (..)
   , WorkspaceManifest (..)
@@ -68,6 +71,7 @@ import Zinc.Manifest
   , depRepos
   , depGhcOptionsOf
   , parseDependencies
+  , parseDeployTargets
   , parseMember
   , parseWorkspace
   , renderWorkspace
@@ -3259,3 +3263,33 @@ main = hspec $ do
     it "wraps the snippet in a NixOS module attrset" $ do
       let s = initSnippet "deployer"
       (head (lines s), last (filter (not . null) (lines s))) `shouldBe` ("{", "}")
+
+  describe "Zinc.Manifest [deploy.*] targets (nbk.6)" $ do
+    it "parses a named deploy target's host, service, args and env" $ do
+      let toml =
+            unlines
+              [ "[workspace]", "members = [\".\"]", "ghc = \"9.6.5\""
+              , "[deploy.homelab]"
+              , "host = \"gareth@nixos-box\""
+              , "service = \"myapp\""
+              , "args = [\"--port\", \"8080\"]"
+              , "env = { RUST_LOG = \"info\" }"
+              ]
+      parseDeployTargets toml
+        `shouldBe` Right [DeployTarget "homelab" "gareth@nixos-box" (Just "myapp") ["--port", "8080"] [("RUST_LOG", "info")]]
+
+    it "returns no targets when there is no [deploy] section" $
+      parseDeployTargets "[workspace]\nmembers = []\nghc = \"9.6.5\"\n" `shouldBe` Right []
+
+  describe "Zinc.Deploy target resolution (nbk.6)" $ do
+    let t = DeployTarget "homelab" "gareth@nixos-box:2200" (Just "myapp") ["--port", "8080"] [("RUST_LOG", "info")]
+    it "resolves a named target to its host, service, args and env" $
+      resolveDeploy [t] "homelab" Nothing
+        `shouldBe` ResolvedDeploy (DeployHost (Just "gareth") "nixos-box" (Just 2200)) (Just "myapp") ["--port", "8080"] [("RUST_LOG", "info")]
+
+    it "falls back to an ad-hoc user@host when no named target matches" $
+      resolveDeploy [t] "deploy@other-box" Nothing
+        `shouldBe` ResolvedDeploy (DeployHost (Just "deploy") "other-box" Nothing) Nothing [] []
+
+    it "lets --service override the configured service" $
+      rdService (resolveDeploy [t] "homelab" (Just "override")) `shouldBe` Just "override"

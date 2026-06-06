@@ -16,6 +16,8 @@ module Zinc.Deploy
   ( DeployHost (..)
   , ProbeChecks (..)
   , ProbeOutcome (..)
+  , ResolvedDeploy (..)
+  , resolveDeploy
   , parseDeployHost
   , renderDeployTarget
   , sshArgs
@@ -30,12 +32,14 @@ module Zinc.Deploy
   ) where
 
 import Data.Char (isDigit)
+import Data.List (find)
 import System.Exit (ExitCode (ExitFailure))
 import System.Process (readProcessWithExitCode)
 import Zinc.Diagnostic
   ( ZincError (DeployNoLinger, DeployNoNix, DeployNotTrusted, DeploySsh)
   )
 import Zinc.Json (Json (..), object)
+import Zinc.Manifest (DeployTarget (..))
 
 -- | A parsed deploy target: an optional user, a host (or @~\/.ssh\/config@
 -- alias), and an optional port. SSH resolves an alias, so a bare token is left
@@ -46,6 +50,29 @@ data DeployHost = DeployHost
   , dhPort :: Maybe Int
   }
   deriving (Eq, Show)
+
+-- | A deploy target after resolving the CLI argument against the manifest's
+-- @[deploy.*]@ tables (zinc-nbk.6): the effective host plus the service / args /
+-- env that the activate step (nbk.3) will use.
+data ResolvedDeploy = ResolvedDeploy
+  { rdHost    :: DeployHost
+  , rdService :: Maybe String
+  , rdArgs    :: [String]
+  , rdEnv     :: [(String, String)]
+  }
+  deriving (Eq, Show)
+
+-- | Resolve the @zinc deploy \<arg\>@ argument: if @arg@ names a @[deploy.*]@
+-- target use its host/service/args/env; otherwise treat @arg@ as an ad-hoc
+-- @[user@]host[:port]@ / ssh alias. A @--service@ override always wins over the
+-- configured service.
+resolveDeploy :: [DeployTarget] -> String -> Maybe String -> ResolvedDeploy
+resolveDeploy targets arg svcOverride = case find ((== arg) . dtName) targets of
+  Just t  -> ResolvedDeploy (parseDeployHost (dtHost t)) (svcOverride `orConfig` dtService t) (dtArgs t) (dtEnv t)
+  Nothing -> ResolvedDeploy (parseDeployHost arg) svcOverride [] []
+  where
+    orConfig (Just s) _ = Just s
+    orConfig Nothing  c = c
 
 -- | The three NixOS preconditions the probe reports, as booleans (spec §7).
 data ProbeChecks = ProbeChecks
@@ -155,13 +182,12 @@ firstLine s = case lines s of
   (l : _) -> takeWhile (/= '\r') l
   []      -> "ssh connection failed"
 
--- | The @zinc deploy \<host\>@ entry point for nbk.1: parse the target, probe it
--- over SSH, and report readiness. The copy + activate sequence (nbk.2/.3) and
--- @--rollback@\/@--init@ (nbk.4/.5) layer on top of this probe. Returns the
--- resolved host + its checks so the caller can render a readiness summary.
-runDeploy :: String -> IO (Either ZincError (DeployHost, ProbeChecks))
-runDeploy hostArg = do
-  let h = parseDeployHost hostArg
+-- | The @zinc deploy@ probe step for nbk.1: probe a (already-resolved) host over
+-- SSH and report readiness. The copy + activate sequence (nbk.2/.3) and
+-- @--rollback@ (nbk.4) layer on top of this probe. Returns the host + its checks
+-- so the caller can render a readiness summary.
+runDeploy :: DeployHost -> IO (Either ZincError (DeployHost, ProbeChecks))
+runDeploy h = do
   outcome <- probeHost h
   pure $ case interpretProbe h outcome of
     Left e  -> Left e
@@ -188,9 +214,8 @@ initSnippet user =
 -- NixOS 'initSnippet' for it. zinc never silently mutates a remote system's
 -- config, so this prints the snippet for the operator to add to their NixOS
 -- configuration rather than applying it unprompted.
-runInit :: String -> IO (Either ZincError String)
-runInit hostArg = do
-  let h = parseDeployHost hostArg
+runInit :: DeployHost -> IO (Either ZincError String)
+runInit h =
   case dhUser h of
     Just u  -> pure (Right (initSnippet u))
     Nothing -> do

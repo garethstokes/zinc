@@ -13,11 +13,11 @@ import Zinc.CLI (Command (..), helpOverview, parseArgs)
 import Zinc.Closure (closureReportJson, renderClosure, runClosure)
 import Zinc.Diagnostic (ZincError, envelope, exitCodeFor, humanError, toDiagnostic, zincVersion, zincVersionLine)
 import Zinc.Delta (deltaJson, renderDelta)
-import Zinc.Deploy (ProbeChecks (..), deployReadyJson, dhHost, runDeploy, runInit)
+import Zinc.Deploy (ProbeChecks (..), ResolvedDeploy (..), deployReadyJson, dhHost, resolveDeploy, runDeploy, runInit)
 import Zinc.Docker (runDockerfile)
 import Zinc.Env (provisionToolchain)
 import Zinc.Git (gitInitIfNeeded)
-import Zinc.Manifest (parseWorkspace, wsGhc)
+import Zinc.Manifest (parseDeployTargets, parseWorkspace, wsGhc)
 import Zinc.Store (resolveStoreRoot)
 import Zinc.Doctor (doctorJson, doctorOk, renderDoctor, runDoctor)
 import Zinc.Fmt (runFmt)
@@ -231,33 +231,32 @@ dispatch mode (Package fmtStr tag out to) =
   case parsePackageFormat fmtStr of
     Left err  -> hPutStrLn stderr err >> exitWith (ExitFailure 2)
     Right fmt -> runPackage fmt tag out to "." >>= either (failCmd mode) putStrLn
-dispatch mode (Deploy host _service True _rollback _dryRun) =
-  -- nbk.5: --init prints the NixOS trusted-users + linger snippet for the deploy
-  -- user (resolved over SSH when no explicit user@ is given). zinc never mutates
-  -- a remote system's config unprompted, so it emits the snippet to apply.
-  runInit host >>= \r -> case r of
-    Left e
-      | machine mode -> putStrLn (renderJson (envelope "deploy" False Nothing Nothing [toDiagnostic e])) >> exitWith (exitCodeFor e)
-      | otherwise    -> failCmd mode e
-    Right snippet
-      | machine mode -> putStrLn (renderJson (envelope "deploy" True (Just (JObject [("init", JString snippet)])) Nothing []))
-      | otherwise    -> do
-          putStrLn "Add this to the host's NixOS configuration, then rebuild:"
-          putStr snippet
-dispatch mode (Deploy host _service False _rollback _dryRun) =
-  -- nbk.1: parse the target, probe the host's NixOS preconditions over SSH, and
-  -- report readiness (each gap → a typed ZINC_DEPLOY_* diagnostic). The closure
-  -- copy + profile GC-root (nbk.2), user-systemd unit + health-check (nbk.3),
-  -- and --rollback (nbk.4) layer on top of this probe.
-  runDeploy host >>= \r -> case r of
-    Left e
-      | machine mode -> putStrLn (renderJson (envelope "deploy" False Nothing Nothing [toDiagnostic e])) >> exitWith (exitCodeFor e)
-      | otherwise    -> failCmd mode e
-    Right (h, c)
-      | machine mode -> putStrLn (renderJson (envelope "deploy" True (Just (deployReadyJson h c)) Nothing []))
-      | otherwise    -> putStrLn ("Host " ++ dhHost h ++ " is ready to receive a deploy (nix " ++ tick (pcNix c) ++ ", trusted " ++ tick (pcTrusted c) ++ ", linger " ++ tick (pcLinger c) ++ ").")
+dispatch mode (Deploy arg service initFlag _rollback _dryRun) = do
+  -- nbk.6: resolve <arg> against the manifest's [deploy.*] targets (an ad-hoc
+  -- user@host still works); a broken/absent manifest just means no named
+  -- targets. nbk.5: --init prints the NixOS trusted-users + linger snippet for
+  -- the deploy user. Otherwise nbk.1: probe the host's NixOS preconditions over
+  -- SSH and report readiness (each gap → a typed ZINC_DEPLOY_* diagnostic). The
+  -- closure copy + activate (nbk.2/.3) and --rollback (nbk.4) layer on top.
+  src <- readFile "zinc.toml" `catchIOError` const (pure "")
+  let targets = either (const []) id (parseDeployTargets src)
+      h = rdHost (resolveDeploy targets arg service)
+  if initFlag
+    then runInit h >>= \r -> case r of
+      Left e -> failDeploy e
+      Right snippet
+        | machine mode -> putStrLn (renderJson (envelope "deploy" True (Just (JObject [("init", JString snippet)])) Nothing []))
+        | otherwise    -> putStrLn "Add this to the host's NixOS configuration, then rebuild:" >> putStr snippet
+    else runDeploy h >>= \r -> case r of
+      Left e -> failDeploy e
+      Right (rh, c)
+        | machine mode -> putStrLn (renderJson (envelope "deploy" True (Just (deployReadyJson rh c)) Nothing []))
+        | otherwise    -> putStrLn ("Host " ++ dhHost rh ++ " is ready to receive a deploy (nix " ++ tick (pcNix c) ++ ", trusted " ++ tick (pcTrusted c) ++ ", linger " ++ tick (pcLinger c) ++ ").")
   where
     tick b = if b then "\10003" else "\10007"
+    failDeploy e
+      | machine mode = putStrLn (renderJson (envelope "deploy" False Nothing Nothing [toDiagnostic e])) >> exitWith (exitCodeFor e)
+      | otherwise    = failCmd mode e
 dispatch mode (SkillAdd repo ref) =
   runSkillAdd repo ref "." >>= either (failCmd mode) putStrLn
 dispatch mode SkillList =

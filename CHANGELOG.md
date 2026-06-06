@@ -61,3 +61,7 @@ The first self-hosting, agent-first release.
   deploy target (deploy user in `trusted-users` + lingering enabled), resolving
   the user over SSH when no explicit `user@` is given. Printed, never applied
   unprompted.
+- Named `[deploy.<name>]` targets in `zinc.toml` (host/service/args/env):
+  `zinc deploy <name>` resolves the configured target; an ad-hoc `user@host`
+  still works, and `--service` overrides the configured unit name. `zinc fmt`
+  preserves the `[deploy.*]` tables.

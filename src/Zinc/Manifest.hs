@@ -4,6 +4,7 @@ module Zinc.Manifest
   , Component (..)
   , ComponentKind (..)
   , Dependency (..)
+  , DeployTarget (..)
   , Ref (..)
   , isVendored
   , depRepos
@@ -11,6 +12,7 @@ module Zinc.Manifest
   , parseWorkspace
   , parseMember
   , parseDependencies
+  , parseDeployTargets
   , renderWorkspace
   , renderDependencies
   , addDep
@@ -49,6 +51,20 @@ data Dependency = Dependency
   , depRef        :: Ref
   , depRepo       :: Maybe String -- ^ optional repo override/pin (was @[registry]@)
   , depGhcOptions :: [String]     -- ^ optional extra ghc flags (was @[build-options]@)
+  }
+  deriving (Eq, Show)
+
+-- | A named deploy target from a @[deploy.\<name\>]@ table (deploy-host spec §4;
+-- zinc-nbk.6): the host (an ad-hoc @[user@]host[:port]@ / ssh alias), an
+-- optional systemd unit name, the program @args@, and an @env@ map for
+-- @ExecStart@. Parsed independently of 'WorkspaceManifest' so @zinc fmt@ (a
+-- text-level editor that only rewrites dependency sections) leaves it untouched.
+data DeployTarget = DeployTarget
+  { dtName    :: String
+  , dtHost    :: String
+  , dtService :: Maybe String
+  , dtArgs    :: [String]
+  , dtEnv     :: [(String, String)]
   }
   deriving (Eq, Show)
 
@@ -168,6 +184,23 @@ parseWorkspace src = do
 -- each dependency's @repo@) for the resolver's registry view.
 parseDependencies :: String -> Either String ([Dependency], [(String, String)])
 parseDependencies src = (\deps -> (deps, [(depName d, r) | d <- deps, Just r <- [depRepo d]])) . parseDeps . subTable "dependencies" <$> Toml.parse src
+
+-- | Parse the @[deploy.\<name\>]@ tables (zinc-nbk.6). Each becomes a
+-- 'DeployTarget'; a table with no @host@ degrades to an empty host (a clear
+-- downstream SSH failure) rather than failing the whole parse. Returns @[]@ when
+-- there is no @[deploy]@ section.
+parseDeployTargets :: String -> Either String [DeployTarget]
+parseDeployTargets src = do
+  top <- Toml.parse src
+  pure [target name t | (name, Table t) <- Map.toList (subTable "deploy" top)]
+  where
+    target name t = DeployTarget name (strField "host" t) (optStr "service" t) (arr "args" t) (env t)
+    strField k t = case Map.lookup k t of Just (String s) -> s; _ -> ""
+    optStr k t = case Map.lookup k t of Just (String s) -> Just s; _ -> Nothing
+    arr k t = case Map.lookup k t of Just (Array xs) -> [s | String s <- xs]; _ -> []
+    env t = case Map.lookup "env" t of
+      Just (Table e) -> [(k, s) | (k, String s) <- Map.toList e]
+      _              -> []
 
 -- | Parse the @[dependencies]@ table: each entry is either a bare-string
 -- shorthand (@name = "v1.2.3"@ → a tag; @"*"@ → latest) or a sub-table
