@@ -2038,6 +2038,23 @@ main = hspec $ do
       sourceRepoOf (unlines ["name: x", "version: 1", "source-repository head", "  type: git", "  location: https://github.com/o/mono", "  subdir: pkg"])
         `shouldBe` Just "https://github.com/o/mono#pkg"
 
+    it "normalizes a forge tree-URL into clone-url#subdir, from location or homepage (qln)" $ do
+      -- a source-repository location that is a GitHub browser tree URL
+      sourceRepoOf (unlines ["name: x", "version: 1", "source-repository head", "  type: git", "  location: https://github.com/o/mono/tree/master/pkg"])
+        `shouldBe` Just "https://github.com/o/mono#pkg"
+      -- GitLab's /-/tree/ variant
+      sourceRepoOf (unlines ["name: x", "version: 1", "source-repository head", "  type: git", "  location: https://gitlab.com/o/mono/-/tree/main/sub/pkg"])
+        `shouldBe` Just "https://gitlab.com/o/mono#sub/pkg"
+      -- the unliftio case: NO source-repository, homepage is a tree URL with an #readme anchor
+      sourceRepoOf (unlines ["name: unliftio", "version: 0.2", "homepage: https://github.com/fpco/unliftio/tree/master/unliftio#readme", "library", "  build-depends: base"])
+        `shouldBe` Just "https://github.com/fpco/unliftio#unliftio"
+      -- a plain git-host homepage with an HTML anchor: the anchor is dropped, no bogus subdir
+      sourceRepoOf (unlines ["name: x", "version: 1", "homepage: https://github.com/o/r#readme", "library", "  build-depends: base"])
+        `shouldBe` Just "https://github.com/o/r"
+      -- an explicit subdir: field still wins over anything derived from the URL
+      sourceRepoOf (unlines ["name: x", "version: 1", "source-repository head", "  type: git", "  location: https://github.com/o/mono/tree/master/wrong", "  subdir: right"])
+        `shouldBe` Just "https://github.com/o/mono#right"
+
     it "builds the Hackage .cabal URL" $
       hackageCabalUrl "aeson" `shouldBe` "https://hackage.haskell.org/package/aeson/aeson.cabal"
 

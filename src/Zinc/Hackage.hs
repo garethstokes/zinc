@@ -16,7 +16,7 @@ import Control.Monad (when)
 import Data.Char (toLower)
 import qualified Data.ByteString.Char8 as BS
 import Data.Maybe (listToMaybe)
-import Data.List (isInfixOf, stripPrefix)
+import Data.List (isInfixOf, isPrefixOf, stripPrefix)
 import Distribution.PackageDescription (homepage, packageDescription, sourceRepos)
 import Distribution.PackageDescription.Parsec (parseGenericPackageDescription, runParseResult)
 import Distribution.Types.SourceRepo (RepoKind (RepoHead), SourceRepo (repoKind, repoLocation, repoSubdir))
@@ -33,6 +33,12 @@ import System.Process (readProcessWithExitCode)
 -- (monorepo packages like prettyprinter) is appended as zinc's @url#subdir@
 -- spec so the package is read from the right directory. 'Nothing' if none /
 -- unparseable.
+--
+-- Two monorepo metadata patterns are normalised (zinc-qln): an explicit
+-- @subdir:@ field, and a browser \"tree\" URL whose path bakes the branch +
+-- subdir into the location (e.g. @unliftio@ publishes
+-- @https:\/\/github.com\/fpco\/unliftio\/tree\/master\/unliftio@, which is NOT a
+-- clonable URL). Both collapse to @\<clone-url\>#\<subdir\>@.
 sourceRepoOf :: String -> Maybe String
 sourceRepoOf src =
   case snd (runParseResult (parseGenericPackageDescription (BS.pack src))) of
@@ -41,20 +47,59 @@ sourceRepoOf src =
       where
         pd = packageDescription gpd
         repos = sourceRepos pd
-        heads = [withSub r (normalize loc) | r <- repos, repoKind r == RepoHead, Just loc <- [repoLocation r]]
-        others = [withSub r (normalize loc) | r <- repos, Just loc <- [repoLocation r]]
-        withSub r loc = case repoSubdir r of
-          Just s | not (null s) && s /= "." -> loc ++ "#" ++ s
-          _ -> loc
-        -- git:// is deprecated (GitHub no longer serves it); use https.
-        normalize u = maybe u ("https://" ++) (stripPrefix "git://" u)
-        -- Fallback: a homepage on a known git host is almost always the repo.
+        heads = [combine r (normalizeLoc loc) | r <- repos, repoKind r == RepoHead, Just loc <- [repoLocation r]]
+        others = [combine r (normalizeLoc loc) | r <- repos, Just loc <- [repoLocation r]]
+        -- A package's subdir can come from the explicit @subdir:@ field OR be
+        -- baked into a browser tree URL; the explicit field wins when both exist.
+        combine r (url, urlSub) =
+          let explicit = case repoSubdir r of
+                Just s | not (null s) && s /= "." -> Just s
+                _                                 -> Nothing
+           in url ++ maybe "" ("#" ++) (explicit <|> urlSub)
+        -- Normalise a location to (clone-url, subdir-from-url): drop the
+        -- deprecated git:// scheme, then split a @/tree/\<branch>/\<subdir>@
+        -- (GitHub) or @/-/tree/...@ (GitLab) browser path off the clone URL.
+        normalizeLoc u =
+          let https = maybe u ("https://" ++) (stripPrefix "git://" u)
+           in splitTreeUrl https
+        -- Fallback: a homepage on a known git host is almost always the repo
+        -- (some packages — e.g. unliftio — omit source-repository and only set
+        -- homepage). Strip the HTML anchor (@#readme@) first, then run it through
+        -- the same tree-URL normalisation so a @\/tree\/branch\/subdir@ homepage
+        -- yields the right @url#subdir@ (zinc-qln).
         homepageRepo
-          | any (`isInfixOf` hp) gitHosts = Just (dropTrailingSlash hp)
-          | otherwise                     = Nothing
-        hp = fromShortText (homepage pd)
+          | any (`isInfixOf` hpClean) gitHosts =
+              let (u, s) = splitTreeUrl hpClean in Just (u ++ maybe "" ("#" ++) s)
+          | otherwise = Nothing
+        hpClean = takeWhile (/= '#') (fromShortText (homepage pd))
         gitHosts = ["github.com", "gitlab.com", "codeberg.org", "bitbucket.org", "git.sr.ht"]
-        dropTrailingSlash s = if not (null s) && last s == '/' then init s else s
+
+-- | Split a forge \"tree\" browser URL into @(clone-url, Just subdir)@. A
+-- @\/tree\/\<branch>\/\<subdir...>@ (GitHub) or @\/-\/tree\/\<branch>\/\<subdir...>@
+-- (GitLab) path is a directory view, not a clonable repo: the clone URL is
+-- everything before the marker, and the subdir is the path after the branch
+-- segment. A plain URL (no marker) returns @(url, Nothing)@. Trailing slashes
+-- are trimmed from both.
+splitTreeUrl :: String -> (String, Maybe String)
+splitTreeUrl url =
+  case breakOnSub "/-/tree/" url <|> breakOnSub "/tree/" url of
+    Just (base, rest) -> (dropTrailingSlash base, subdirOf rest)
+    Nothing           -> (dropTrailingSlash url, Nothing)
+  where
+    -- @rest@ is @\<branch>\/\<subdir...>@: drop the leading branch segment.
+    subdirOf rest =
+      let afterBranch = drop 1 (dropWhile (/= '/') (dropWhile (== '/') rest))
+       in if null afterBranch then Nothing else Just (dropTrailingSlash afterBranch)
+    dropTrailingSlash s = if not (null s) && last s == '/' then init s else s
+
+-- | First occurrence of @needle@ in @hay@, as @(before, after)@; 'Nothing' if absent.
+breakOnSub :: String -> String -> Maybe (String, String)
+breakOnSub needle = go ""
+  where
+    go _ [] = Nothing
+    go acc s@(c : cs)
+      | needle `isPrefixOf` s = Just (reverse acc, drop (length needle) s)
+      | otherwise             = go (c : acc) cs
 
 -- | URL of a package's @.cabal@ on Hackage.
 hackageCabalUrl :: String -> String
