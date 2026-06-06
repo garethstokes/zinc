@@ -80,19 +80,23 @@ ensureToolchain = do
   when (isNothing ghc) (failWithError (ToolchainMissing "ghc"))
 
 buildWorkspace :: FilePath -> Maybe String -> (ComponentKind -> Bool) -> IO (Either ZincError [FilePath])
-buildWorkspace wsDir target keep = fmap (fmap (boExes . fst)) (buildWorkspaceReport nullSink wsDir target keep)
+buildWorkspace wsDir target keep = fmap (fmap (boExes . fst)) (buildWorkspaceReport nullSink wsDir target Nothing keep)
 
 -- | As 'buildWorkspace', but also returns the per-package closure report (spec
 -- §3.2) and per-phase wall-clock timings (perf spec §2) for the structured
 -- @--json@ surface. 'buildWorkspace' is the thin exes-only projection.
-buildWorkspaceReport :: Sink -> FilePath -> Maybe String -> (ComponentKind -> Bool) -> IO (Either ZincError (BuildOutcome, [(String, Int)]))
-buildWorkspaceReport sink wsDir target keep = runResult $ do
+buildWorkspaceReport :: Sink -> FilePath -> Maybe String -> Maybe String -> (ComponentKind -> Bool) -> IO (Either ZincError (BuildOutcome, [(String, Int)]))
+buildWorkspaceReport sink wsDir target ghcOverride keep = runResult $ do
   ensureToolchain
   let wsFile = wsDir </> "zinc.toml"
   present <- liftIO (doesFileExist wsFile)
   when (not present) $ failWithError (NoZincToml wsDir)
   wsSrc <- liftIO $ readFile wsFile
   ws <- liftEitherE (first (ManifestParse wsFile) (parseWorkspace wsSrc))
+  -- One GHC per build (ey4): a @--ghc@ override replaces the workspace's pinned
+  -- GHC for the WHOLE closure + members (the store keys on it, so each version
+  -- builds once); the toolchain is provisioned for it up front (y03).
+  let effectiveGhc = fromMaybe (wsGhc ws) ghcOverride
   members <- traverse loadMember (wsMembers ws)
   let wsDb = wsDir </> ".zinc" </> "pkgdb"
   -- Keep the package db across builds (inner-loop incrementality): registration
@@ -103,7 +107,7 @@ buildWorkspaceReport sink wsDir target keep = runResult $ do
   -- Coarse phases (perf spec §2): the dependency-closure build (fetch + compile
   -- + register of deps) and the workspace-member build (compile + link). Finer
   -- breakdown (resolve/provision/fetch/register/link split) is a follow-up.
-  (pkgs, closureMs) <- timed (orFailE (buildClosure sink wsDir storeRoot wsDb (wsGhc ws) (depGhcOptionsOf ws)))
+  (pkgs, closureMs) <- timed (orFailE (buildClosure sink wsDir storeRoot wsDb effectiveGhc (depGhcOptionsOf ws)))
   (exes, memberMs) <- timed (concat <$> traverse (buildMemberAll wsDb) (orderMembers members))
   pure (BuildOutcome exes pkgs, [("closure", closureMs), ("member", memberMs)])
   where
@@ -150,8 +154,8 @@ runBuildMember wsDir target = buildWorkspace wsDir target (== Executable)
 -- slow-stable closure can be its own Docker layer / CI cache entry, separate
 -- from fast-changing source (ephemeral-builds spec §3). Returns the per-package
 -- closure report.
-runWarm :: Sink -> FilePath -> IO (Either ZincError [PackageReport])
-runWarm sink wsDir = runResult $ do
+runWarm :: Sink -> FilePath -> Maybe String -> IO (Either ZincError [PackageReport])
+runWarm sink wsDir ghcOverride = runResult $ do
   ensureToolchain
   let wsFile = wsDir </> "zinc.toml"
   present <- liftIO (doesFileExist wsFile)
@@ -161,15 +165,15 @@ runWarm sink wsDir = runResult $ do
   let wsDb = wsDir </> ".zinc" </> "pkgdb"
   orFail (initPackageDb wsDb)
   storeRoot <- liftIO resolveStoreRoot
-  orFailE (buildClosure sink wsDir storeRoot wsDb (wsGhc ws) (depGhcOptionsOf ws))
+  orFailE (buildClosure sink wsDir storeRoot wsDb (fromMaybe (wsGhc ws) ghcOverride) (depGhcOptionsOf ws))
 
 -- | @zinc build [member] --json@: build, returning the structured outcome
 -- (executables + per-package closure report) and the 'Timing' block (total
 -- wall-clock, per-phase durations, cache stats) for the machine surface.
-runBuildReport :: Sink -> FilePath -> Maybe String -> IO (Either ZincError (BuildOutcome, Timing))
-runBuildReport sink wsDir target = do
+runBuildReport :: Sink -> FilePath -> Maybe String -> Maybe String -> IO (Either ZincError (BuildOutcome, Timing))
+runBuildReport sink wsDir target ghcOverride = do
   t0 <- getMonotonicTime
-  r <- buildWorkspaceReport sink wsDir target (== Executable)
+  r <- buildWorkspaceReport sink wsDir target ghcOverride (== Executable)
   t1 <- getMonotonicTime
   let totalMs = round ((t1 - t0) * 1000) :: Int
   pure $ fmap (\(o, phases) -> (o, Timing totalMs phases (cacheStatsOf (boPackages o)))) r

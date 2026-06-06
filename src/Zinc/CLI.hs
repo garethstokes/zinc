@@ -13,7 +13,7 @@ data Command
   = New String Bool       -- ^ scaffold a new project; Bool = --workspace (multi-member layout)
   | Add String            -- ^ resolve a dependency closure and freeze it
   | Vendor [String]       -- ^ pin no-git deps from their Hackage tarballs
-  | Build (Maybe String)  -- ^ build the workspace, or one member
+  | Build (Maybe String) (Maybe String) -- ^ build the workspace/member; 2nd = --ghc override
   | Run (Maybe String) [String] -- ^ build then run an executable: TARGET, then program ARGS
   | Repl (Maybe String)   -- ^ ghci for an optional target
   | Test (Maybe String)   -- ^ build and run tests for an optional target
@@ -27,7 +27,7 @@ data Command
   | Explain String        -- ^ why a package is in the build
   | Prime                 -- ^ AI-optimized orientation for this workspace
   | Onboard               -- ^ minimal AGENTS.md/CLAUDE.md snippet
-  | Warm                  -- ^ build only the dependency closure
+  | Warm (Maybe String)   -- ^ build only the dependency closure; arg = --ghc override
   | Dockerfile            -- ^ emit a multi-stage Docker build recipe
   | Fmt Bool              -- ^ canonically format zinc.toml; Bool = --check
   | Closure String        -- ^ discover a package's non-boot closure + repos
@@ -68,7 +68,7 @@ commandParser =
       , sub "add"    "Add a dependency"               (Add <$> (yesFlag *> strArgument (metavar "PKG")))
       , sub "vendor" "Pin a no-git dependency from its Hackage tarball" (Vendor <$> (yesFlag *> some (strArgument (metavar "PKG..."))))
       , sub "build"  "Build the workspace or a member" buildCmd
-      , sub "warm"   "Build only the dependency closure (CI/Docker cache)" (pure Warm)
+      , sub "warm"   "Build only the dependency closure (CI/Docker cache)" (Warm <$> ghcOption)
       , sub "run"    "Build then run an executable"   (Run <$> optional (strArgument (metavar "[TARGET]")) <*> many (strArgument (metavar "[-- ARGS...]")))
       , sub "repl"   "Open ghci for a target"         (Repl <$> optional (strArgument (metavar "TARGET")))
       , sub "test"   "Build and run tests"            (Test <$> optional (strArgument (metavar "TARGET")))
@@ -95,9 +95,14 @@ commandParser =
     sub name desc p = command name (info (((,) <$> outputFlags <*> p) <**> helper) (progDesc desc))
     -- `build --deps-only` is a synonym for `warm` (build just the closure).
     buildCmd =
-      (\target depsOnly -> if depsOnly then Warm else Build target)
+      (\target depsOnly ghc -> if depsOnly then Warm ghc else Build target ghc)
         <$> optional (strArgument (metavar "MEMBER"))
         <*> switch (long "deps-only" <> help "Build only the dependency closure (alias: zinc warm)")
+        <*> ghcOption
+    -- A per-build GHC override (ey4): build the whole workspace + closure against
+    -- a specific GHC (provisioned via Nix, y03); the store keys on it.
+    ghcOption =
+      optional (strOption (long "ghc" <> metavar "VERSION" <> help "Build against a specific GHC version (provisioned via Nix); the build is keyed per GHC"))
     -- zinc never prompts; --yes is accepted for forward-compatible scripting and
     -- otherwise ignored (documents the never-prompt contract, spec §3.4).
     yesFlag =

@@ -40,29 +40,36 @@ main = do
     Left err          -> putStrLn err
     Right (flags, cmd) -> do
       mode <- resolveMode flags
-      when (buildsToolchain cmd) provisionToolchainHere
+      when (buildsToolchain cmd) (provisionToolchainHere (ghcOverrideOf cmd))
       dispatch mode cmd
 
 -- | Commands that shell out to the toolchain (ghc/ghc-pkg/ar/preprocessors) and
 -- therefore want it provisioned (zinc-y03).
 buildsToolchain :: Command -> Bool
 buildsToolchain c = case c of
-  Build _   -> True
+  Build _ _ -> True
   Run _ _   -> True
   Test _    -> True
   Repl _    -> True
-  Warm      -> True
+  Warm _    -> True
   _         -> False
 
+-- | A command's explicit @--ghc@ override, if any (build/warm carry it; ey4).
+ghcOverrideOf :: Command -> Maybe String
+ghcOverrideOf (Build _ g) = g
+ghcOverrideOf (Warm g)    = g
+ghcOverrideOf _           = Nothing
+
 -- | Provision the current workspace's Nix toolchain into the process env so the
--- build runs without a manual @nix develop@ (zinc-y03). No-op when @ghc@ is
--- already present; best-effort otherwise. ghc comes from the manifest;
--- system-libs are a follow-up (the common case + self-host use none).
-provisionToolchainHere :: IO ()
-provisionToolchainHere = do
+-- build runs without a manual @nix develop@ (zinc-y03). No-op when the requested
+-- @ghc@ is already present; best-effort otherwise. The requested GHC is the
+-- @--ghc@ override (ey4) when given, else the manifest's; system-libs are a
+-- follow-up (the common case + self-host use none).
+provisionToolchainHere :: Maybe String -> IO ()
+provisionToolchainHere ghcOverride = do
   storeRoot <- resolveStoreRoot
   manifest <- readFile "zinc.toml" `catchIOError` const (pure "")
-  let ghc = either (const "9.6.5") wsGhc (parseWorkspace manifest)
+  let ghc = maybe (either (const "9.6.5") wsGhc (parseWorkspace manifest)) id ghcOverride
       cacheRoot = storeRoot ++ "/devenv"
   provisionToolchain cacheRoot (cacheRoot ++ "/flake") ghc []
 
@@ -118,7 +125,7 @@ dispatch mode (Add name) =
   addInWorkspace name >>= either (failCmd mode) putStr
 dispatch mode (Vendor pkgs) =
   vendorInWorkspace pkgs >>= either (failCmd mode) putStr
-dispatch mode (Build target) = do
+dispatch mode (Build target ghcOverride) = do
   -- Human path shows the lock-drift hint up front; the machine envelope stays
   -- pure JSON. Both run the report-bearing build and persist a metrics record.
   unless (machine mode) $ do
@@ -129,7 +136,7 @@ dispatch mode (Build target) = do
   -- envelope is emitted below, AFTER withRenderer drains and returns, so it
   -- lands last and never races the renderer thread.
   r <- withRenderer mode $ \sink -> do
-    res <- runBuildReport sink "." target
+    res <- runBuildReport sink "." target ghcOverride
     case res of
       Right (_, timing) -> emit sink (Finished (buildSummaryLine False timing))
       Left _            -> pure ()
@@ -186,9 +193,9 @@ dispatch mode Graph =
   runGraph "." >>= emitIntrospection "graph" mode graphJson renderGraph
 dispatch mode (Explain pkg) =
   runExplain "." >>= emitIntrospection "explain" mode (explainJson pkg) (renderExplain pkg)
-dispatch mode Warm = do
+dispatch mode (Warm ghcOverride) = do
   r <- withRenderer mode $ \sink -> do
-    res <- runWarm sink "."
+    res <- runWarm sink "." ghcOverride
     case res of
       Right pkgs -> emit sink (Finished (warmSummary pkgs))
       Left _     -> pure ()

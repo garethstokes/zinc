@@ -16,6 +16,7 @@ module Zinc.Env
   ) where
 
 import Control.Monad (forM_, unless, when)
+import Data.Char (isSpace)
 import qualified Data.ByteString.Lazy.Char8 as BL8
 import Data.Digest.Pure.SHA (sha256, showDigest)
 import Data.List (intercalate, sort)
@@ -139,11 +140,24 @@ applyDevEnv vars = do
 -- @ghc@ + @system-libs@, so re-provisioning is free.
 provisionToolchain :: FilePath -> FilePath -> String -> [String] -> IO ()
 provisionToolchain cacheRoot workDir ghcVersion systemLibs = do
-  ghcPresent <- isJust <$> findExecutable "ghc"
-  unless ghcPresent $ do
+  -- Skip only when the ghc ALREADY on PATH is the requested version (so dev/CI/
+  -- self-host stay no-ops, but a `--ghc <other>` override forces a switch — ey4).
+  haveRight <- ambientGhcIs ghcVersion
+  unless haveRight $ do
     nixPresent <- isJust <$> findExecutable "nix"
     when nixPresent $ do
       r <- provisionEnv (nixPrintDevEnvJson workDir) cacheRoot ghcVersion systemLibs
       case r of
         Right json -> applyDevEnv (devEnvVars json)
         Left _     -> pure () -- best-effort; gtv.2 preflight guides on a hard miss
+
+-- | Whether the @ghc@ currently on PATH already IS @want@ (its
+-- @--numeric-version@), so toolchain provisioning can be skipped.
+ambientGhcIs :: String -> IO Bool
+ambientGhcIs want = do
+  present <- isJust <$> findExecutable "ghc"
+  if not present
+    then pure False
+    else do
+      (code, out, _) <- readProcessWithExitCode "ghc" ["--numeric-version"] ""
+      pure (code == ExitSuccess && filter (not . isSpace) out == want)
