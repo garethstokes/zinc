@@ -14,7 +14,7 @@ data Command
   | Add String            -- ^ resolve a dependency closure and freeze it
   | Vendor [String]       -- ^ pin no-git deps from their Hackage tarballs
   | Build (Maybe String) (Maybe String) (Maybe String) -- ^ build the workspace/member; 2nd = --ghc override, 3rd = --target (native/wasm32-wasi, zinc-9po.3)
-  | Run (Maybe String) [String] -- ^ build then run an executable: TARGET, then program ARGS
+  | Run (Maybe String) [String] (Maybe String) -- ^ build then run an executable: TARGET, program ARGS, then --target (native/wasm32-wasi, zinc-9po.4)
   | Repl (Maybe String)   -- ^ ghci for an optional target
   | Test (Maybe String)   -- ^ build and run tests for an optional target
   | Update (Maybe String) Bool -- ^ bump refs for an optional package; Bool = --dry-run
@@ -75,7 +75,7 @@ commandParser =
       , sub "vendor" "Pin a no-git dependency from its Hackage tarball" (Vendor <$> (yesFlag *> some (strArgument (metavar "PKG..."))))
       , sub "build"  "Build the workspace or a member" buildCmd
       , sub "warm"   "Build only the dependency closure (CI/Docker cache)" (Warm <$> ghcOption)
-      , sub "run"    "Build then run an executable"   (Run <$> optional (strArgument (metavar "[TARGET]")) <*> many (strArgument (metavar "[-- ARGS...]")))
+      , sub "run"    "Build then run an executable"   (Run <$> optional (strArgument (metavar "[TARGET]")) <*> many (strArgument (metavar "[-- ARGS...]")) <*> targetOption)
       , sub "repl"   "Open ghci for a target"         (Repl <$> optional (strArgument (metavar "TARGET")))
       , sub "test"   "Build and run tests"            (Test <$> optional (strArgument (metavar "TARGET")))
       , sub "update" "Bump dependency refs to latest" (Update <$> optional (strArgument (metavar "PKG")) <*> switch (long "dry-run" <> help "Show the closure delta without writing zinc.lock"))

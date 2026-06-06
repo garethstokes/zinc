@@ -13,6 +13,7 @@ module Zinc.Orchestrate
   , runWarm
   , buildAndRun
   , resolveRunTarget
+  , resolveRunTargetFor
   , resolveTarget
   , runTests
   , orderMembers
@@ -36,7 +37,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
 import Data.Bifunctor (first)
 import Data.Char (isHexDigit)
-import Data.List (stripPrefix)
+import Data.List (isSuffixOf, stripPrefix)
 import qualified Data.Map as Map
 import Data.Maybe (catMaybes, fromMaybe, isNothing, mapMaybe)
 import System.Directory (canonicalizePath, copyFile, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, doesPathExist, findExecutable, listDirectory, makeAbsolute, removeDirectoryRecursive)
@@ -247,9 +248,18 @@ resolveTarget (Just t) exes =
 -- executable path. The caller execs it (inheriting stdio, propagating the exit
 -- code) — building is separated from running so @run@ has live, interactive I/O.
 resolveRunTarget :: FilePath -> Maybe String -> IO (Either ZincError FilePath)
-resolveRunTarget wsDir target = runResult $ do
-  exes <- orFailE (runBuild wsDir)
-  liftEitherE (resolveTarget target [(takeFileName e, e) | e <- exes])
+resolveRunTarget = resolveRunTargetFor Native
+
+-- | As 'resolveRunTarget', for an explicit 'Target' (zinc-9po.4): builds the
+-- workspace for the target and resolves the selector to one artifact. A wasm
+-- artifact is @\<name\>.wasm@, so the selector matches on the name with any
+-- @.wasm@ suffix stripped. Native is byte-identical.
+resolveRunTargetFor :: Target -> FilePath -> Maybe String -> IO (Either ZincError FilePath)
+resolveRunTargetFor target wsDir sel = runResult $ do
+  (outcome, _, _) <- orFailE (buildWorkspaceReport nullSink target wsDir Nothing Nothing (== Executable))
+  liftEitherE (resolveTarget sel [(runName e, e) | e <- boExes outcome])
+  where
+    runName e = let n = takeFileName e in if ".wasm" `isSuffixOf` n then take (length n - 5) n else n
 
 -- | @zinc test@: build and run all test-suite components, returning how many
 -- passed. Fails on the first non-zero exit.

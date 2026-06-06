@@ -31,6 +31,8 @@ The first self-hosting, agent-first release.
   native builds are byte-identical to before. A closure member that needs C
   sources or system libraries fails fast with `ZINC_WASM_UNSUPPORTED` (the MVP
   is pure-Haskell only).
+- `zinc run --target wasm32-wasi` builds for wasm and runs the `.wasm` through
+  the Nix-provided `wasmtime`; native `zinc run` execs the binary directly.
 
 ### Agent-native DevEx
 

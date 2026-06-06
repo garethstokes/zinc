@@ -16,7 +16,7 @@ import Zinc.Delta (deltaJson, renderDelta)
 import Zinc.Deploy (ProbeChecks (..), ResolvedDeploy (..), deployReadyJson, dhHost, resolveDeploy, runDeploy, runInit)
 import Zinc.Docker (runDockerfile)
 import Zinc.Env (provisionToolchainFor)
-import Zinc.Target (Target (Native), parseTarget, targetTriple)
+import Zinc.Target (Target (Native), isWasm, parseTarget, targetTriple)
 import Zinc.Git (gitInitIfNeeded)
 import Zinc.Manifest (parseDeployTargets, parseWorkspace, wsGhc)
 import Zinc.Store (resolveStoreRoot)
@@ -26,7 +26,7 @@ import Zinc.GC (runGc)
 import Zinc.Introspect (explainJson, graphJson, renderExplain, renderGraph, renderStatus, runExplain, runGraph, runStatus, statusJson)
 import Zinc.Json (Json (..), renderJson)
 import Zinc.Metrics (recordBuild)
-import Zinc.Orchestrate (checkLockDrift, resolveRunTarget, runBuildReport, runCachePush, runClean, runPackage, runRepl, runTests, runWarm)
+import Zinc.Orchestrate (checkLockDrift, resolveRunTargetFor, runBuildReport, runCachePush, runClean, runPackage, runRepl, runTests, runWarm)
 import Zinc.Package (parsePackageFormat)
 import Zinc.Skill (LockedSkill (..))
 import Zinc.SkillCmd (renderSkillList, runSkillAdd, runSkillList, runSkillRemove, runSkillSync)
@@ -54,7 +54,7 @@ main = do
 buildsToolchain :: Command -> Bool
 buildsToolchain c = case c of
   Build {}  -> True
-  Run _ _   -> True
+  Run {}    -> True
   Test _    -> True
   Repl _    -> True
   Warm _    -> True
@@ -71,8 +71,9 @@ ghcOverrideOf _             = Nothing
 -- 'Native'. An unparseable value falls back to 'Native' here (the build
 -- dispatch re-parses and reports the usage error), so provisioning still runs.
 targetOf :: Command -> Target
-targetOf (Build _ _ (Just t)) = either (const Native) id (parseTarget t)
-targetOf _                    = Native
+targetOf (Build _ _ (Just t))  = either (const Native) id (parseTarget t)
+targetOf (Run _ _ (Just t))    = either (const Native) id (parseTarget t)
+targetOf _                     = Native
 
 -- | Provision the current workspace's Nix toolchain into the process env so the
 -- build runs without a manual @nix develop@ (zinc-y03). No-op when the requested
@@ -179,13 +180,20 @@ dispatch mode (Build member ghcOverride targetStr) =
             putStrLn (buildSummaryLine (humanColor mode) timing)
             mapM_ putStrLn (maybeToList (buildBreakdownLine (humanColor mode) timing))
             mapM_ (putStrLn . ("  " ++)) (boExes outcome)
-dispatch mode (Run target args) =
-  resolveRunTarget "." target >>= \r -> case r of
-    Left e -> failCmd mode e
-    Right exe -> do
-      -- Exec with live, inherited stdio and exit zinc with the child's code.
-      (_, _, _, ph) <- createProcess (proc exe args) {std_in = Inherit, std_out = Inherit, std_err = Inherit}
-      waitForProcess ph >>= exitWith
+dispatch mode (Run sel args targetStr) =
+  -- Resolve the compile target (zinc-9po.4); an unknown --target is a usage error.
+  case maybe (Right Native) parseTarget targetStr of
+    Left err -> hPutStrLn stderr err >> exitWith (ExitFailure 2)
+    Right tgt ->
+      resolveRunTargetFor tgt "." sel >>= \r -> case r of
+        Left e -> failCmd mode e
+        Right exe -> do
+          -- A wasm artifact is not directly executable — run it through the
+          -- Nix-provided wasmtime (on PATH after provisioning); a native exe runs
+          -- directly. Either way: live, inherited stdio + the child's exit code.
+          let (prog, pargs) = if isWasm tgt then ("wasmtime", exe : args) else (exe, args)
+          (_, _, _, ph) <- createProcess (proc prog pargs) {std_in = Inherit, std_out = Inherit, std_err = Inherit}
+          waitForProcess ph >>= exitWith
 dispatch mode (Test _) =
   runTests "." >>= \r -> case r of
     Left e  -> failCmd mode e

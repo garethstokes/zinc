@@ -825,9 +825,10 @@ main = hspec $ do
       parseArgs ["update", "--dry-run"] `shouldBe` Right (OutputFlags False False, Update Nothing True)
 
     it "parses `run [TARGET] [-- ARGS]` (target first, then program args)" $ do
-      parseArgs ["run"] `shouldBe` Right (OutputFlags False False, Run Nothing [])
-      parseArgs ["run", "web"] `shouldBe` Right (OutputFlags False False, Run (Just "web") [])
-      parseArgs ["run", "web", "--", "a", "b"] `shouldBe` Right (OutputFlags False False, Run (Just "web") ["a", "b"])
+      parseArgs ["run"] `shouldBe` Right (OutputFlags False False, Run Nothing [] Nothing)
+      parseArgs ["run", "web"] `shouldBe` Right (OutputFlags False False, Run (Just "web") [] Nothing)
+      parseArgs ["run", "web", "--", "a", "b"] `shouldBe` Right (OutputFlags False False, Run (Just "web") ["a", "b"] Nothing)
+      parseArgs ["run", "--target", "wasm32-wasi"] `shouldBe` Right (OutputFlags False False, Run Nothing [] (Just "wasm32-wasi"))
 
     it "rejects an unknown subcommand" $
       parseArgs ["frobnicate"] `shouldSatisfy` isLeft
