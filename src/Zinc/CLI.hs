@@ -36,6 +36,7 @@ data Command
   | Outdated Bool          -- ^ report deps with newer versions; Bool = --all (whole closure)
   | CachePush              -- ^ `cache push`: publish closure artifacts to the remote cache
   | Package String (Maybe String) (Maybe String) (Maybe String) -- ^ `package <format>`: format, --tag, -o, --to (nix-copy remote)
+  | Deploy String (Maybe String) Bool Bool Bool -- ^ `deploy <host>`: host, --service, --init, --rollback, --dry-run (zinc-nbk.1)
   | SkillAdd String (Maybe String) -- ^ `skill add <repo> [--ref]`: install a Claude Code skill (dp6.2)
   | SkillList               -- ^ `skill list`: installed skills (dp6.3)
   | SkillRemove String      -- ^ `skill remove <name>`: drop a skill's symlink + lock entry (dp6.3)
@@ -92,6 +93,7 @@ commandParser =
       , sub "closure" "Discover a package's non-boot closure + repos" (Closure <$> strArgument (metavar "PKG"))
       , sub "version" "Print the zinc version" (pure Version)
       , sub "package" "Build a deployable artifact (docker/static/bundle/nix)" (Package <$> strArgument (metavar "FORMAT") <*> optional (strOption (long "tag" <> metavar "TAG" <> help "Image tag (docker)")) <*> optional (strOption (long "output" <> short 'o' <> metavar "PATH" <> help "Write the artifact to PATH")) <*> optional (strOption (long "to" <> metavar "STORE-URI" <> help "Copy the Nix closure to a remote store (nix), e.g. ssh://host or s3://bucket")))
+      , sub "deploy" "Push and activate a build on a remote NixOS host" (Deploy <$> strArgument (metavar "HOST") <*> optional (strOption (long "service" <> metavar "NAME" <> help "Override the systemd unit name (default: package name)")) <*> switch (long "init" <> help "Generate the host's trusted-users + linger config") <*> switch (long "rollback" <> help "Revert to the previous generation and restart") <*> switch (long "dry-run" <> help "Probe and report without copying or activating"))
       , sub "outdated" "Report dependencies with newer versions available" (Outdated <$> switch (long "all" <> help "Include the whole closure, not just direct dependencies"))
       , command "cache" (info (subparser (sub "push" "Publish built closure artifacts to the remote cache (ZINC_CACHE)" (pure CachePush)) <**> helper) (progDesc "Manage the remote artifact cache"))
       , command "skill" (info (subparser (mconcat
@@ -162,6 +164,7 @@ helpOverview =
     , "  fmt                Canonically format zinc.toml"
     , "  clean / gc         Remove build artifacts / collect the shared store"
     , "  dockerfile         Emit a multi-stage Docker build recipe"
+    , "  deploy <host>      Push and activate a build on a remote NixOS host"
     , "  version            Print the zinc version"
     , ""
     , "Run `zinc <command> --help` for command-specific options."

@@ -13,6 +13,7 @@ import Zinc.CLI (Command (..), helpOverview, parseArgs)
 import Zinc.Closure (closureReportJson, renderClosure, runClosure)
 import Zinc.Diagnostic (ZincError, envelope, exitCodeFor, humanError, toDiagnostic, zincVersion, zincVersionLine)
 import Zinc.Delta (deltaJson, renderDelta)
+import Zinc.Deploy (ProbeChecks (..), deployReadyJson, dhHost, runDeploy)
 import Zinc.Docker (runDockerfile)
 import Zinc.Env (provisionToolchain)
 import Zinc.Git (gitInitIfNeeded)
@@ -230,6 +231,20 @@ dispatch mode (Package fmtStr tag out to) =
   case parsePackageFormat fmtStr of
     Left err  -> hPutStrLn stderr err >> exitWith (ExitFailure 2)
     Right fmt -> runPackage fmt tag out to "." >>= either (failCmd mode) putStrLn
+dispatch mode (Deploy host _service _init _rollback _dryRun) =
+  -- nbk.1: parse the target, probe the host's NixOS preconditions over SSH, and
+  -- report readiness (each gap → a typed ZINC_DEPLOY_* diagnostic). The closure
+  -- copy + profile GC-root (nbk.2), user-systemd unit + health-check (nbk.3),
+  -- --rollback (nbk.4) and --init (nbk.5) layer on top of this probe.
+  runDeploy host >>= \r -> case r of
+    Left e
+      | machine mode -> putStrLn (renderJson (envelope "deploy" False Nothing Nothing [toDiagnostic e])) >> exitWith (exitCodeFor e)
+      | otherwise    -> failCmd mode e
+    Right (h, c)
+      | machine mode -> putStrLn (renderJson (envelope "deploy" True (Just (deployReadyJson h c)) Nothing []))
+      | otherwise    -> putStrLn ("Host " ++ dhHost h ++ " is ready to receive a deploy (nix " ++ tick (pcNix c) ++ ", trusted " ++ tick (pcTrusted c) ++ ", linger " ++ tick (pcLinger c) ++ ").")
+  where
+    tick b = if b then "\10003" else "\10007"
 dispatch mode (SkillAdd repo ref) =
   runSkillAdd repo ref "." >>= either (failCmd mode) putStrLn
 dispatch mode SkillList =

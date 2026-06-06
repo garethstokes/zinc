@@ -48,3 +48,12 @@ The first self-hosting, agent-first release.
 - Nix flake exports `packages.default`, `apps.default`
   (`nix run github:garethstokes/zinc`), and `overlays.default`, alongside the
   dev shell.
+
+### Deploy
+
+- `zinc deploy <host>` (in progress): parses `[user@]host[:port]` / ssh-config
+  aliases and probes a NixOS host's deploy preconditions over SSH (Nix daemon
+  present, deploy user in `trusted-users`, lingering enabled). Each gap maps to
+  a typed diagnostic — `ZINC_DEPLOY_SSH` / `_NO_NIX` / `_NOT_TRUSTED` /
+  `_NO_LINGER` — with an actionable `nextAction`. The closure copy + activate
+  sequence is landing incrementally.

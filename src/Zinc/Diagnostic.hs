@@ -67,6 +67,10 @@ data ZincError
   | NoZincToml String                 -- ^ directory
   | NoRepoInRegistry String String    -- ^ name, requiring parent
   | StaticUnsupported String          -- ^ binary name: fully-static (musl) packaging not supported for this toolchain
+  | DeploySsh String String           -- ^ host, detail (SSH connect/auth failed)
+  | DeployNoNix String                -- ^ host (no Nix daemon on the target)
+  | DeployNotTrusted String           -- ^ user (not in the host's trusted-users)
+  | DeployNoLinger String             -- ^ user (lingering disabled on the host)
   | OtherError String                 -- ^ escape hatch for not-yet-migrated messages
   deriving (Eq, Show)
 
@@ -172,6 +176,10 @@ errorCode e = case e of
   NoZincToml {}          -> "ZINC_NO_ZINC_TOML"
   NoRepoInRegistry {}    -> "ZINC_NO_REPO_IN_REGISTRY"
   StaticUnsupported {}   -> "ZINC_STATIC_UNSUPPORTED"
+  DeploySsh {}           -> "ZINC_DEPLOY_SSH"
+  DeployNoNix {}         -> "ZINC_DEPLOY_NO_NIX"
+  DeployNotTrusted {}    -> "ZINC_DEPLOY_NOT_TRUSTED"
+  DeployNoLinger {}      -> "ZINC_DEPLOY_NO_LINGER"
   OtherError {}          -> "ZINC_ERROR"
 
 -- | The single boundary renderer: 'ZincError' to the agent-facing 'Diagnostic'.
@@ -233,6 +241,18 @@ toDiagnostic e =
         , Just (bin ++ " is dynamically linked; zinc builds against the dynamic GHC, and fully-static (musl) re-linking of GHC binaries is not available")
         , Nothing, Nothing
         , Just "use `zinc package docker` (a self-contained image) or `zinc package bundle` (a portable single-file) — both carry the runtime closure without static linking" )
+      DeploySsh host d ->
+        ( "could not reach deploy host", Just (host ++ ": " ++ d), Nothing, Nothing
+        , Just "check key-based SSH auth and that the host is reachable" )
+      DeployNoNix host ->
+        ( "no Nix daemon on the deploy host", Just (host ++ " has no `nix` on PATH"), Nothing, Nothing
+        , Just "install Nix (flakes enabled) on the host, or confirm it is a NixOS machine" )
+      DeployNotTrusted user ->
+        ( "deploy user is not trusted on the host", Just (user ++ " is not in the host's trusted-users"), Nothing, Nothing
+        , Just ("add " ++ user ++ " to `nix.settings.trusted-users` (`zinc deploy --init` prints the snippet)") )
+      DeployNoLinger user ->
+        ( "user lingering is disabled on the host", Just ("services for " ++ user ++ " will not run without an active login"), Nothing, Nothing
+        , Just ("set `users.users." ++ user ++ ".linger = true` (`zinc deploy --init` prints the snippet)") )
       OtherError msg ->
         ( msg, Nothing, Nothing, Nothing, Nothing )
 
@@ -312,6 +332,10 @@ exitCodeFor e = ExitFailure $ case e of
   StaticUnsupported {}   -> 4
   NixAbsent              -> 5
   ToolchainMissing {}    -> 5
+  DeploySsh {}           -> 5
+  DeployNoNix {}         -> 5
+  DeployNotTrusted {}    -> 5
+  DeployNoLinger {}      -> 5
   ContentHashMismatch {} -> 6
   OtherError {}          -> 1
 

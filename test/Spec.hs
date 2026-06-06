@@ -32,6 +32,16 @@ import Zinc.Closure (discoverRepos, parseDependsField, pkgNameOf)
 import Zinc.Ansi (greenBold, style)
 import Zinc.Output (OutputEvent (..), OutputFlags (..), OutputMode (..), RProg (..), Sink (..), eventJson, nullSink, progressLine, verb, withRenderer)
 import Zinc.Docker (dockerfileText)
+import Zinc.Deploy
+  ( DeployHost (..)
+  , ProbeChecks (..)
+  , ProbeOutcome (..)
+  , interpretProbe
+  , parseDeployHost
+  , parseProbeOutput
+  , probeScript
+  , sshArgs
+  )
 import Zinc.Fmt (canonicalizeManifest, setManifestDependencies)
 import Zinc.Doctor (doctorJson, doctorOk, flakesOffDiagnostic, lockDriftDiagnostic, renderDoctor, runDoctor)
 import Zinc.Introspect (DepStatus (..), explainJson, graphJson, runStatus, statusJson)
@@ -3171,3 +3181,65 @@ main = hspec $ do
       manifestBody <- readFile (root ++ "/zinc.toml")
       (wsExists, mainExists, "name = \"demo\"" `isInfixOf` manifestBody)
         `shouldBe` (True, True, True)
+
+  describe "Zinc.Deploy host parsing (nbk.1)" $ do
+    it "parses [user@]host[:port] forms" $ do
+      parseDeployHost "nixos-box" `shouldBe` DeployHost Nothing "nixos-box" Nothing
+      parseDeployHost "gareth@nixos-box" `shouldBe` DeployHost (Just "gareth") "nixos-box" Nothing
+      parseDeployHost "gareth@nixos-box:2222" `shouldBe` DeployHost (Just "gareth") "nixos-box" (Just 2222)
+      parseDeployHost "nixos-box:22" `shouldBe` DeployHost Nothing "nixos-box" (Just 22)
+
+    it "treats a bare token as a host / ssh-config alias" $
+      parseDeployHost "homelab" `shouldBe` DeployHost Nothing "homelab" Nothing
+
+    it "does not split a non-numeric suffix as a port" $
+      parseDeployHost "host:weird" `shouldBe` DeployHost Nothing "host:weird" Nothing
+
+  describe "Zinc.Deploy ssh args (nbk.1)" $ do
+    it "renders user@host, inserts -p for a port, and forces BatchMode" $ do
+      sshArgs (DeployHost (Just "gareth") "box" (Just 2222)) ["echo", "hi"]
+        `shouldBe` ["-o", "BatchMode=yes", "-p", "2222", "gareth@box", "echo", "hi"]
+      sshArgs (DeployHost Nothing "box" Nothing) ["true"]
+        `shouldBe` ["-o", "BatchMode=yes", "box", "true"]
+
+  describe "Zinc.Deploy probe output parsing (nbk.1)" $ do
+    it "parses key=value probe lines, defaulting missing keys to False" $ do
+      parseProbeOutput "nix=yes\ntrusted=no\nlinger=yes\n"
+        `shouldBe` ProbeChecks True False True
+      parseProbeOutput "" `shouldBe` ProbeChecks False False False
+
+    it "ships a remote script that checks nix, trusted-users and lingering" $
+      all (`isInfixOf` probeScript) ["nix=", "trusted=", "linger=", "loginctl"] `shouldBe` True
+
+  describe "Zinc.Deploy probe interpretation (nbk.1)" $ do
+    let h = DeployHost (Just "gareth") "box" Nothing
+        code = either (Just . errorCode) (const Nothing)
+    it "maps an unreachable host to ZINC_DEPLOY_SSH" $
+      code (interpretProbe h (SshUnreachable "connection refused")) `shouldBe` Just "ZINC_DEPLOY_SSH"
+    it "reports the first missing precondition, nix → trusted → linger" $ do
+      code (interpretProbe h (Probed (ProbeChecks False False False))) `shouldBe` Just "ZINC_DEPLOY_NO_NIX"
+      code (interpretProbe h (Probed (ProbeChecks True False False))) `shouldBe` Just "ZINC_DEPLOY_NOT_TRUSTED"
+      code (interpretProbe h (Probed (ProbeChecks True True False))) `shouldBe` Just "ZINC_DEPLOY_NO_LINGER"
+    it "passes a fully-provisioned host" $
+      code (interpretProbe h (Probed (ProbeChecks True True True))) `shouldBe` Nothing
+
+  describe "deploy diagnostics taxonomy (nbk.1)" $ do
+    let errs = [DeploySsh "box" "x", DeployNoNix "box", DeployNotTrusted "gareth", DeployNoLinger "gareth"]
+    it "assigns stable ZINC_DEPLOY_* codes" $
+      map errorCode errs
+        `shouldBe` ["ZINC_DEPLOY_SSH", "ZINC_DEPLOY_NO_NIX", "ZINC_DEPLOY_NOT_TRUSTED", "ZINC_DEPLOY_NO_LINGER"]
+    it "categorises every deploy precondition as an environment failure (exit 5)" $
+      map exitCodeFor errs `shouldBe` replicate 4 (ExitFailure 5)
+    it "gives every deploy error an actionable nextAction" $
+      all (isJust . diagNextAction . toDiagnostic) errs `shouldBe` True
+
+  describe "deploy verb parsing (nbk.1)" $ do
+    it "parses `deploy <host>` with the v1 flag surface" $ do
+      parseArgs ["deploy", "gareth@box"]
+        `shouldBe` Right (OutputFlags False False, Deploy "gareth@box" Nothing False False False)
+      parseArgs ["deploy", "homelab", "--service", "myapp", "--dry-run"]
+        `shouldBe` Right (OutputFlags False False, Deploy "homelab" (Just "myapp") False False True)
+      parseArgs ["deploy", "box", "--init"]
+        `shouldBe` Right (OutputFlags False False, Deploy "box" Nothing True False False)
+      parseArgs ["deploy", "box", "--rollback"]
+        `shouldBe` Right (OutputFlags False False, Deploy "box" Nothing False True False)
