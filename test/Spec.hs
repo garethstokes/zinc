@@ -81,7 +81,7 @@ import Zinc.GC (GCRoot (..), gcStore, runGc)
 import Zinc.Add (enrichWithRepos, freezeClosure, lockEntry, runAdd, runUpdate, runVendor, splitNameVersion)
 import Zinc.Build (GhcInvocation (..), MemberBuild (..), PackageConf (..), archiveArgs, buildMember, ghcMakeArgs, installedVersions, preprocessorFor, registerPackage, renderConf, replArgs, runPreprocessor, writeFileIfChanged)
 import Zinc.Cache (BuildKey (..), buildCacheKey, buildCacheKeyFor, cacheHit, storeConfPath, storePkgPath, writeCachedConf)
-import Zinc.Cabal (cabalBuildType, cabalVersion, parseCabalComponents, parseCabalComponentsForGhc)
+import Zinc.Cabal (bootConflicts, cabalBuildType, cabalVersion, parseCabalComponents, parseCabalComponentsForGhc)
 import Zinc.Env (devEnvVars, envCacheKey, envCacheKeyFor, nixPrintDevEnv, provisionEnv, toolchainPath, toolchainVars)
 import Zinc.Macros (emitCabalMacros)
 import Zinc.Nix (generateFlake, generateFlakeFor)
@@ -3293,3 +3293,34 @@ main = hspec $ do
 
     it "lets --service override the configured service" $
       rdService (resolveDeploy [t] "homelab" (Just "override")) `shouldBe` Just "override"
+
+  describe "Zinc.Cabal.bootConflicts (sib)" $ do
+    let isBoot = (`elem` ["transformers", "base"])
+        toolchain = [("transformers", [0, 6, 1, 0]), ("base", [4, 18, 0, 0])]
+        cabalWith dep =
+          unlines
+            [ "cabal-version: 2.4"
+            , "name: demo"
+            , "version: 1.0"
+            , "library"
+            , "  build-depends: base, " ++ dep
+            , "  default-language: Haskell2010"
+            ]
+    it "flags a boot-lib bound that excludes the toolchain version" $
+      fmap (map (\(n, _, t) -> (n, t))) (bootConflicts isBoot toolchain "9.6.5" (cabalWith "transformers >=0.2 && <0.6"))
+        `shouldBe` Right [("transformers", "0.6.1.0")]
+    it "passes when the bound admits the toolchain version" $
+      bootConflicts isBoot toolchain "9.6.5" (cabalWith "transformers >=0.2 && <0.7") `shouldBe` Right []
+    it "ignores a version-pinned non-boot dep" $
+      bootConflicts isBoot toolchain "9.6.5" (cabalWith "regex-base <0.1") `shouldBe` Right []
+
+  describe "ZINC_DEP_BOOT_CONFLICT diagnostic (sib)" $ do
+    let e = DepBootConflict "monad-control" "transformers" ">=0.2 && <0.6" "0.6.1.0" Nothing
+        d = toDiagnostic e
+    it "has the stable code, resolution exit category, package and a nextAction" $
+      (errorCode e, exitCodeFor e, diagPackage d, isJust (diagNextAction d))
+        `shouldBe` ("ZINC_DEP_BOOT_CONFLICT", ExitFailure 3, Just "monad-control", True)
+    it "names the exact forward commit when the HEAD-probe found one" $
+      (diagNextAction (toDiagnostic (DepBootConflict "monad-control" "transformers" "<0.6" "0.6.1.0" (Just "3785240")))
+        >>= \na -> if "3785240" `isInfixOf` na then Just () else Nothing)
+        `shouldBe` Just ()

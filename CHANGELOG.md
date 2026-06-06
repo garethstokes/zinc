@@ -29,6 +29,13 @@ The first self-hosting, agent-first release.
 - Structured error taxonomy (`ZINC_*` codes) with a `nextAction` and stable
   category exit codes (2 usage · 3 resolution · 4 build · 5 environment ·
   6 integrity).
+- `ZINC_DEP_BOOT_CONFLICT`: when a dependency's resolved tag pins a GHC boot
+  library below what the toolchain ships (the classic "newest tag is stale" trap
+  — e.g. monad-control's tag pins `transformers <0.6` against a 0.6 toolchain),
+  zinc fails with a named diagnostic — package, boot lib, both versions — instead
+  of a cryptic `ErrorT not in scope`, and probes the dependency's HEAD to suggest
+  the exact forward-pin commit. Bounds stay advisory (read for diagnostics, never
+  fed to resolution).
 - Introspection: `status`, `graph`, `explain`. Diagnostics: `doctor` (env +
   project health), `perf` (latency p50/p95, cache hit-rate, regressions over a
   rolling baseline). Orientation: `prime`, `onboard`, `dockerfile`.

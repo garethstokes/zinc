@@ -43,8 +43,8 @@ import System.Directory (canonicalizePath, copyFile, createDirectoryIfMissing, d
 import System.Exit (ExitCode (..))
 import System.FilePath (takeExtension, takeFileName, (</>))
 import System.Process (callProcess, readProcess, readProcessWithExitCode)
-import Zinc.Build (LibBuild (..), MemberBuild (..), buildLib, buildLibArtifacts, buildMember, initPackageDb, isRegistered, registerPackage, replArgs)
-import Zinc.Cabal (cabalBuildType, cabalVersion, parseCabalComponentsForGhc)
+import Zinc.Build (LibBuild (..), MemberBuild (..), buildLib, buildLibArtifacts, buildMember, initPackageDb, installedVersions, isRegistered, registerPackage, replArgs)
+import Zinc.Cabal (bootConflicts, cabalBuildType, cabalVersion, parseCabalComponentsForGhc)
 import Zinc.Cache (BuildKey (..), buildCacheKey, storeConfPath, storePkgPath)
 import Zinc.CacheBackend (CacheBackend (cbPull, cbPush), CacheConfig (ccReadUrls, ccWriteUrl), PullOutcome (Pulled), httpBackend, resolveCacheConfig)
 import Zinc.Quirks (quirkGhcOptions)
@@ -63,12 +63,12 @@ import Zinc.Manifest
   , parseWorkspace
   , depGhcOptionsOf
   )
-import Zinc.Diagnostic (ZincError (AmbiguousTarget, ContentHashMismatch, ManifestParse, NixAbsent, NoZincToml, OtherError, StaticUnsupported, ToolchainMissing))
+import Zinc.Diagnostic (ZincError (AmbiguousTarget, ContentHashMismatch, DepBootConflict, ManifestParse, NixAbsent, NoZincToml, OtherError, StaticUnsupported, ToolchainMissing))
 import Zinc.Package (PackageFormat (..), dockerImageRef, packagingFlake, storePathRefs)
 import Zinc.Except (Result, failWith, failWithError, liftEither, liftEitherE, liftIO, orFail, orFailE, runResult)
 import Zinc.Output (OutputEvent (..), Sink, emit, nullSink)
 import Zinc.Report (BuildOutcome (..), PackageReport (..), PackageStatus (..), Timing (..), cacheStatsOf)
-import Zinc.Resolve (ResolvedDep (..), topoLevels)
+import Zinc.Resolve (ResolvedDep (..), isBootLib, topoLevels)
 import Zinc.Store (contentHash, resolveStoreRoot, storeSrcPath, withStoreLock)
 
 -- | Build a workspace: each member's library (so siblings can link) plus every
@@ -449,12 +449,62 @@ buildClosure sink wsDir storeRoot wsDb ghcVersion buildOpts mAcc = runResult $ d
       case filter ((== Library) . compKind) components of
         []        -> pure (report Skipped, Nothing) -- no library to build
         (lib : _) -> do
+          -- sib: detect a stale tag whose declared boot-library bound conflicts
+          -- with the toolchain BEFORE compiling, so the user gets a typed
+          -- ZINC_DEP_BOOT_CONFLICT (naming the package, the boot lib + both
+          -- versions, and a forward-pin suggestion) instead of a cryptic
+          -- downstream "ErrorT not in scope" GHC failure. The bound is read for
+          -- this diagnostic only — never fed back into resolution.
+          orFailE (checkBootConflict l pkgDir)
           -- Apply any per-dependency build overrides (extra ghc flags,
           -- e.g. -XSafe) from the workspace [build-options].
           let lib' = lib {compGhcOptions = compGhcOptions lib ++ overrideFor l}
           liftIO (emit sink (CompileStart (lockName l)))
           (conf, _) <- orFailE (accuminto mAcc "compile" (buildLibArtifacts (LibBuild pkgDir pkgOut wsDb (lockName l) version lib')))
           pure (report Built, Just (lockName l, pkgOut, conf))
+
+    -- sib: for a cabal-based dep, fail with a typed ZINC_DEP_BOOT_CONFLICT if its
+    -- declared bound on a GHC boot library excludes the toolchain's version (a
+    -- stale tag). zinc-native deps (no .cabal) carry no such bounds — skip.
+    -- On conflict, probe the repo's default HEAD: if HEAD relaxes the bound, name
+    -- that exact commit so the nextAction is a copy-paste forward-pin.
+    checkBootConflict l pkgDir = do
+      entries <- listDirectory pkgDir
+      case filter ((== ".cabal") . takeExtension) entries of
+        []          -> pure (Right ())
+        (cabal : _) -> do
+          src <- readFile (pkgDir </> cabal)
+          installed <- installedVersions
+          case bootConflicts isBootLib installed ghcVersion src of
+            Right ((bootLib, range, ver) : _) -> do
+              suggested <- probeHeadFix l installed
+              pure (Left (DepBootConflict (lockName l) bootLib range ver suggested))
+            _ -> pure (Right ())
+
+    -- HEAD-probe (sib): clone the dep's default branch, and if its .cabal no
+    -- longer conflicts with the toolchain, return that HEAD commit as the
+    -- suggested forward-pin. Best-effort + on the (rare) error path: any failure
+    -- degrades to the generic suggestion (Nothing). The bound stays advisory.
+    probeHeadFix l installed = do
+      let tmp = storeRoot </> "boot-probe" </> lockName l
+      stale <- doesDirectoryExist tmp
+      when stale (removeDirectoryRecursive tmp)
+      cloned <- cloneAt (lockRepo l) "HEAD" tmp
+      result <- case cloned of
+        Left _ -> pure Nothing
+        Right sha -> do
+          headPkgDir <- packageDirIn tmp (lockRepo l) (lockName l)
+          headEntries <- listDirectory headPkgDir
+          case filter ((== ".cabal") . takeExtension) headEntries of
+            (cabal : _) -> do
+              headSrc <- readFile (headPkgDir </> cabal)
+              pure $ case bootConflicts isBootLib installed ghcVersion headSrc of
+                Right [] -> Just sha -- HEAD admits the toolchain version
+                _        -> Nothing
+            [] -> pure Nothing
+      done <- doesDirectoryExist tmp
+      when done (removeDirectoryRecursive tmp)
+      pure result
 
     -- Tamper detection (spec §8): a fetched tree's content hash must match the
     -- lock's recorded sha256. Only enforced for real-shaped hashes so that

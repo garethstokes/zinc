@@ -67,6 +67,7 @@ data ZincError
   | NoZincToml String                 -- ^ directory
   | NoRepoInRegistry String String    -- ^ name, requiring parent
   | StaticUnsupported String          -- ^ binary name: fully-static (musl) packaging not supported for this toolchain
+  | DepBootConflict String String String String (Maybe String) -- ^ package, boot lib, declared range, toolchain version, suggested forward commit (HEAD-probe; stale tag vs toolchain, zinc-sib)
   | DeploySsh String String           -- ^ host, detail (SSH connect/auth failed)
   | DeployNoNix String                -- ^ host (no Nix daemon on the target)
   | DeployNotTrusted String           -- ^ user (not in the host's trusted-users)
@@ -176,6 +177,7 @@ errorCode e = case e of
   NoZincToml {}          -> "ZINC_NO_ZINC_TOML"
   NoRepoInRegistry {}    -> "ZINC_NO_REPO_IN_REGISTRY"
   StaticUnsupported {}   -> "ZINC_STATIC_UNSUPPORTED"
+  DepBootConflict {}     -> "ZINC_DEP_BOOT_CONFLICT"
   DeploySsh {}           -> "ZINC_DEPLOY_SSH"
   DeployNoNix {}         -> "ZINC_DEPLOY_NO_NIX"
   DeployNotTrusted {}    -> "ZINC_DEPLOY_NOT_TRUSTED"
@@ -241,6 +243,16 @@ toDiagnostic e =
         , Just (bin ++ " is dynamically linked; zinc builds against the dynamic GHC, and fully-static (musl) re-linking of GHC binaries is not available")
         , Nothing, Nothing
         , Just "use `zinc package docker` (a self-contained image) or `zinc package bundle` (a portable single-file) — both carry the runtime closure without static linking" )
+      DepBootConflict pkg bootLib range toolchainVer suggested ->
+        ( "dependency's tag conflicts with a toolchain boot library"
+        , Just (pkg ++ " requires " ++ bootLib ++ " " ++ range ++ ", but the toolchain ships " ++ bootLib ++ " " ++ toolchainVer)
+        , Nothing, Just pkg
+        , Just $ case suggested of
+            Just sha ->
+              "its newest release tag is stale, but its HEAD (" ++ sha ++ ") admits " ++ bootLib ++ " " ++ toolchainVer
+                ++ " — pin it forward: `[dependencies." ++ pkg ++ "] rev = \"" ++ sha ++ "\"`"
+            Nothing ->
+              "its newest release tag is stale — pin " ++ pkg ++ " forward to a commit whose " ++ bootLib ++ " bound admits " ++ toolchainVer ++ " (`[dependencies." ++ pkg ++ "] rev = ...`)" )
       DeploySsh host d ->
         ( "could not reach deploy host", Just (host ++ ": " ++ d), Nothing, Nothing
         , Just "check key-based SSH auth and that the host is reachable" )
@@ -327,6 +339,7 @@ exitCodeFor e = ExitFailure $ case e of
   GitAuth {}             -> 3
   DepNoGitRepo {}        -> 3
   NoRepoInRegistry {}    -> 3
+  DepBootConflict {}     -> 3
   GhcCompile {}          -> 4
   BuildTypeCustom {}     -> 4
   StaticUnsupported {}   -> 4

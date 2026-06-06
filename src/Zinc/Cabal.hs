@@ -10,11 +10,12 @@ module Zinc.Cabal
   , parseCabalComponentsForGhc
   , cabalBuildType
   , cabalVersion
+  , bootConflicts
   ) where
 
 import qualified Data.ByteString.Char8 as BS
 import Data.Foldable (toList)
-import Data.List (nub)
+import Data.List (intercalate, nub)
 import Data.Maybe (mapMaybe)
 import Distribution.Compiler
   ( AbiTag (NoAbiTag)
@@ -50,7 +51,7 @@ import Distribution.PackageDescription.Parsec (parseGenericPackageDescription, r
 import Distribution.Pretty (prettyShow)
 import Distribution.System (buildPlatform)
 import Distribution.Types.ComponentRequestedSpec (ComponentRequestedSpec (ComponentRequestedSpec))
-import Distribution.Types.Dependency (depLibraries, depPkgName)
+import Distribution.Types.Dependency (depLibraries, depPkgName, depVerRange)
 import Distribution.Types.Library (libName)
 import Distribution.Types.LibraryName (LibraryName (LSubLibName))
 import Distribution.Types.PackageId (pkgName, pkgVersion)
@@ -59,7 +60,7 @@ import Distribution.Types.PkgconfigDependency (PkgconfigDependency (PkgconfigDep
 import Distribution.Types.PkgconfigName (unPkgconfigName)
 import Distribution.Types.UnqualComponentName (unUnqualComponentName)
 import Distribution.Utils.Path (getSymbolicPath)
-import Distribution.Version (mkVersion)
+import Distribution.Version (mkVersion, withinRange)
 import Zinc.Manifest (Component (..), ComponentKind (..))
 import Zinc.SysLibs (toNixpkgs)
 
@@ -84,6 +85,43 @@ parseCabalComponentsForGhc ghcVersion src =
         Left missing -> Left ("cabal finalize error: unsatisfied " ++ show (map prettyShow missing))
         Right (pd, _flags) ->
           Right (libraryComponent pd ++ executableComponents pd ++ testComponents pd)
+  where
+    ghc = unknownCompilerInfo (CompilerId GHC (mkVersion (versionInts ghcVersion))) NoAbiTag
+
+-- | Boot-library version conflicts in a @.cabal@ (zinc-sib): each
+-- @build-depends@ on a GHC boot library whose declared version range EXCLUDES
+-- the toolchain's installed version. This is the structured detection behind the
+-- @ZINC_DEP_BOOT_CONFLICT@ diagnostic — it turns a cryptic downstream
+-- @ErrorT not in scope@ GHC failure (a stale tag pinning e.g. @transformers <0.6@
+-- against a 0.6 toolchain) into a named conflict. Returns @(bootLib,
+-- declaredRange, toolchainVersion)@ per offending dependency.
+--
+-- PRINCIPLE GUARD (spec line 81): the bound is read for DIAGNOSTICS ONLY and is
+-- never fed back into resolution — zinc still pins by tag, not by solving bounds.
+bootConflicts
+  :: (String -> Bool)   -- ^ is this a GHC boot library?
+  -> [(String, [Int])]  -- ^ toolchain installed versions (from 'Zinc.Build.installedVersions')
+  -> String             -- ^ GHC version (to resolve @impl(ghc ...)@ conditionals)
+  -> String             -- ^ @.cabal@ source
+  -> Either String [(String, String, String)]
+bootConflicts isBoot toolchain ghcVersion src =
+  case snd (runParseResult (parseGenericPackageDescription (BS.pack src))) of
+    Left err -> Left ("cabal parse error: " ++ show err)
+    Right gpd ->
+      case finalizePD mempty (ComponentRequestedSpec False False) (const True) buildPlatform ghc [] gpd of
+        Left missing -> Left ("cabal finalize error: unsatisfied " ++ show (map prettyShow missing))
+        Right (pd, _flags) ->
+          Right $
+            nub
+              [ (name, prettyShow range, intercalate "." (map show ver))
+              | bi <- maybe [] (pure . libBuildInfo) (library pd)
+              , d <- targetBuildDepends bi
+              , let name = unPackageName (depPkgName d)
+              , isBoot name
+              , Just ver <- [lookup name toolchain]
+              , let range = depVerRange d
+              , not (withinRange (mkVersion ver) range)
+              ]
   where
     ghc = unknownCompilerInfo (CompilerId GHC (mkVersion (versionInts ghcVersion))) NoAbiTag
 
