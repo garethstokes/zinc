@@ -75,6 +75,7 @@ import Zinc.SysLibs (toNixpkgs)
 import Zinc.Resolve (DepManifest (..), ResolvedDep (..), isBootLib, resolve, topoLevels, topoSort)
 import Zinc.Version (newestTag, newestTagFor)
 import Zinc.Lock (LockedPackage (..), Source (..), lockRepo, lockRev, parseLock, renderLock, srcKey)
+import Zinc.Skill (LockedSkill (..), SkillDep (..), parseSkillLock, parseSkills, readSkillFrontmatter, renderSkillLock)
 import Zinc.Metrics (MetricsRecord (..), appendMetrics, metricsLine, metricsPath)
 import Zinc.Perf (CommandStats (..), PerfRecord (..), Regression (..), PerfSummary (..), decodeRecord, percentile, perfSummaryJson, renderPerf, summarize)
 import Zinc.Scaffold (FileSpec (..), materialize, scaffoldNew, scaffoldWorkspace)
@@ -1948,6 +1949,44 @@ main = hspec $ do
       r <- runPreprocessor (dir ++ "/Foo.hsc")
       produced <- doesFileExist (dir ++ "/Foo.hs")
       (r, produced) `shouldBe` (Right (), True)
+
+  describe "Zinc.Skill foundation (dp6.1)" $ do
+    it "parses the [skills] table into SkillDeps (repo + ref heuristics)" $ do
+      let src = unlines
+            [ "[workspace]", "members = [\".\"]", "ghc = \"9.6.5\""
+            , "[skills]"
+            , "brainstorming = { repo = \"https://github.com/o/brainstorming\", ref = \"v1\" }"
+            , "debugging = { repo = \"https://github.com/o/debugging\" }"
+            , "research = { repo = \"https://github.com/o/research\", ref = \"*\" }"
+            ]
+      case parseSkills src of
+        Left e -> expectationFailure e
+        Right sks -> do
+          map skName sks `shouldBe` ["brainstorming", "debugging", "research"]
+          map skRepo sks `shouldBe` ["https://github.com/o/brainstorming", "https://github.com/o/debugging", "https://github.com/o/research"]
+          map skRef sks `shouldBe` [Tag "v1", Latest, Latest]
+
+    it "treats a full hex ref as a commit (rev), a name as a tag (dp6.1)" $ do
+      let mk r = "[workspace]\nmembers=[\".\"]\nghc=\"9.6.5\"\n[skills]\ns = { repo = \"r\", ref = \"" ++ r ++ "\" }\n"
+      (skRef . head <$> parseSkills (mk "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2")) `shouldBe` Right (Rev "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2")
+      (skRef . head <$> parseSkills (mk "v2.0")) `shouldBe` Right (Tag "v2.0")
+
+    it "returns no skills when there is no [skills] table" $
+      parseSkills "[workspace]\nmembers = [\".\"]\nghc = \"9.6.5\"\n" `shouldBe` Right []
+
+    it "round-trips [[skill]] lock blocks through render . parse" $ do
+      let sks = [LockedSkill "brainstorming" "https://github.com/o/b" "a1b2c3d" "sha256:deadbeef", LockedSkill "debugging" "https://github.com/o/d" "f00ba12" "sha256:cafe"]
+      parseSkillLock (renderSkillLock sks) `shouldBe` Right sks
+
+    it "reads SKILL.md frontmatter (name + description), lenient on CRLF + quotes" $ do
+      readSkillFrontmatter (unlines ["---", "name: brainstorming", "description: Helps brainstorm ideas", "---", "# Brainstorming", "body"])
+        `shouldBe` Right ("brainstorming", "Helps brainstorm ideas")
+      readSkillFrontmatter "---\r\nname: \"debugging\"\r\ndescription: 'find root causes'\r\n---\r\nbody\r\n"
+        `shouldBe` Right ("debugging", "find root causes")
+
+    it "rejects SKILL.md missing frontmatter or a required field (dp6.1)" $ do
+      readSkillFrontmatter "# no frontmatter\nbody\n" `shouldSatisfy` isLeft
+      readSkillFrontmatter (unlines ["---", "name: x", "---"]) `shouldSatisfy` isLeft -- no description
 
   describe "build cache key" $ do
     let key deps opts = buildCacheKey (BuildKey "pkg" "abc" "9.6.5" deps opts)
