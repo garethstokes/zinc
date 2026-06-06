@@ -8,9 +8,9 @@ nav_order: 6
 ## Why
 
 Getting a working GHC and the right system libraries is a common source of
-friction. zinc removes it by provisioning the toolchain with Nix — but you never
-write or run Nix. The compiler version is pinned per workspace, so every machine
-and every CI run builds with the same GHC.
+friction. zinc removes it by provisioning the toolchain with Nix, while you never
+write or run Nix yourself. The compiler version is pinned per workspace, so every
+machine and every CI run builds with the same GHC.
 
 ## What
 
@@ -22,8 +22,8 @@ when the GHC version or `system-libs` change. The compiler, `ghc-pkg`, and
 preprocessors come from that environment.
 
 `system-libs` entries are nixpkgs attribute names. Naming the attribute directly
-(for example `zlib`) sidesteps the problem of mapping a cabal `extra-libraries`
-name to a system package.
+(for example `zlib`) sidesteps the problem of mapping an `extra-libraries` name
+to a system package.
 
 ## How
 

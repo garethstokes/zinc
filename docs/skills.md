@@ -8,17 +8,17 @@ nav_order: 14
 ## Why
 
 zinc is, underneath, a git-native, content-addressed, lockfile-pinned package
-installer with an agent-friendly CLI. Agentic "skills" — capabilities an AI
-harness loads — need exactly that: fetched from git, pinned, and verified. So
-zinc can install skills the same way it installs code, giving an agent's
-capabilities the same reproducibility and auditability as its dependencies.
+installer with an agent-friendly CLI. Agentic "skills" (capabilities an AI
+harness loads) need exactly that: fetched from git, pinned, and verified. So zinc
+can install skills the same way it installs code, giving an agent's capabilities
+the same reproducibility and auditability as its dependencies.
 
 ## What
 
 A skill is a package kind. `zinc skill add` fetches a skill from a git
 repository, pins it by commit and content hash in the lockfile, and links it into
-the harness's skills directory. The build toolchain is not involved — installing
-a skill never invokes Nix or GHC.
+the harness's skills directory. The build toolchain is not involved: installing a
+skill never invokes Nix or GHC.
 
 A skill is a directory with a manifest (the Claude Code `SKILL.md` format: a name
 and description, plus the skill's content). The manifest's name determines where
@@ -35,9 +35,9 @@ zinc skill sync
 
 `zinc skill add` resolves and clones the skill at its ref into the content store,
 verifies its hash, records it in `zinc.lock`, and symlinks it into
-`.claude/skills/<name>`. `zinc skill sync` re-materializes every locked skill —
-so committing `zinc.toml` and `zinc.lock` lets a teammate or a fresh agent run
-`zinc skill sync` and get the exact same, hash-verified set of skills.
+`.claude/skills/<name>`. `zinc skill sync` re-materializes every locked skill, so
+committing `zinc.toml` and `zinc.lock` lets a teammate or a fresh agent run `zinc
+skill sync` and get the exact same, hash-verified set of skills.
 
 ## Examples
 

@@ -9,8 +9,8 @@ nav_order: 12
 
 Compiling Haskell to WebAssembly normally means setting up the GHC wasm
 cross-compiler by hand. That setup is exactly the kind of thing zinc already
-does — the wasm toolchain is delivered as a Nix flake, and zinc manages flakes.
-So zinc compiles to wasm with no toolchain setup.
+does: the wasm toolchain is delivered as a Nix flake, and zinc manages flakes. So
+zinc compiles to wasm with no toolchain setup.
 
 ## What
 
@@ -22,7 +22,7 @@ architecture.
 
 Two flavors are supported: a `wasm32-wasi` command module (run with the provided
 `wasmtime`), and a browser reactor module with the JavaScript FFI. Template
-Haskell works (via the toolchain's interpreter).
+Haskell works, via the toolchain's interpreter.
 
 ## How
 

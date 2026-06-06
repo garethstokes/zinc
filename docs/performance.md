@@ -7,9 +7,9 @@ nav_order: 10
 
 ## Why
 
-Speed is a goal, not an accident — so it should be measured. zinc records how
-long each build takes and where the time goes, so you can see whether the cache
-is working, which dependencies dominate, and whether a change made things slower.
+Speed is a goal, not an accident, so it should be measured. zinc records how long
+each build takes and where the time goes, so you can see whether the cache is
+working, which dependencies dominate, and whether a change made things slower.
 The data is local; nothing is sent anywhere.
 
 ## What
@@ -59,5 +59,5 @@ A regression against the baseline is flagged:
 ```
 $ zinc build
    Finished dev in 12.0s · 47 packages (12 cached, 35 built)
-   note: 3.7x slower than baseline; cache hit rate dropped 0.9 -> 0.26
+   note: 3.7x slower than baseline; cache hit rate dropped 0.9 to 0.26
 ```

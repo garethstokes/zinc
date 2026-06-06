@@ -55,7 +55,7 @@ The envelope:
 }
 ```
 
-The `nextAction` is the fix, often a command to run — which is what turns a
+The `nextAction` is the fix, often a command to run, which is what turns a
 failing build into a self-repairing loop for an agent.
 
 ## How an agent should use it
@@ -78,5 +78,5 @@ $ zinc build --json | jq -r '.diagnostics[] | "\(.code): \(.nextAction)"'
 ZINC_DEP_NO_GIT_REPO: zinc vendor colour
 ```
 
-Persistent project memory is intentionally out of scope — that belongs to your
+Persistent project memory is intentionally out of scope; that belongs to your
 issue tracker. zinc's durable state is the lockfile and the content store.

@@ -23,8 +23,8 @@ consume it:
 - A machine renderer: the JSON envelope, and a newline-delimited JSON event
   stream for long operations so a caller can consume progress incrementally.
 
-The mode is selected automatically — colored human output to a terminal, plain
-when piped — and can be forced with `--json` or quieted with `--quiet`.
+The mode is selected automatically (colored human output to a terminal, plain
+when piped) and can be forced with `--json` or quieted with `--quiet`.
 
 ## How
 

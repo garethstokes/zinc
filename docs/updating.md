@@ -8,9 +8,9 @@ nav_order: 11
 ## Why
 
 Dependencies move. You want to see what is available, bump what you choose, and
-understand the blast radius before you commit — without a solver deciding for
-you. Because zinc keeps one ref per package name, bumping one dependency can
-shift others, so updates are shown explicitly.
+understand the blast radius before you commit, without a solver deciding for you.
+Because zinc keeps one ref per package name, bumping one dependency can shift
+others, so updates are shown explicitly.
 
 ## What
 
@@ -18,7 +18,7 @@ shift others, so updates are shown explicitly.
   dependency, the version you have versus the newest release tag available. It
   changes nothing.
 - `zinc update` re-resolves refs and rewrites the lockfile, printing a
-  before/after diff of the closure — changed, added, and removed packages,
+  before/after diff of the closure: changed, added, and removed packages,
   including ripples caused by the one-ref-per-name rule. `--dry-run` previews the
   diff without writing.
 

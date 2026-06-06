@@ -9,8 +9,8 @@ nav_order: 13
 
 Building a binary is half the job; shipping it is the other half. Because zinc
 already manages a Nix flake, and Nix is a capable packaging tool, zinc can turn a
-build into a deployable artifact — a container image, a static binary, a portable
-file — with no Nix knowledge on your part.
+build into a deployable artifact (a container image, a static binary, a portable
+file) with no Nix knowledge on your part.
 
 ## What
 
@@ -18,10 +18,10 @@ file — with no Nix knowledge on your part.
 deployment format, distinct from `--target` (which selects a compile
 architecture). Formats:
 
-- `docker` — a reproducible, minimal OCI image, built without a Docker daemon.
-- `static` — a self-contained statically linked (musl) binary.
-- `bundle` — a single portable executable.
-- `nix` — the build as a Nix closure, deployable to Nix hosts.
+- `docker`: a reproducible, minimal OCI image, built without a Docker daemon.
+- `static`: a self-contained statically linked (musl) binary.
+- `bundle`: a single portable executable.
+- `nix`: the build as a Nix closure, deployable to Nix hosts.
 
 ## How
 
@@ -58,6 +58,5 @@ Hello from myapp!
 
 Limitations: a static binary uses musl, so packages depending on C libraries
 without a static build, or that use runtime dynamic loading, cannot be linked
-statically — such a closure member is reported as unsupported rather than
-failing with a linker error. Container images and bundles have no such
-constraint.
+statically. Such a closure member is reported as unsupported rather than failing
+with a linker error. Container images and bundles have no such constraint.

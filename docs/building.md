@@ -7,8 +7,8 @@ nav_order: 5
 
 ## Why
 
-zinc builds Haskell by driving GHC directly, rather than delegating to cabal's
-build machinery. This keeps the build predictable, lets zinc cache artifacts by
+zinc builds Haskell by driving GHC directly, rather than running a separate
+build system. This keeps the build predictable, lets zinc cache artifacts by
 content, and gives a fast edit-build loop. Speed and reproducibility are the
 goals: a dependency compiles once per machine, and switching branches reuses the
 result.
@@ -24,14 +24,15 @@ members. Two kinds of code are handled differently:
   dependencies, and its build options. A cache hit registers the prebuilt
   artifact and skips compilation.
 - Workspace members (your code) build into `.zinc/build` and rely on GHC's own
-  recompilation checking, so only changed modules — and the call sites whose
-  imported interfaces actually changed — recompile.
+  recompilation checking, so only changed modules recompile, along with the call
+  sites whose imported interfaces actually changed.
 
 A dependency describes itself in one of two ways. A zinc-native package has a
-`[build]` block in its `zinc.toml`. An upstream package is read from its
-`.cabal` file: zinc uses the Cabal library as a parser only (never its builder)
-to derive the build, synthesizing `Paths_<pkg>.hs` and `cabal_macros.h` and
-running preprocessors (alex, happy, hsc2hs) as needed.
+`[build]` block in its `zinc.toml`. An upstream package is read from its existing
+package description: zinc parses it (it never runs the package's own build
+scripts) to derive the build, synthesizing the generated modules (`Paths_<pkg>`)
+and version macros that packages expect, and running preprocessors (alex, happy,
+hsc2hs) as needed.
 
 ## How
 
@@ -47,8 +48,8 @@ Build a single member:
 zinc build mymember
 ```
 
-Build only the dependency closure, without your members — useful as a cacheable
-layer in CI or Docker:
+Build only the dependency closure, without your members. This is useful as a
+cacheable layer in CI or Docker:
 
 ```
 zinc build --deps-only
@@ -72,7 +73,7 @@ $ zinc build           # nothing changed
    Finished in 0.3s · 12 packages (12 cached, 0 built)
 ```
 
-Edit one module and rebuild — only the affected modules recompile:
+Edit one module and rebuild; only the affected modules recompile:
 
 ```
 $ zinc build

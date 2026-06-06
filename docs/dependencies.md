@@ -7,10 +7,10 @@ nav_order: 4
 
 ## Why
 
-cabal's pain is concentrated in the solver and the Hackage version dance. zinc
-removes both. Every dependency is a git repository at an exact ref; there is one
-ref per package name across the whole workspace; the resolved commit is frozen
-in a lockfile. No solver runs, so there are no solver errors.
+Dependency resolution is usually where the pain is: version solving and the
+bounds dance. zinc removes both. Every dependency is a git repository at an exact
+ref; there is one ref per package name across the whole workspace; the resolved
+commit is frozen in a lockfile. No solver runs, so there are no solver errors.
 
 ## What
 
@@ -22,10 +22,11 @@ GHC boot libraries (`base`, `text`, `bytestring`, `containers`, and so on) ship
 with the Nix-provided compiler and are never fetched.
 
 The dependency graph is the transitive closure, discovered by reading each
-dependency's own manifest (zinc-native) or its `.cabal` file. The workspace lists
-only its direct dependencies; transitive ones are discovered. Across the closure,
-each package name resolves to exactly one ref — if two packages ask for different
-refs, the workspace-root override wins, otherwise the latest referenced ref.
+dependency's own manifest, or for an upstream package its package description.
+The workspace lists only its direct dependencies; transitive ones are discovered.
+Across the closure, each package name resolves to exactly one ref. If two
+packages ask for different refs, the workspace-root override wins, otherwise the
+latest referenced ref.
 
 ## How
 
@@ -39,7 +40,7 @@ zinc add aeson
 `zinc add` walks the closure with `ghc-pkg` and Hackage `source-repository`
 metadata to find each package's git repository, then writes the refs into
 `zinc.toml` and the pinned commits and content hashes into `zinc.lock`. Resolution
-is always shown — the resolved closure prints as a table, and any conflict (where
+is always shown: the resolved closure prints as a table, and any conflict (where
 the one-ref-per-name rule chose a ref) is called out.
 
 `zinc.lock` pins every package in the closure:
@@ -67,7 +68,7 @@ zinc vendor colour
 ```
 
 `zinc vendor` fetches the package's Hackage tarball into the content store, pins
-it by `sha256`, and records it as a vendored source — after which `zinc add`
+it by `sha256`, and records it as a vendored source, after which `zinc add`
 proceeds. Build never resolves through Hackage; it reads the pinned source from
 the store.
 

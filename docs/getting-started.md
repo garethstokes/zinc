@@ -7,16 +7,16 @@ nav_order: 2
 
 ## Why
 
-Starting a Haskell project usually means choosing a build tool, writing a cabal
-file, picking dependency bounds, and hoping the solver finds a plan. zinc removes
-those steps. You create a project, add dependencies by name, and build. The
-toolchain is provisioned for you; dependencies resolve to exact commits with no
-solver.
+Starting a Haskell project usually means choosing a build tool, writing a
+package description, picking dependency bounds, and hoping a solver finds a plan.
+zinc removes those steps. You create a project, add dependencies by name, and
+build. The toolchain is provisioned for you; dependencies resolve to exact
+commits with no solver.
 
 ## What
 
-zinc installs as a single binary. It requires Nix (used internally to provide
-GHC and system libraries — you do not write or run Nix yourself). A new project
+zinc installs as a single binary. It requires Nix, used internally to provide
+GHC and system libraries (you do not write or run Nix yourself). A new project
 is a workspace with one package, a `zinc.toml` manifest, and a generated
 `flake.nix` that pins the compiler.
 

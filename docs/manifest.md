@@ -9,8 +9,8 @@ nav_order: 3
 
 A build tool needs to know what to compile and what it depends on. zinc keeps
 that in one readable TOML file per package, plus a workspace file that lists
-members and shared dependencies. There are no cabal files to hand-edit and no
-version bounds to maintain.
+members and shared dependencies. There are no separate package files to
+hand-edit and no version bounds to maintain.
 
 ## What
 
@@ -19,7 +19,7 @@ package declares its identity and its build components (a library, executables,
 test suites). A single-package project is a workspace with one implicit member,
 so a lone `zinc.toml` can carry both the workspace and the package sections.
 
-Modules are discovered automatically from the source directories — there is no
+Modules are discovered automatically from the source directories. There is no
 exposed/other module distinction, and every module is importable by dependents.
 
 ## How
@@ -102,8 +102,9 @@ depends = ["mylib"]              # mylib is another workspace member
 ```
 
 `system-libs` names nixpkgs attributes directly, so a C dependency like `zlib`
-is supplied by the toolchain without mapping cabal's `extra-libraries`.
+is supplied by the toolchain without mapping an `extra-libraries` name to a
+system package.
 
 Run `zinc fmt` to rewrite manifests into the canonical layout (sorted
-dependencies, shorthand where possible). `zinc add`/`zinc update` already write
-in that layout.
+dependencies, shorthand where possible). `zinc add` and `zinc update` already
+write in that layout.
