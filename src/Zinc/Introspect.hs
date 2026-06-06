@@ -30,6 +30,7 @@ import Zinc.Diagnostic (ZincError (ManifestParse, NoZincToml))
 import Zinc.Except (Result, failWithError, liftEitherE, liftIO, runResult)
 import Zinc.Json (Json (..))
 import Zinc.Lock (LockedPackage (..), lockRepo, lockRev, parseLock)
+import Zinc.Skill (LockedSkill (..), parseSkillLock)
 import Zinc.Manifest (Ref (Latest), WorkspaceManifest (wsDependencies, wsGhc, wsMembers), depName, depGhcOptionsOf, parseWorkspace)
 import Zinc.Resolve (ResolvedDep (..), topoLevels)
 import Zinc.Store (resolveStoreRoot)
@@ -66,6 +67,16 @@ loadLocks wsDir = do
     then pure []
     else either (const []) id . parseLock <$> readFile lockFile
 
+-- | Installed skill names from the lock's @[[skill]]@ array (zinc-lmm) — surfaced
+-- in @zinc status@ alongside packages.
+loadSkillNames :: FilePath -> IO [String]
+loadSkillNames wsDir = do
+  let lockFile = wsDir </> "zinc.lock"
+  present <- doesFileExist lockFile
+  if not present
+    then pure []
+    else map lskName . either (const []) id . parseSkillLock <$> readFile lockFile
+
 -- | Drifted direct deps: names declared in the manifest but absent from the lock.
 driftOf :: WorkspaceManifest -> [LockedPackage] -> [String]
 driftOf ws locks =
@@ -75,27 +86,29 @@ driftOf ws locks =
 
 -- | @zinc status@: gather toolchain, members, per-dep cache status, and drift.
 -- Returns the pieces so the caller can render either JSON or human text.
-runStatus :: FilePath -> IO (Either ZincError (String, [String], [DepStatus], [String]))
+runStatus :: FilePath -> IO (Either ZincError (String, [String], [DepStatus], [String], [String]))
 runStatus wsDir = runResult $ do
   (_, ws) <- loadWorkspace wsDir
   locks <- liftIO (loadLocks wsDir)
   storeRoot <- liftIO resolveStoreRoot
   let opts = depGhcOptionsOf ws
   deps <- liftIO (mapM (depStatus storeRoot (wsGhc ws) opts) locks)
-  pure (wsGhc ws, wsMembers ws, deps, driftOf ws locks)
+  skills <- liftIO (loadSkillNames wsDir)
+  pure (wsGhc ws, wsMembers ws, deps, driftOf ws locks, skills)
   where
     depStatus storeRoot ghc opts l = do
       let key = buildCacheKey (BuildKey (lockName l) (lockRev l) ghc (lockDepends l) (fromMaybe [] (lookup (lockName l) opts)))
       cached <- doesFileExist (storeConfPath storeRoot key)
       pure (DepStatus (lockName l) (lockRev l) cached)
 
-statusJson :: String -> [String] -> [DepStatus] -> [String] -> Json
-statusJson ghc members deps drift =
+statusJson :: String -> [String] -> [DepStatus] -> [String] -> [String] -> Json
+statusJson ghc members deps drift skills =
   JObject
     [ ("ghc", JString ghc)
     , ("members", JArray (map JString members))
     , ("dependencies", JArray (map depJson deps))
     , ("drift", JArray (map JString drift))
+    , ("skills", JArray (map JString skills))
     ]
   where
     depJson d =
@@ -105,12 +118,13 @@ statusJson ghc members deps drift =
         , ("cached", JBool (dsCached d))
         ]
 
-renderStatus :: String -> [String] -> [DepStatus] -> [String] -> String
-renderStatus ghc members deps drift =
+renderStatus :: String -> [String] -> [DepStatus] -> [String] -> [String] -> String
+renderStatus ghc members deps drift skills =
   unlines $
     ["GHC " ++ ghc, "members: " ++ list members, show (length deps) ++ " dependency(ies):"]
       ++ map depLine deps
       ++ ["lock drift: " ++ (if null drift then "none" else list drift)]
+      ++ ["skills: " ++ (if null skills then "(none)" else list skills) | not (null skills)]
   where
     list xs = if null xs then "(none)" else intercalate ", " xs
     depLine d = "  " ++ dsName d ++ " @ " ++ take 8 (dsRef d) ++ (if dsCached d then " (cached)" else " (to build)")

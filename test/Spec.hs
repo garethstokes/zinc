@@ -600,9 +600,19 @@ main = hspec $ do
       parseArgs ["explain", "aeson"] `shouldBe` Right (OutputFlags False False, Explain "aeson")
       parseArgs ["explain", "aeson", "--json"] `shouldBe` Right (OutputFlags True False, Explain "aeson")
 
-    it "renders status as JSON" $
-      renderJson (statusJson "9.6.5" ["packages/app"] [DepStatus "colour" "abc1234" True] ["aeson"])
-        `shouldBe` "{\"ghc\":\"9.6.5\",\"members\":[\"packages/app\"],\"dependencies\":[{\"name\":\"colour\",\"ref\":\"abc1234\",\"cached\":true}],\"drift\":[\"aeson\"]}"
+    it "renders status as JSON (incl. installed skills; lmm)" $
+      renderJson (statusJson "9.6.5" ["packages/app"] [DepStatus "colour" "abc1234" True] ["aeson"] ["brainstorming"])
+        `shouldBe` "{\"ghc\":\"9.6.5\",\"members\":[\"packages/app\"],\"dependencies\":[{\"name\":\"colour\",\"ref\":\"abc1234\",\"cached\":true}],\"drift\":[\"aeson\"],\"skills\":[\"brainstorming\"]}"
+
+    it "runStatus surfaces installed skill names from the lock (lmm)" $ do
+      let d = "/tmp/zinc-status-skills"
+      stale <- doesDirectoryExist d
+      when stale (removeDirectoryRecursive d)
+      createDirectoryIfMissing True d
+      writeFile (d </> "zinc.toml") "[workspace]\nmembers = [\".\"]\nghc = \"9.6.5\"\n"
+      writeFile (d </> "zinc.lock") (renderSkillLock [LockedSkill "brainstorming" "r/b" "rev" "sha256:x"])
+      r <- runStatus d
+      either (const []) (\(_, _, _, _, sk) -> sk) r `shouldBe` ["brainstorming"]
 
     it "renders the closure graph: nodes, edges, topo levels" $ do
       let locks = [LockedPackage "a" (GitSource "r/a" "ra") "sha256:x" ["b"], LockedPackage "b" (GitSource "r/b" "rb") "sha256:y" []]
