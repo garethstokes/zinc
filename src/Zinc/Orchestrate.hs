@@ -61,7 +61,7 @@ import Zinc.Manifest
   , depGhcOptionsOf
   )
 import Zinc.Diagnostic (ZincError (AmbiguousTarget, ContentHashMismatch, ManifestParse, NixAbsent, NoZincToml, OtherError, ToolchainMissing))
-import Zinc.Package (PackageFormat (..), formatName, packagingFlake)
+import Zinc.Package (PackageFormat (..), dockerImageRef, formatName, packagingFlake)
 import Zinc.Except (Result, failWith, failWithError, liftEither, liftEitherE, liftIO, orFail, orFailE, runResult)
 import Zinc.Output (OutputEvent (..), Sink, emit, nullSink)
 import Zinc.Report (BuildOutcome (..), PackageReport (..), PackageStatus (..), Timing (..), cacheStatsOf)
@@ -492,35 +492,53 @@ runCachePush wsDir = runResult $ do
 -- (the foundational closure); @docker@/@static@/@bundle@ extend the flake in
 -- 7m6.2/.3/.4. Nix is auto-provisioned (y03); a clear diagnostic when absent.
 runPackage :: PackageFormat -> Maybe String -> Maybe String -> FilePath -> IO (Either ZincError String)
-runPackage fmt _tag out wsDir = runResult $ do
+runPackage fmt tag out wsDir = runResult $ do
   haveNix <- liftIO (findExecutable "nix")
   when (isNothing haveNix) (failWithError NixAbsent)
   exe <- orFailE (resolveRunTarget wsDir Nothing) -- builds the app + resolves its executable
   let name = takeFileName exe
       pkgDir = wsDir </> ".zinc" </> "package"
+      (imageName, imageTag) = dockerImageRef name tag
   liftIO $ do
     stale <- doesDirectoryExist pkgDir
     when stale (removeDirectoryRecursive pkgDir)
     createDirectoryIfMissing True pkgDir
     copyFile exe (pkgDir </> name)
-    writeFile (pkgDir </> "flake.nix") (packagingFlake name)
+    writeFile (pkgDir </> "flake.nix") (packagingFlake name imageName imageTag)
     -- flakes only see tracked files; stage the binary + flake into a throwaway repo.
     _ <- readProcessWithExitCode "git" ["-C", pkgDir, "init", "-q"] ""
     _ <- readProcessWithExitCode "git" ["-C", pkgDir, "add", "."] ""
     pure ()
   case fmt of
     NixClosure -> do
-      path <- orFail (nixBuildDefault pkgDir)
+      path <- orFail (nixBuildAttr pkgDir "default")
       liftIO $ forM_ out $ \o -> readProcessWithExitCode "cp" ["-rfL", path, o] "" >> pure ()
       pure ("Packaged " ++ name ++ " as a Nix closure: " ++ path ++ maybe "" (\o -> " (copied to " ++ o ++ ")") out)
+    Docker -> do
+      tarball <- orFail (nixBuildAttr pkgDir "dockerImage")
+      let ref = imageName ++ ":" ++ imageTag
+      case out of
+        Just o -> do
+          liftIO (readProcessWithExitCode "cp" ["-fL", tarball, o] "" >> pure ())
+          pure ("Built OCI image " ++ ref ++ " -> " ++ o)
+        Nothing -> do
+          haveDocker <- liftIO (findExecutable "docker")
+          case haveDocker of
+            Just _ -> do
+              loaded <- liftIO (readProcessWithExitCode "docker" ["load", "-i", tarball] "")
+              let (lc, _, _) = loaded
+              pure $ case lc of
+                ExitSuccess   -> "Built + loaded OCI image " ++ ref
+                ExitFailure _ -> "Built OCI image " ++ ref ++ " -> " ++ tarball ++ " (run `docker load -i " ++ tarball ++ "`)"
+            Nothing -> pure ("Built OCI image " ++ ref ++ " -> " ++ tarball ++ " (run `docker load -i " ++ tarball ++ "`)")
     _ ->
-      failWith (formatName fmt ++ ": this format is a follow-up (docker = 7m6.2, static = 7m6.3, bundle = 7m6.4); `zinc package nix` is available now")
+      failWith (formatName fmt ++ ": this format is a follow-up (static = 7m6.3, bundle = 7m6.4); `zinc package nix` and `zinc package docker` are available now")
   where
-    nixBuildDefault dir = do
+    nixBuildAttr dir attr = do
       (code, o, e) <-
         readProcessWithExitCode
           "nix"
-          ["--extra-experimental-features", "nix-command flakes", "build", dir ++ "#default", "--no-link", "--print-out-paths"]
+          ["--extra-experimental-features", "nix-command flakes", "build", dir ++ "#" ++ attr, "--no-link", "--print-out-paths"]
           ""
       pure $ case code of
         ExitSuccess   -> Right (reverse (dropWhile (`elem` ("\n\r \t" :: String)) (reverse o)))

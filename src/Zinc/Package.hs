@@ -12,6 +12,7 @@ module Zinc.Package
   ( PackageFormat (..)
   , parsePackageFormat
   , formatName
+  , dockerImageRef
   , packagingFlake
   ) where
 
@@ -36,14 +37,25 @@ parsePackageFormat s = case s of
   "nix"    -> Right NixClosure
   _        -> Left (s ++ ": unknown format (expected one of: docker, static, bundle, nix)")
 
+-- | Resolve a docker image @name:tag@ from the binary name and an optional
+-- @--tag@ argument: an explicit @name:tag@ is split; a bare @--tag@ value is the
+-- tag (default name); no @--tag@ defaults to @\<binary\>:latest@.
+dockerImageRef :: String -> Maybe String -> (String, String)
+dockerImageRef bin mtag = case mtag of
+  Nothing -> (bin, "latest")
+  Just t -> case break (== ':') t of
+    (n, ':' : v) | not (null n) && not (null v) -> (n, v)
+    _ -> (t, "latest")
+
 -- | The packaging flake for an app whose binary @name@ has been staged next to
 -- this flake (zinc-7m6.1). @packages.default@ wraps that binary into a store
 -- derivation (its RPATH already points at the nix store, so its runtime closure
 -- is captured), and @apps.default@ makes it runnable — the foundation the
--- docker/static/bundle/nix builders extend. Pure: the actual @nix build@ /
--- @nix bundle@ is driven by 'runPackage'.
-packagingFlake :: String -> String
-packagingFlake name =
+-- format builders extend. @packages.dockerImage@ is an OCI image of the app +
+-- its closure (zinc-7m6.2), tagged @\<imageName\>:\<imageTag\>@. Pure: the actual
+-- @nix build@ is driven by 'runPackage'.
+packagingFlake :: String -> String -> String -> String
+packagingFlake name imageName imageTag =
   unlines
     [ "{"
     , "  description = \"zinc package: " ++ name ++ "\";"
@@ -60,7 +72,14 @@ packagingFlake name =
     , "            '';"
     , "        in {"
     , "          default = app;"
-    , "          # docker / static / bundle outputs are added by zinc-7m6.2/.3/.4."
+    , "          # An OCI image of the app + its runtime closure (zinc-7m6.2)."
+    , "          dockerImage = pkgs.dockerTools.buildLayeredImage {"
+    , "            name = \"" ++ imageName ++ "\";"
+    , "            tag = \"" ++ imageTag ++ "\";"
+    , "            contents = [ app ];"
+    , "            config.Cmd = [ \"/bin/" ++ name ++ "\" ];"
+    , "          };"
+    , "          # static / bundle outputs are added by zinc-7m6.3/.4."
     , "        });"
     , "      apps = forAll (system: {"
     , "        default = { type = \"app\"; program = \"${self.packages.${system}.default}/bin/" ++ name ++ "\"; };"

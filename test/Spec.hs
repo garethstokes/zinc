@@ -39,7 +39,7 @@ import Zinc.Git (cloneAt, gitEnv, gitInitIfNeeded, isInsideRepo, listTags, split
 import Zinc.Hackage (hackageCabalUrl, hackageTarballUrl, sourceRepoOf)
 import Zinc.Outdated (OutdatedDep (..), Status (..), classify)
 import Zinc.Quirks (quirkGhcOptions)
-import Zinc.Package (PackageFormat (..), formatName, packagingFlake, parsePackageFormat)
+import Zinc.Package (PackageFormat (..), dockerImageRef, formatName, packagingFlake, parsePackageFormat)
 import Zinc.Delta (Change (..), ClosureDelta (..), closureDelta, isEmptyDelta)
 import Zinc.CacheBackend (CacheBackend (..), CacheConfig (..), PullOutcome (..), artifactUrl, curlOutcome, httpBackend, parseCacheTable, resolveCacheConfig)
 import Zinc.Store (contentHash, resolveStoreRoot, storeSrcPath, verifyContent, withStoreLock)
@@ -1428,10 +1428,18 @@ main = hspec $ do
       parseArgs ["package", "docker", "--tag", "app:1.0"] `shouldBe` Right (OutputFlags False False, Package "docker" (Just "app:1.0") Nothing)
       parseArgs ["package", "nix", "-o", "./dist"] `shouldBe` Right (OutputFlags False False, Package "nix" Nothing (Just "./dist"))
 
-    it "generates a packaging flake whose packages.default wraps the built binary" $ do
-      let fl = packagingFlake "myapp"
-      all (`isInfixOf` fl) ["packages = forAll", "default = app", "install -Dm755 ${./myapp}", "apps = forAll", "description = \"zinc package: myapp\""]
+    it "generates a packaging flake: packages.default wraps the binary, plus a docker image (7m6.2)" $ do
+      let fl = packagingFlake "myapp" "myapp" "1.0"
+      all (`isInfixOf` fl)
+        [ "packages = forAll", "default = app", "install -Dm755 ${./myapp}", "apps = forAll"
+        , "dockerTools.buildLayeredImage", "name = \"myapp\"", "tag = \"1.0\"", "config.Cmd = [ \"/bin/myapp\" ]"
+        ]
         `shouldBe` True
+
+    it "resolves the docker image name:tag from --tag (7m6.2)" $ do
+      dockerImageRef "hello" Nothing `shouldBe` ("hello", "latest")
+      dockerImageRef "hello" (Just "app:1.0") `shouldBe` ("app", "1.0")
+      dockerImageRef "hello" (Just "app") `shouldBe` ("app", "latest")
 
   describe "build quirks table (8uh)" $ do
     it "applies -XSafe to colour automatically (no manifest escape hatch)" $
