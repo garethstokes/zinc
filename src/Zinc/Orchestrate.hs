@@ -43,6 +43,7 @@ import Zinc.Build (LibBuild (..), MemberBuild (..), buildLib, buildLibArtifacts,
 import Zinc.Cabal (cabalBuildType, cabalVersion, parseCabalComponentsForGhc)
 import Zinc.Cache (BuildKey (..), buildCacheKey, storeConfPath, storePkgPath)
 import Zinc.CacheBackend (CacheBackend (cbPull, cbPush), CacheConfig (ccReadUrls, ccWriteUrl), PullOutcome (Pulled), httpBackend, resolveCacheConfig)
+import Zinc.Quirks (quirkGhcOptions)
 import Zinc.Fetch (packageDirIn)
 import Zinc.Git (cloneAt)
 import Zinc.Hackage (fetchHackageTarball)
@@ -321,7 +322,10 @@ buildClosure sink wsDir storeRoot wsDb ghcVersion buildOpts = runResult $ do
     -- [build-options] override so changing an override invalidates the cache.
     cacheKeyOf l = buildCacheKey (BuildKey (lockRev l) ghcVersion (lockDepends l) (overrideFor l))
 
-    overrideFor l = fromMaybe [] (lookup (lockName l) buildOpts)
+    -- A dep's effective ghc-option override: the built-in quirk for the package
+    -- (zinc-8uh) PLUS any workspace [build-options]. The quirk leads so a known
+    -- fix (e.g. colour -XSafe) applies even when the workspace lists nothing.
+    overrideFor l = quirkGhcOptions (lockName l) ++ fromMaybe [] (lookup (lockName l) buildOpts)
 
     -- Produce a closure node's library WITHOUT registering it: returns the conf
     -- text to register (@Just@), or @Nothing@ when the dep ships no library.

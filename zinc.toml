@@ -64,7 +64,7 @@ repo = "https://github.com/UnkindPartition/ansi-terminal.git#ansi-terminal-types
 
 [dependencies.colour]
 vendored = "2.3.6"
-ghc-options = ["-XSafe"]
+# -XSafe is applied automatically by zinc's built-in build-quirks table (8uh).
 
 [dependencies.transformers-compat]
 rev = "879dc486166d3a9e653695572f9c28d88af7e2d7"

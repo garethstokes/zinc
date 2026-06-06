@@ -38,6 +38,7 @@ import Zinc.Json (Json (..), parseJson, renderJson)
 import Zinc.Git (cloneAt, gitEnv, gitInitIfNeeded, isInsideRepo, listTags, splitRepoSubdir)
 import Zinc.Hackage (hackageCabalUrl, hackageTarballUrl, sourceRepoOf)
 import Zinc.Outdated (OutdatedDep (..), Status (..), classify)
+import Zinc.Quirks (quirkGhcOptions)
 import Zinc.Delta (Change (..), ClosureDelta (..), closureDelta, isEmptyDelta)
 import Zinc.CacheBackend (CacheBackend (..), CacheConfig (..), PullOutcome (..), artifactUrl, curlOutcome, httpBackend, parseCacheTable, resolveCacheConfig)
 import Zinc.Store (contentHash, resolveStoreRoot, storeSrcPath, verifyContent, withStoreLock)
@@ -1413,6 +1414,13 @@ main = hspec $ do
       unsetEnv "ZINC_CACHE"
       (ccReadUrls fromTable, ccReadUrls fromEnv, ccWriteUrl fromEnv)
         `shouldBe` (["https://file/z"], ["https://env/z"], Just "https://env/z")
+
+  describe "build quirks table (8uh)" $ do
+    it "applies -XSafe to colour automatically (no manifest escape hatch)" $
+      quirkGhcOptions "colour" `shouldBe` ["-XSafe"]
+
+    it "has no quirk for an ordinary package" $
+      quirkGhcOptions "containers" `shouldBe` []
 
   describe "manifest parse diagnostics on read-only paths (szn)" $
     it "a malformed zinc.toml yields ZINC_MANIFEST_PARSE, not a generic error" $ do
