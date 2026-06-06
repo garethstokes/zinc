@@ -26,7 +26,8 @@ import Zinc.Json (Json (..), renderJson)
 import Zinc.Metrics (recordBuild)
 import Zinc.Orchestrate (checkLockDrift, resolveRunTarget, runBuildReport, runCachePush, runClean, runPackage, runRepl, runTests, runWarm)
 import Zinc.Package (parsePackageFormat)
-import Zinc.SkillCmd (runSkillAdd)
+import Zinc.Skill (LockedSkill (..))
+import Zinc.SkillCmd (renderSkillList, runSkillAdd, runSkillList, runSkillRemove, runSkillSync)
 import Zinc.Outdated (outdatedJson, renderOutdated, runOutdated)
 import Zinc.Output (OutputEvent (..), OutputMode (..), emit, resolveMode, withRenderer)
 import Zinc.Perf (perfSummaryJson, renderPerf, runPerf)
@@ -231,6 +232,22 @@ dispatch mode (Package fmtStr tag out to) =
     Right fmt -> runPackage fmt tag out to "." >>= either (failCmd mode) putStrLn
 dispatch mode (SkillAdd repo ref) =
   runSkillAdd repo ref "." >>= either (failCmd mode) putStrLn
+dispatch mode SkillList =
+  runSkillList "." >>= \r -> case r of
+    Left e -> failCmd mode e
+    Right sks
+      | machine mode -> putStrLn (renderJson (envelope "skill-list" True (Just (JArray (map skillJson sks))) Nothing []))
+      | otherwise    -> putStr (renderSkillList sks)
+  where
+    skillJson s = JObject [("name", JString (lskName s)), ("repo", JString (lskRepo s)), ("rev", JString (lskRev s)), ("sha256", JString (lskSha256 s))]
+dispatch mode (SkillRemove name) =
+  runSkillRemove name "." >>= either (failCmd mode) putStrLn
+dispatch mode SkillSync =
+  runSkillSync "." >>= \r -> case r of
+    Left e -> failCmd mode e
+    Right names
+      | machine mode -> putStrLn (renderJson (envelope "skill-sync" True (Just (JObject [("synced", JArray (map JString names))])) Nothing []))
+      | otherwise    -> putStrLn ("Synced " ++ show (length names) ++ " skill(s)" ++ if null names then "." else ": " ++ intercalate ", " names ++ ".")
 dispatch mode CachePush =
   runCachePush "." >>= \r -> case r of
     Left e -> failCmd mode e

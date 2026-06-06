@@ -14,6 +14,8 @@ import System.Directory
   ( createDirectoryIfMissing
   , doesDirectoryExist
   , doesFileExist
+  , doesPathExist
+  , removePathForcibly
   , getHomeDirectory
   , removeDirectoryRecursive
   , removeFile
@@ -76,7 +78,7 @@ import Zinc.Resolve (DepManifest (..), ResolvedDep (..), isBootLib, resolve, top
 import Zinc.Version (newestTag, newestTagFor)
 import Zinc.Lock (LockedPackage (..), Source (..), lockRepo, lockRev, parseLock, renderLock, srcKey)
 import Zinc.Skill (LockedSkill (..), SkillDep (..), parseSkillLock, parseSkills, readSkillFrontmatter, renderSkillLock)
-import Zinc.SkillCmd (runSkillAdd, skillRepoName, writeSkillLockEntry)
+import Zinc.SkillCmd (renderSkillList, runSkillAdd, runSkillList, runSkillRemove, runSkillSync, skillRepoName, writeSkillLockEntry)
 import Zinc.Metrics (MetricsRecord (..), appendMetrics, metricsLine, metricsPath)
 import Zinc.Perf (CommandStats (..), PerfRecord (..), Regression (..), PerfSummary (..), decodeRecord, percentile, perfSummaryJson, renderPerf, summarize)
 import Zinc.Scaffold (FileSpec (..), materialize, scaffoldNew, scaffoldWorkspace)
@@ -2034,6 +2036,48 @@ main = hspec $ do
         , linkOk
         , either (const "ERR") id r )
         `shouldBe` (Right ["brainstorming"], True, "Installed skill brainstorming (Helps brainstorm) \8594 .claude/skills/brainstorming")
+
+  describe "zinc skill list / remove / sync (dp6.3, dp6.4)" $ do
+    it "parses `skill list`, `skill remove <name>`, `skill sync`" $ do
+      parseArgs ["skill", "list"] `shouldBe` Right (OutputFlags False False, SkillList)
+      parseArgs ["skill", "remove", "brainstorming"] `shouldBe` Right (OutputFlags False False, SkillRemove "brainstorming")
+      parseArgs ["skill", "sync"] `shouldBe` Right (OutputFlags False False, SkillSync)
+
+    it "renders an installed-skills table (and an empty-state line)" $ do
+      renderSkillList [] `shouldSatisfy` isInfixOf "No skills installed"
+      renderSkillList [LockedSkill "brainstorming" "https://github.com/o/b" "abcdef1234567" "sha256:x"]
+        `shouldSatisfy` (\s -> "brainstorming" `isInfixOf` s && "abcdef123456" `isInfixOf` s)
+
+    it "add -> list -> sync -> remove round-trips a skill end-to-end" $ do
+      let base = "/tmp/zinc-skill-lifecycle"
+          repo = base ++ "/skill-repo"
+          ws = base ++ "/ws"
+          link = ws ++ "/.claude/skills/myskill"
+      stale <- doesDirectoryExist base
+      when stale (removeDirectoryRecursive base)
+      writeFileIn (repo ++ "/SKILL.md") (unlines ["---", "name: myskill", "description: A skill", "---", "body"])
+      let git args = readProcess "git" ("-C" : repo : args) ""
+      _ <- git ["init", "--quiet"]; _ <- git ["config", "user.email", "t@e.com"]; _ <- git ["config", "user.name", "T"]
+      _ <- git ["add", "."]; _ <- git ["commit", "--quiet", "-m", "s"]; _ <- git ["tag", "v1"]
+      createDirectoryIfMissing True ws
+      _ <- runSkillAdd repo (Just "v1") ws
+      listed <- runSkillList ws
+      -- remove the symlink, then sync re-materializes it from the lock
+      removePathForcibly link
+      syncGone <- doesFileExist (link ++ "/SKILL.md")
+      synced <- runSkillSync ws
+      syncBack <- doesFileExist (link ++ "/SKILL.md")
+      -- remove drops the symlink AND the lock entry
+      removed <- runSkillRemove "myskill" ws
+      afterRemoveList <- runSkillList ws
+      afterRemoveLink <- doesPathExist link
+      ( fmap (map lskName) listed
+        , syncGone, fmap id synced, syncBack
+        , removed, fmap (map lskName) afterRemoveList, afterRemoveLink )
+        `shouldBe`
+        ( Right ["myskill"]
+        , False, Right ["myskill"], True
+        , Right "Removed skill myskill", Right [], False )
 
   describe "build cache key" $ do
     let key deps opts = buildCacheKey (BuildKey "pkg" "abc" "9.6.5" deps opts)
