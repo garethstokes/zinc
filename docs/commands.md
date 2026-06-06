@@ -7,8 +7,8 @@ nav_order: 7
 
 ## Why
 
-zinc's command surface follows Cargo's: a small set of verbs for the everyday
-loop, plus introspection and diagnostics commands designed to be driven by
+zinc's command surface is small and predictable: a focused set of verbs for the
+everyday loop, plus introspection and diagnostics commands designed to be driven by
 scripts and agents as well as people.
 
 ## What

@@ -7,7 +7,7 @@ nav_order: 1
 
 Fast, reproducible Haskell builds that just work.
 
-zinc is a git-native, Cargo-like build tool for Haskell. Dependencies are git
+zinc is a git-native build tool for Haskell. Dependencies are git
 repositories pinned to exact commits. The GHC toolchain and system libraries are
 provided by Nix, which zinc manages so you never have to. There is no version
 solver: each package name resolves to a single ref, frozen in a lockfile.
