@@ -30,13 +30,15 @@ import GHC.Clock (getMonotonicTime)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.QSem (newQSem, signalQSem, waitQSem)
 import Control.Exception (SomeException, finally, try)
-import Control.Monad (forM, forM_, when)
+import Control.Monad (filterM, forM, forM_, when)
+import qualified Data.ByteString as BS
+import qualified Data.ByteString.Char8 as BS8
 import Data.Bifunctor (first)
 import Data.Char (isHexDigit)
 import Data.List (stripPrefix)
 import qualified Data.Map as Map
 import Data.Maybe (catMaybes, fromMaybe, isNothing, mapMaybe)
-import System.Directory (copyFile, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, findExecutable, listDirectory, makeAbsolute, removeDirectoryRecursive)
+import System.Directory (canonicalizePath, copyFile, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, doesPathExist, findExecutable, listDirectory, makeAbsolute, removeDirectoryRecursive)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeExtension, takeFileName, (</>))
 import System.Process (callProcess, readProcess, readProcessWithExitCode)
@@ -60,8 +62,8 @@ import Zinc.Manifest
   , parseWorkspace
   , depGhcOptionsOf
   )
-import Zinc.Diagnostic (ZincError (AmbiguousTarget, ContentHashMismatch, ManifestParse, NixAbsent, NoZincToml, OtherError, ToolchainMissing))
-import Zinc.Package (PackageFormat (..), dockerImageRef, formatName, packagingFlake)
+import Zinc.Diagnostic (ZincError (AmbiguousTarget, ContentHashMismatch, ManifestParse, NixAbsent, NoZincToml, OtherError, StaticUnsupported, ToolchainMissing))
+import Zinc.Package (PackageFormat (..), dockerImageRef, packagingFlake, storePathRefs)
 import Zinc.Except (Result, failWith, failWithError, liftEither, liftEitherE, liftIO, orFail, orFailE, runResult)
 import Zinc.Output (OutputEvent (..), Sink, emit, nullSink)
 import Zinc.Report (BuildOutcome (..), PackageReport (..), PackageStatus (..), Timing (..), cacheStatsOf)
@@ -491,8 +493,8 @@ runCachePush wsDir = runResult $ do
 -- store derivation), and emit the artifact. The @nix@ format is available now
 -- (the foundational closure); @docker@/@static@/@bundle@ extend the flake in
 -- 7m6.2/.3/.4. Nix is auto-provisioned (y03); a clear diagnostic when absent.
-runPackage :: PackageFormat -> Maybe String -> Maybe String -> FilePath -> IO (Either ZincError String)
-runPackage fmt tag out wsDir = runResult $ do
+runPackage :: PackageFormat -> Maybe String -> Maybe String -> Maybe String -> FilePath -> IO (Either ZincError String)
+runPackage fmt tag out to wsDir = runResult $ do
   haveNix <- liftIO (findExecutable "nix")
   when (isNothing haveNix) (failWithError NixAbsent)
   exe <- orFailE (resolveRunTarget wsDir Nothing) -- builds the app + resolves its executable
@@ -504,7 +506,12 @@ runPackage fmt tag out wsDir = runResult $ do
     when stale (removeDirectoryRecursive pkgDir)
     createDirectoryIfMissing True pkgDir
     copyFile exe (pkgDir </> name)
-    writeFile (pkgDir </> "flake.nix") (packagingFlake name imageName imageTag)
+    -- Scan the prebuilt binary for the store paths it needs at runtime and pin
+    -- them in the flake; otherwise Nix's reference scanner (limited to the
+    -- input closure) omits them and the artifact can't find libgmp etc.
+    bin <- BS.readFile (pkgDir </> name)
+    deps <- filterM doesPathExist (storePathRefs (BS8.unpack bin))
+    writeFile (pkgDir </> "flake.nix") (packagingFlake name imageName imageTag deps)
     -- flakes only see tracked files; stage the binary + flake into a throwaway repo.
     _ <- readProcessWithExitCode "git" ["-C", pkgDir, "init", "-q"] ""
     _ <- readProcessWithExitCode "git" ["-C", pkgDir, "add", "."] ""
@@ -513,7 +520,12 @@ runPackage fmt tag out wsDir = runResult $ do
     NixClosure -> do
       path <- orFail (nixBuildAttr pkgDir "default")
       liftIO $ forM_ out $ \o -> readProcessWithExitCode "cp" ["-rfL", path, o] "" >> pure ()
-      pure ("Packaged " ++ name ++ " as a Nix closure: " ++ path ++ maybe "" (\o -> " (copied to " ++ o ++ ")") out)
+      -- nix copy the closure to a remote store (zinc-7m6.5); niche but free given
+      -- the local closure is already realized — the target must run Nix.
+      copied <- case to of
+        Nothing -> pure ""
+        Just dest -> orFail (nixCopyTo path dest) >> pure (" → " ++ dest ++ " (nix copy)")
+      pure ("Packaged " ++ name ++ " as a Nix closure: " ++ path ++ maybe "" (\o -> " (copied to " ++ o ++ ")") out ++ copied)
     Docker -> do
       tarball <- orFail (nixBuildAttr pkgDir "dockerImage")
       let ref = imageName ++ ":" ++ imageTag
@@ -531,18 +543,61 @@ runPackage fmt tag out wsDir = runResult $ do
                 ExitSuccess   -> "Built + loaded OCI image " ++ ref
                 ExitFailure _ -> "Built OCI image " ++ ref ++ " -> " ++ tarball ++ " (run `docker load -i " ++ tarball ++ "`)"
             Nothing -> pure ("Built OCI image " ++ ref ++ " -> " ++ tarball ++ " (run `docker load -i " ++ tarball ++ "`)")
-    _ ->
-      failWith (formatName fmt ++ ": this format is a follow-up (static = 7m6.3, bundle = 7m6.4); `zinc package nix` and `zinc package docker` are available now")
+    Bundle -> do
+      -- `nix bundle` wraps the app + its closure into one self-extracting
+      -- executable (zinc-7m6.4). -o makes a symlink into the store; resolve it
+      -- to the real file so -o/the reported path is a copyable artifact.
+      let link = pkgDir </> "bundle-result"
+      real <- orFail (nixBundle pkgDir link)
+      case out of
+        Just o -> do
+          liftIO (readProcessWithExitCode "cp" ["-fL", real, o] "" >> pure ())
+          pure ("Bundled " ++ name ++ " -> " ++ o ++ " (portable self-extracting executable)")
+        Nothing -> pure ("Bundled " ++ name ++ " -> " ++ real ++ " (portable self-extracting executable)")
+    -- zinc builds against the dynamic GHC; fully-static (musl) re-linking of GHC
+    -- binaries is not supported. Surface a clear diagnostic with the practical
+    -- alternatives (docker/bundle) rather than a cryptic linker error (zinc-7m6.3).
+    Static -> failWithError (StaticUnsupported name)
   where
+    -- --impure: the flake pins the binary's runtime deps via builtins.storePath
+    -- (see Zinc.Package.packagingFlake), which pure flake eval forbids.
     nixBuildAttr dir attr = do
       (code, o, e) <-
         readProcessWithExitCode
           "nix"
-          ["--extra-experimental-features", "nix-command flakes", "build", dir ++ "#" ++ attr, "--no-link", "--print-out-paths"]
+          ["--extra-experimental-features", "nix-command flakes", "build", "--impure", dir ++ "#" ++ attr, "--no-link", "--print-out-paths"]
           ""
       pure $ case code of
         ExitSuccess   -> Right (reverse (dropWhile (`elem` ("\n\r \t" :: String)) (reverse o)))
         ExitFailure _ -> Left (if null e then "nix build failed" else e)
+    -- `nix bundle` must target the package (which carries pname), not apps.default
+    -- (whose drvToBundle has no pname); resolve the current system for the attr.
+    nixBundle dir link = do
+      sys <- currentSystem
+      let target = dir ++ "#packages." ++ sys ++ ".default"
+      (code, _, e) <-
+        readProcessWithExitCode
+          "nix"
+          ["--extra-experimental-features", "nix-command flakes", "bundle", "--impure", target, "-o", link]
+          ""
+      case code of
+        ExitFailure _ -> pure (Left (if null e then "nix bundle failed" else e))
+        ExitSuccess   -> Right <$> canonicalizePath link
+    currentSystem = do
+      (c, o, _) <- readProcessWithExitCode "nix" ["--extra-experimental-features", "nix-command flakes", "eval", "--impure", "--raw", "--expr", "builtins.currentSystem"] ""
+      pure $ case c of
+        ExitSuccess | not (null (trim o)) -> trim o
+        _                                 -> "x86_64-linux"
+    trim = reverse . dropWhile (`elem` ("\n\r \t" :: String)) . reverse
+    nixCopyTo path dest = do
+      (code, _, e) <-
+        readProcessWithExitCode
+          "nix"
+          ["--extra-experimental-features", "nix-command flakes", "copy", "--to", dest, path]
+          ""
+      pure $ case code of
+        ExitSuccess   -> Right ()
+        ExitFailure _ -> Left (if null e then "nix copy failed" else e)
 
 -- | Direct dependencies declared in the manifest but absent from the lockfile
 -- — i.e. names that need (re-)resolving via @zinc add@. Empty means the lock

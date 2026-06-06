@@ -221,10 +221,10 @@ dispatch mode Version
   | machine mode = putStrLn (renderJson (envelope "version" True (Just (JObject [("version", JString zincVersion)])) Nothing []))
   | otherwise    = putStrLn zincVersionLine
 dispatch _ Help = putStr helpOverview
-dispatch mode (Package fmtStr tag out) =
+dispatch mode (Package fmtStr tag out to) =
   case parsePackageFormat fmtStr of
     Left err  -> hPutStrLn stderr err >> exitWith (ExitFailure 2)
-    Right fmt -> runPackage fmt tag out "." >>= either (failCmd mode) putStrLn
+    Right fmt -> runPackage fmt tag out to "." >>= either (failCmd mode) putStrLn
 dispatch mode CachePush =
   runCachePush "." >>= \r -> case r of
     Left e -> failCmd mode e

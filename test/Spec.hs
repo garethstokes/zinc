@@ -39,7 +39,7 @@ import Zinc.Git (cloneAt, gitEnv, gitInitIfNeeded, isInsideRepo, listTags, split
 import Zinc.Hackage (hackageCabalUrl, hackageTarballUrl, sourceRepoOf)
 import Zinc.Outdated (OutdatedDep (..), Status (..), classify)
 import Zinc.Quirks (quirkGhcOptions)
-import Zinc.Package (PackageFormat (..), dockerImageRef, formatName, packagingFlake, parsePackageFormat)
+import Zinc.Package (PackageFormat (..), dockerImageRef, formatName, packagingFlake, parsePackageFormat, storePathRefs)
 import Zinc.Delta (Change (..), ClosureDelta (..), closureDelta, isEmptyDelta)
 import Zinc.CacheBackend (CacheBackend (..), CacheConfig (..), PullOutcome (..), artifactUrl, curlOutcome, httpBackend, parseCacheTable, resolveCacheConfig)
 import Zinc.Store (contentHash, resolveStoreRoot, storeSrcPath, verifyContent, withStoreLock)
@@ -1423,23 +1423,42 @@ main = hspec $ do
       parsePackageFormat "rpm" `shouldSatisfy` isLeft
       map formatName [Docker, Static, Bundle, NixClosure] `shouldBe` ["docker", "static", "bundle", "nix"]
 
-    it "parses the `package <format>` verb with --tag and -o" $ do
-      parseArgs ["package", "docker"] `shouldBe` Right (OutputFlags False False, Package "docker" Nothing Nothing)
-      parseArgs ["package", "docker", "--tag", "app:1.0"] `shouldBe` Right (OutputFlags False False, Package "docker" (Just "app:1.0") Nothing)
-      parseArgs ["package", "nix", "-o", "./dist"] `shouldBe` Right (OutputFlags False False, Package "nix" Nothing (Just "./dist"))
+    it "parses the `package <format>` verb with --tag, -o and --to" $ do
+      parseArgs ["package", "docker"] `shouldBe` Right (OutputFlags False False, Package "docker" Nothing Nothing Nothing)
+      parseArgs ["package", "docker", "--tag", "app:1.0"] `shouldBe` Right (OutputFlags False False, Package "docker" (Just "app:1.0") Nothing Nothing)
+      parseArgs ["package", "nix", "-o", "./dist"] `shouldBe` Right (OutputFlags False False, Package "nix" Nothing (Just "./dist") Nothing)
+      parseArgs ["package", "nix", "--to", "ssh://build-host"] `shouldBe` Right (OutputFlags False False, Package "nix" Nothing Nothing (Just "ssh://build-host"))
 
     it "generates a packaging flake: packages.default wraps the binary, plus a docker image (7m6.2)" $ do
-      let fl = packagingFlake "myapp" "myapp" "1.0"
+      let fl = packagingFlake "myapp" "myapp" "1.0" ["/nix/store/s8q3rch0wd3shdnznz9bcj8mj6pvz1gr-gmp-with-cxx-6.3.0"]
       all (`isInfixOf` fl)
         [ "packages = forAll", "default = app", "install -Dm755 ${./myapp}", "apps = forAll"
         , "dockerTools.buildLayeredImage", "name = \"myapp\"", "tag = \"1.0\"", "config.Cmd = [ \"/bin/myapp\" ]"
+        -- runtime deps are pinned so Nix captures the full closure (7m6.2/.4)
+        , "map builtins.storePath", "\"/nix/store/s8q3rch0wd3shdnznz9bcj8mj6pvz1gr-gmp-with-cxx-6.3.0\""
         ]
         `shouldBe` True
+
+    it "storePathRefs extracts top-level store deps from a binary's bytes (7m6.2)" $ do
+      -- RPATH-style bytes: full paths, sub-paths, and a repeat all collapse to roots
+      let bytes = "\0/nix/store/s8q3rch0wd3shdnznz9bcj8mj6pvz1gr-gmp-with-cxx-6.3.0/lib:"
+                ++ "/nix/store/gniy4ab9wcijxjpcciddgpzdwq3v3dnb-libffi-3.4.6/lib\0junk"
+                ++ "/nix/store/s8q3rch0wd3shdnznz9bcj8mj6pvz1gr-gmp-with-cxx-6.3.0/lib/libgmp.so.10"
+      storePathRefs bytes `shouldBe`
+        [ "/nix/store/s8q3rch0wd3shdnznz9bcj8mj6pvz1gr-gmp-with-cxx-6.3.0"
+        , "/nix/store/gniy4ab9wcijxjpcciddgpzdwq3v3dnb-libffi-3.4.6"
+        ]
 
     it "resolves the docker image name:tag from --tag (7m6.2)" $ do
       dockerImageRef "hello" Nothing `shouldBe` ("hello", "latest")
       dockerImageRef "hello" (Just "app:1.0") `shouldBe` ("app", "1.0")
       dockerImageRef "hello" (Just "app") `shouldBe` ("app", "latest")
+
+    it "static packaging surfaces a clear ZINC_STATIC_UNSUPPORTED with alternatives (7m6.3)" $ do
+      let d = toDiagnostic (StaticUnsupported "myapp")
+      errorCode (StaticUnsupported "myapp") `shouldBe` "ZINC_STATIC_UNSUPPORTED"
+      exitCodeFor (StaticUnsupported "myapp") `shouldBe` ExitFailure 4
+      diagNextAction d `shouldSatisfy` maybe False (\a -> "docker" `isInfixOf` a && "bundle" `isInfixOf` a)
 
   describe "build quirks table (8uh)" $ do
     it "applies -XSafe to colour automatically (no manifest escape hatch)" $

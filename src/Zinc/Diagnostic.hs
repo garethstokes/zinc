@@ -66,6 +66,7 @@ data ZincError
   | ToolchainMissing String            -- ^ a required build tool (e.g. ghc) is not on PATH
   | NoZincToml String                 -- ^ directory
   | NoRepoInRegistry String String    -- ^ name, requiring parent
+  | StaticUnsupported String          -- ^ binary name: fully-static (musl) packaging not supported for this toolchain
   | OtherError String                 -- ^ escape hatch for not-yet-migrated messages
   deriving (Eq, Show)
 
@@ -170,6 +171,7 @@ errorCode e = case e of
   ToolchainMissing {}    -> "ZINC_TOOLCHAIN_MISSING"
   NoZincToml {}          -> "ZINC_NO_ZINC_TOML"
   NoRepoInRegistry {}    -> "ZINC_NO_REPO_IN_REGISTRY"
+  StaticUnsupported {}   -> "ZINC_STATIC_UNSUPPORTED"
   OtherError {}          -> "ZINC_ERROR"
 
 -- | The single boundary renderer: 'ZincError' to the agent-facing 'Diagnostic'.
@@ -226,6 +228,11 @@ toDiagnostic e =
       NoRepoInRegistry name parent ->
         ( "no repo in [registry] for dependency", Just (name ++ " (required by " ++ parent ++ ")"), Nothing, Just name
         , Just ("add `" ++ name ++ " = \"<git-url>\"` to the workspace [registry]") )
+      StaticUnsupported bin ->
+        ( "static packaging is not supported on this toolchain"
+        , Just (bin ++ " is dynamically linked; zinc builds against the dynamic GHC, and fully-static (musl) re-linking of GHC binaries is not available")
+        , Nothing, Nothing
+        , Just "use `zinc package docker` (a self-contained image) or `zinc package bundle` (a portable single-file) — both carry the runtime closure without static linking" )
       OtherError msg ->
         ( msg, Nothing, Nothing, Nothing, Nothing )
 
@@ -302,6 +309,7 @@ exitCodeFor e = ExitFailure $ case e of
   NoRepoInRegistry {}    -> 3
   GhcCompile {}          -> 4
   BuildTypeCustom {}     -> 4
+  StaticUnsupported {}   -> 4
   NixAbsent              -> 5
   ToolchainMissing {}    -> 5
   ContentHashMismatch {} -> 6
