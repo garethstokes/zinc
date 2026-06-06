@@ -36,6 +36,7 @@ data Command
   | Outdated Bool          -- ^ report deps with newer versions; Bool = --all (whole closure)
   | CachePush              -- ^ `cache push`: publish closure artifacts to the remote cache
   | Package String (Maybe String) (Maybe String) (Maybe String) -- ^ `package <format>`: format, --tag, -o, --to (nix-copy remote)
+  | SkillAdd String (Maybe String) -- ^ `skill add <repo> [--ref]`: install a Claude Code skill (dp6.2)
   deriving (Eq, Show)
 
 -- | Pure, testable entry point: parse argv into the output flags + a 'Command'.
@@ -90,6 +91,7 @@ commandParser =
       , sub "package" "Build a deployable artifact (docker/static/bundle/nix)" (Package <$> strArgument (metavar "FORMAT") <*> optional (strOption (long "tag" <> metavar "TAG" <> help "Image tag (docker)")) <*> optional (strOption (long "output" <> short 'o' <> metavar "PATH" <> help "Write the artifact to PATH")) <*> optional (strOption (long "to" <> metavar "STORE-URI" <> help "Copy the Nix closure to a remote store (nix), e.g. ssh://host or s3://bucket")))
       , sub "outdated" "Report dependencies with newer versions available" (Outdated <$> switch (long "all" <> help "Include the whole closure, not just direct dependencies"))
       , command "cache" (info (subparser (sub "push" "Publish built closure artifacts to the remote cache (ZINC_CACHE)" (pure CachePush)) <**> helper) (progDesc "Manage the remote artifact cache"))
+      , command "skill" (info (subparser (sub "add" "Install a Claude Code skill (git-native, pinned, content-verified)" (SkillAdd <$> strArgument (metavar "REPO") <*> optional (strOption (long "ref" <> metavar "REF" <> help "Pin to a tag, branch, or commit (default: latest)")))) <**> helper) (progDesc "Install + manage agent skills (no toolchain needed)"))
       ]
   where
     -- Every subcommand inherits the output flags (--json/--quiet), declared once

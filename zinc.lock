@@ -149,3 +149,9 @@ repo = "https://github.com/ekmett/transformers-compat.git"
 rev = "879dc486166d3a9e653695572f9c28d88af7e2d7"
 sha256 = "sha256:64ea5b05b5935feffbd60a5996d31ccf64b9368b382bed2fe924c1e60dde2cbd"
 depends = []
+
+[[skill]]
+name = "systematic-debugging"
+repo = "/tmp/skill-smoke/debugging-skill"
+rev = "3bd9565b7dffe7098d6a534484352ee2e4d57f43"
+sha256 = "sha256:a180534593869461a0aa37ff7348ded077590620900fd7e022433ba570100f2e"

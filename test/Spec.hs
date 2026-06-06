@@ -76,6 +76,7 @@ import Zinc.Resolve (DepManifest (..), ResolvedDep (..), isBootLib, resolve, top
 import Zinc.Version (newestTag, newestTagFor)
 import Zinc.Lock (LockedPackage (..), Source (..), lockRepo, lockRev, parseLock, renderLock, srcKey)
 import Zinc.Skill (LockedSkill (..), SkillDep (..), parseSkillLock, parseSkills, readSkillFrontmatter, renderSkillLock)
+import Zinc.SkillCmd (runSkillAdd, skillRepoName, writeSkillLockEntry)
 import Zinc.Metrics (MetricsRecord (..), appendMetrics, metricsLine, metricsPath)
 import Zinc.Perf (CommandStats (..), PerfRecord (..), Regression (..), PerfSummary (..), decodeRecord, percentile, perfSummaryJson, renderPerf, summarize)
 import Zinc.Scaffold (FileSpec (..), materialize, scaffoldNew, scaffoldWorkspace)
@@ -1987,6 +1988,52 @@ main = hspec $ do
     it "rejects SKILL.md missing frontmatter or a required field (dp6.1)" $ do
       readSkillFrontmatter "# no frontmatter\nbody\n" `shouldSatisfy` isLeft
       readSkillFrontmatter (unlines ["---", "name: x", "---"]) `shouldSatisfy` isLeft -- no description
+
+  describe "zinc skill add (dp6.2)" $ do
+    it "parses `skill add <repo> [--ref]`" $ do
+      parseArgs ["skill", "add", "https://github.com/o/s"]
+        `shouldBe` Right (OutputFlags False False, SkillAdd "https://github.com/o/s" Nothing)
+      parseArgs ["skill", "add", "https://github.com/o/s", "--ref", "v1"]
+        `shouldBe` Right (OutputFlags False False, SkillAdd "https://github.com/o/s" (Just "v1"))
+
+    it "skillRepoName drops a .git suffix and trailing slash" $ do
+      skillRepoName "https://github.com/o/brainstorming.git" `shouldBe` "brainstorming"
+      skillRepoName "https://github.com/o/research/" `shouldBe` "research"
+
+    it "writeSkillLockEntry adds a [[skill]], preserves [[locked]], replaces by name" $ do
+      let f = "/tmp/zinc-skill-lock-test.lock"
+      writeFile f (renderLock [LockedPackage "p" (GitSource "r/p" "rev") "sha256:p" []])
+      writeSkillLockEntry f (LockedSkill "brainstorming" "r/b" "rb1" "sha256:b1")
+      writeSkillLockEntry f (LockedSkill "brainstorming" "r/b" "rb2" "sha256:b2") -- same name -> replace
+      src <- readFile f
+      parseLock src `shouldBe` Right [LockedPackage "p" (GitSource "r/p" "rev") "sha256:p" []]
+      parseSkillLock src `shouldBe` Right [LockedSkill "brainstorming" "r/b" "rb2" "sha256:b2"]
+
+    it "installs a skill from a local git repo: clone, lock, symlink (e2e)" $ do
+      let base = "/tmp/zinc-skill-e2e"
+          repo = base ++ "/brainstorm-skill"
+          ws = base ++ "/ws"
+      stale <- doesDirectoryExist base
+      when stale (removeDirectoryRecursive base)
+      writeFileIn (repo ++ "/SKILL.md") (unlines ["---", "name: brainstorming", "description: Helps brainstorm", "---", "# Brainstorming", "do the thing"])
+      writeFileIn (repo ++ "/extra.md") "supporting file\n"
+      let git args = readProcess "git" ("-C" : repo : args) ""
+      _ <- git ["init", "--quiet"]
+      _ <- git ["config", "user.email", "t@example.com"]
+      _ <- git ["config", "user.name", "Test"]
+      _ <- git ["add", "."]
+      _ <- git ["commit", "--quiet", "-m", "skill"]
+      _ <- git ["tag", "v1"]
+      createDirectoryIfMissing True ws
+      r <- runSkillAdd repo Nothing ws -- ref=latest -> resolves the v1 tag
+      -- the install symlinks the store tree to .claude/skills/<frontmatter-name>
+      let link = ws ++ "/.claude/skills/brainstorming"
+      linkOk <- doesFileExist (link ++ "/SKILL.md")
+      lockSrc <- readFile (ws ++ "/zinc.lock")
+      ( either Left (Right . map lskName) (parseSkillLock lockSrc)
+        , linkOk
+        , either (const "ERR") id r )
+        `shouldBe` (Right ["brainstorming"], True, "Installed skill brainstorming (Helps brainstorm) \8594 .claude/skills/brainstorming")
 
   describe "build cache key" $ do
     let key deps opts = buildCacheKey (BuildKey "pkg" "abc" "9.6.5" deps opts)

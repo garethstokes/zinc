@@ -10,6 +10,7 @@ module Zinc.Skill
   ( SkillDep (..)
   , LockedSkill (..)
   , parseSkills
+  , parseSkillRef
   , parseSkillLock
   , renderSkillLock
   , readSkillFrontmatter
@@ -67,15 +68,22 @@ parseSkills src = do
 -- explicit @tag@/@branch@/@rev@ keys also work. Absent → latest.
 skillRefOf :: Map.Map String Value -> Ref
 skillRefOf t
-  | Just (String "*") <- Map.lookup "ref" t    = Latest
-  | Just (String s) <- Map.lookup "ref" t      = if looksRev s then Rev s else Tag s
-  | Just (String "*") <- Map.lookup "tag" t     = Latest
-  | Just (String s) <- Map.lookup "tag" t        = Tag s
-  | Just (String s) <- Map.lookup "branch" t     = Branch s
-  | Just (String s) <- Map.lookup "rev" t        = Rev s
-  | otherwise                                    = Latest
-  where
-    looksRev s = length s >= 7 && all isHexDigit s
+  | Just (String s) <- Map.lookup "ref" t        = parseSkillRef (Just s)
+  | Just (String "*") <- Map.lookup "tag" t       = Latest
+  | Just (String s) <- Map.lookup "tag" t          = Tag s
+  | Just (String s) <- Map.lookup "branch" t       = Branch s
+  | Just (String s) <- Map.lookup "rev" t          = Rev s
+  | otherwise                                      = Latest
+
+-- | Interpret a @--ref@ / @ref =@ string as a git ref: @*@ (or absent) is
+-- latest, a full hex string is a commit, anything else a tag (the dominant
+-- skill-versioning form). Branches use an explicit @branch =@ key in the table.
+parseSkillRef :: Maybe String -> Ref
+parseSkillRef Nothing      = Latest
+parseSkillRef (Just "*")   = Latest
+parseSkillRef (Just s)
+  | length s >= 7 && all isHexDigit s = Rev s
+  | otherwise                         = Tag s
 
 -- | Parse the @[[skill]]@ array from a lockfile. An absent array means none.
 -- Mirrors 'Zinc.Lock.parseLock'.

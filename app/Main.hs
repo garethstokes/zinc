@@ -26,6 +26,7 @@ import Zinc.Json (Json (..), renderJson)
 import Zinc.Metrics (recordBuild)
 import Zinc.Orchestrate (checkLockDrift, resolveRunTarget, runBuildReport, runCachePush, runClean, runPackage, runRepl, runTests, runWarm)
 import Zinc.Package (parsePackageFormat)
+import Zinc.SkillCmd (runSkillAdd)
 import Zinc.Outdated (outdatedJson, renderOutdated, runOutdated)
 import Zinc.Output (OutputEvent (..), OutputMode (..), emit, resolveMode, withRenderer)
 import Zinc.Perf (perfSummaryJson, renderPerf, runPerf)
@@ -228,6 +229,8 @@ dispatch mode (Package fmtStr tag out to) =
   case parsePackageFormat fmtStr of
     Left err  -> hPutStrLn stderr err >> exitWith (ExitFailure 2)
     Right fmt -> runPackage fmt tag out to "." >>= either (failCmd mode) putStrLn
+dispatch mode (SkillAdd repo ref) =
+  runSkillAdd repo ref "." >>= either (failCmd mode) putStrLn
 dispatch mode CachePush =
   runCachePush "." >>= \r -> case r of
     Left e -> failCmd mode e
