@@ -67,9 +67,10 @@ import Zinc.Add (enrichWithRepos, freezeClosure, lockEntry, runAdd, runUpdate, r
 import Zinc.Build (GhcInvocation (..), MemberBuild (..), PackageConf (..), archiveArgs, buildMember, ghcMakeArgs, installedVersions, preprocessorFor, registerPackage, renderConf, replArgs, runPreprocessor, writeFileIfChanged)
 import Zinc.Cache (BuildKey (..), buildCacheKey, cacheHit, storeConfPath, storePkgPath, writeCachedConf)
 import Zinc.Cabal (cabalBuildType, cabalVersion, parseCabalComponents, parseCabalComponentsForGhc)
-import Zinc.Env (devEnvVars, envCacheKey, nixPrintDevEnv, provisionEnv, toolchainPath, toolchainVars)
+import Zinc.Env (devEnvVars, envCacheKey, envCacheKeyFor, nixPrintDevEnv, provisionEnv, toolchainPath, toolchainVars)
 import Zinc.Macros (emitCabalMacros)
-import Zinc.Nix (generateFlake)
+import Zinc.Nix (generateFlake, generateFlakeFor)
+import Zinc.Target (Target (..), ghcFor, ghcPkgFor, hsc2hsFor, isWasm, parseTarget, targetTriple, toolPrefix)
 import Zinc.Orchestrate (buildAndRun, lockDrift, orderMembers, parMapBounded, resolveTarget, runBuild, runBuildMember, runClean, runTests, runWarm)
 import Zinc.Paths (pathsModuleName, synthesizePaths)
 import Zinc.Report (BuildOutcome (..), CacheStats (..), PackageReport (..), PackageStatus (..), Timing (..), buildBreakdownLine, buildDataJson, buildSummaryLine, cacheStatsOf, fmtMs, packageReportJson, renderResolution, statusText, timingJson)
@@ -1547,6 +1548,36 @@ main = hspec $ do
 
     it "works with no system libraries" $
       ("haskell.compiler.ghc965" `isInfixOf` generateFlake "9.6.5" []) `shouldBe` True
+
+  describe "Zinc.Target (9po.1)" $ do
+    it "parses native + wasm targets (with a wasm alias), rejects unknown" $ do
+      map parseTarget ["native", "wasm32-wasi", "wasm"] `shouldBe` map Right [Native, Wasm32Wasi, Wasm32Wasi]
+      parseTarget "arm64" `shouldSatisfy` isLeft
+
+    it "resolves the cross-tool prefix + binary names per target" $ do
+      (toolPrefix Native, toolPrefix Wasm32Wasi) `shouldBe` ("", "wasm32-wasi-")
+      map ($ Native) [ghcFor, ghcPkgFor, hsc2hsFor] `shouldBe` ["ghc", "ghc-pkg", "hsc2hs"]
+      map ($ Wasm32Wasi) [ghcFor, ghcPkgFor, hsc2hsFor] `shouldBe` ["wasm32-wasi-ghc", "wasm32-wasi-ghc-pkg", "wasm32-wasi-hsc2hs"]
+      map targetTriple [Native, Wasm32Wasi] `shouldBe` ["native", "wasm32-wasi"]
+      map isWasm [Native, Wasm32Wasi] `shouldBe` [False, True]
+
+  describe "wasm toolchain provisioning (9po.1)" $ do
+    it "the native flake is byte-identical to generateFlakeFor Native (no regression)" $
+      generateFlakeFor Native "9.6.5" ["zlib"] `shouldBe` generateFlake "9.6.5" ["zlib"]
+
+    it "the wasm flake adds ghc-wasm-meta + node + wasmtime (and not the native ghc)" $ do
+      let wf = generateFlakeFor Wasm32Wasi "9.6.5" ["zlib"]
+      all (`isInfixOf` wf)
+        [ "ghc-wasm-meta.url", "ghc-wasm-meta.packages.${system}.default"
+        , "ghc-wasm-meta.packages.${system}.nodejs", "ghc-wasm-meta.packages.${system}.wasmtime", "devShells"
+        ]
+        `shouldBe` True
+      -- pure-Haskell MVP: native ghc attr + the (unavailable) wasm system libs are absent
+      any (`isInfixOf` wf) ["haskell.compiler.ghc965", "pkgs.zlib"] `shouldBe` False
+
+    it "keys the dev-env cache per target: native is unchanged, wasm differs (9po.1)" $ do
+      envCacheKeyFor Native "9.6.5" ["zlib"] `shouldBe` envCacheKey "9.6.5" ["zlib"] -- native byte-identical
+      (envCacheKeyFor Wasm32Wasi "9.6.5" ["zlib"] == envCacheKey "9.6.5" ["zlib"]) `shouldBe` False
 
   describe "toolchain env provisioning (y03)" $ do
     let sampleJson =
