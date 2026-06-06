@@ -36,6 +36,7 @@ import Zinc.Deploy
   ( DeployHost (..)
   , ProbeChecks (..)
   , ProbeOutcome (..)
+  , initSnippet
   , interpretProbe
   , parseDeployHost
   , parseProbeOutput
@@ -3243,3 +3244,18 @@ main = hspec $ do
         `shouldBe` Right (OutputFlags False False, Deploy "box" Nothing True False False)
       parseArgs ["deploy", "box", "--rollback"]
         `shouldBe` Right (OutputFlags False False, Deploy "box" Nothing False True False)
+
+  describe "Zinc.Deploy --init snippet (nbk.5)" $ do
+    it "generates a NixOS trusted-users + linger snippet for the deploy user" $ do
+      let s = initSnippet "gareth"
+      all
+        (`isInfixOf` s)
+        [ "nix.settings.trusted-users = [ \"gareth\" ]"
+        , "users.users.gareth.linger"
+        , "= true;"
+        ]
+        `shouldBe` True
+
+    it "wraps the snippet in a NixOS module attrset" $ do
+      let s = initSnippet "deployer"
+      (head (lines s), last (filter (not . null) (lines s))) `shouldBe` ("{", "}")

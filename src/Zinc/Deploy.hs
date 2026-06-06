@@ -25,6 +25,8 @@ module Zinc.Deploy
   , probeHost
   , runDeploy
   , deployReadyJson
+  , initSnippet
+  , runInit
   ) where
 
 import Data.Char (isDigit)
@@ -146,10 +148,12 @@ probeHost h = do
   pure $ case ec of
     ExitFailure 255 -> SshUnreachable (firstLine err)
     _               -> Probed (parseProbeOutput out)
-  where
-    firstLine s = case lines s of
-      (l : _) -> takeWhile (/= '\r') l
-      []      -> "ssh connection failed"
+
+-- | The first line of an ssh stderr (CR-trimmed) for a diagnostic detail.
+firstLine :: String -> String
+firstLine s = case lines s of
+  (l : _) -> takeWhile (/= '\r') l
+  []      -> "ssh connection failed"
 
 -- | The @zinc deploy \<host\>@ entry point for nbk.1: parse the target, probe it
 -- over SSH, and report readiness. The copy + activate sequence (nbk.2/.3) and
@@ -165,6 +169,37 @@ runDeploy hostArg = do
       Probed c -> Right (h, c)
       -- interpretProbe only returns Right () for a Probed outcome.
       SshUnreachable d -> Left (DeploySsh (dhHost h) d)
+
+-- | The NixOS module snippet that makes a host a valid deploy target (spec §7):
+-- the deploy user goes in @trusted-users@ (so @nix copy@ is accepted) and gets
+-- lingering (so the user service runs without an active login). The user never
+-- hand-rolls Nix — reusing the auto-provision philosophy of y03.
+initSnippet :: String -> String
+initSnippet user =
+  unlines
+    [ "{"
+    , "  nix.settings.trusted-users = [ \"" ++ user ++ "\" ];"
+    , "  users.users." ++ user ++ ".linger  = true;"
+    , "}"
+    ]
+
+-- | @zinc deploy --init \<host\>@ (nbk.5): resolve the deploy user (the explicit
+-- @user\@@ if given, else the host's own @id -un@ over SSH) and return the
+-- NixOS 'initSnippet' for it. zinc never silently mutates a remote system's
+-- config, so this prints the snippet for the operator to add to their NixOS
+-- configuration rather than applying it unprompted.
+runInit :: String -> IO (Either ZincError String)
+runInit hostArg = do
+  let h = parseDeployHost hostArg
+  case dhUser h of
+    Just u  -> pure (Right (initSnippet u))
+    Nothing -> do
+      (ec, out, err) <- readProcessWithExitCode "ssh" (sshArgs h ["id", "-un"]) ""
+      pure $ case ec of
+        ExitFailure 255 -> Left (DeploySsh (dhHost h) (firstLine err))
+        _ -> case words out of
+          (u : _) -> Right (initSnippet u)
+          []      -> Left (DeploySsh (dhHost h) "could not determine the remote username")
 
 -- | The @--json@ data block for a ready host.
 deployReadyJson :: DeployHost -> ProbeChecks -> Json

@@ -57,3 +57,7 @@ The first self-hosting, agent-first release.
   a typed diagnostic — `ZINC_DEPLOY_SSH` / `_NO_NIX` / `_NOT_TRUSTED` /
   `_NO_LINGER` — with an actionable `nextAction`. The closure copy + activate
   sequence is landing incrementally.
+- `zinc deploy --init <host>` emits the NixOS module snippet that makes a host a
+  deploy target (deploy user in `trusted-users` + lingering enabled), resolving
+  the user over SSH when no explicit `user@` is given. Printed, never applied
+  unprompted.

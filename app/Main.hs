@@ -13,7 +13,7 @@ import Zinc.CLI (Command (..), helpOverview, parseArgs)
 import Zinc.Closure (closureReportJson, renderClosure, runClosure)
 import Zinc.Diagnostic (ZincError, envelope, exitCodeFor, humanError, toDiagnostic, zincVersion, zincVersionLine)
 import Zinc.Delta (deltaJson, renderDelta)
-import Zinc.Deploy (ProbeChecks (..), deployReadyJson, dhHost, runDeploy)
+import Zinc.Deploy (ProbeChecks (..), deployReadyJson, dhHost, runDeploy, runInit)
 import Zinc.Docker (runDockerfile)
 import Zinc.Env (provisionToolchain)
 import Zinc.Git (gitInitIfNeeded)
@@ -231,11 +231,24 @@ dispatch mode (Package fmtStr tag out to) =
   case parsePackageFormat fmtStr of
     Left err  -> hPutStrLn stderr err >> exitWith (ExitFailure 2)
     Right fmt -> runPackage fmt tag out to "." >>= either (failCmd mode) putStrLn
-dispatch mode (Deploy host _service _init _rollback _dryRun) =
+dispatch mode (Deploy host _service True _rollback _dryRun) =
+  -- nbk.5: --init prints the NixOS trusted-users + linger snippet for the deploy
+  -- user (resolved over SSH when no explicit user@ is given). zinc never mutates
+  -- a remote system's config unprompted, so it emits the snippet to apply.
+  runInit host >>= \r -> case r of
+    Left e
+      | machine mode -> putStrLn (renderJson (envelope "deploy" False Nothing Nothing [toDiagnostic e])) >> exitWith (exitCodeFor e)
+      | otherwise    -> failCmd mode e
+    Right snippet
+      | machine mode -> putStrLn (renderJson (envelope "deploy" True (Just (JObject [("init", JString snippet)])) Nothing []))
+      | otherwise    -> do
+          putStrLn "Add this to the host's NixOS configuration, then rebuild:"
+          putStr snippet
+dispatch mode (Deploy host _service False _rollback _dryRun) =
   -- nbk.1: parse the target, probe the host's NixOS preconditions over SSH, and
   -- report readiness (each gap → a typed ZINC_DEPLOY_* diagnostic). The closure
   -- copy + profile GC-root (nbk.2), user-systemd unit + health-check (nbk.3),
-  -- --rollback (nbk.4) and --init (nbk.5) layer on top of this probe.
+  -- and --rollback (nbk.4) layer on top of this probe.
   runDeploy host >>= \r -> case r of
     Left e
       | machine mode -> putStrLn (renderJson (envelope "deploy" False Nothing Nothing [toDiagnostic e])) >> exitWith (exitCodeFor e)
