@@ -85,7 +85,7 @@ runStatus wsDir = runResult $ do
   pure (wsGhc ws, wsMembers ws, deps, driftOf ws locks)
   where
     depStatus storeRoot ghc opts l = do
-      let key = buildCacheKey (BuildKey (lockRev l) ghc (lockDepends l) (fromMaybe [] (lookup (lockName l) opts)))
+      let key = buildCacheKey (BuildKey (lockName l) (lockRev l) ghc (lockDepends l) (fromMaybe [] (lookup (lockName l) opts)))
       cached <- doesFileExist (storeConfPath storeRoot key)
       pure (DepStatus (lockName l) (lockRev l) cached)
 

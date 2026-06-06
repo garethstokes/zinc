@@ -18,21 +18,27 @@ import System.FilePath ((</>))
 
 -- | Everything that determines a built package's output.
 data BuildKey = BuildKey
-  { bkRev        :: String   -- ^ resolved source commit
+  { bkName       :: String   -- ^ package name — distinguishes monorepo siblings that share a commit (zinc-qln)
+  , bkRev        :: String   -- ^ resolved source commit
   , bkGhcVersion :: String
   , bkDepUnitIds :: [String] -- ^ dependency unit-ids (order-insensitive)
   , bkOptions    :: [String] -- ^ ghc-options + extensions (order-insensitive)
   }
   deriving (Eq, Show)
 
--- | A stable cache key (sha256 hex) over the build inputs.
+-- | A stable cache key (sha256 hex) over the build inputs. The package name is
+-- part of the key: a monorepo's sub-packages share one commit (and often the
+-- same deps/options), so without it @effectful@ and @effectful-core@ would
+-- collide on one store entry and the second would reuse the first's artifact
+-- (zinc-qln).
 buildCacheKey :: BuildKey -> String
 buildCacheKey bk = showDigest (sha256 (BL8.pack payload))
   where
     payload =
       intercalate
         "\0"
-        [ bkRev bk
+        [ bkName bk
+        , bkRev bk
         , bkGhcVersion bk
         , intercalate "," (sort (bkDepUnitIds bk))
         , intercalate "," (sort (bkOptions bk))

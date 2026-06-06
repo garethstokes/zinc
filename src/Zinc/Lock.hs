@@ -5,6 +5,7 @@ module Zinc.Lock
   , Source (..)
   , lockRepo
   , lockRev
+  , srcKey
   , parseLock
   , renderLock
   ) where
@@ -49,6 +50,17 @@ lockRev :: LockedPackage -> String
 lockRev p = case lockSource p of
   GitSource _ rev   -> rev
   TarballSource ver -> ver
+
+-- | What identifies a package's SOURCE checkout (zinc-qln): the git repo (so the
+-- sub-packages of one monorepo share a single clone — keyed by repo, not name),
+-- or the package name for a vendored tarball (each tarball is its own source).
+-- The @#subdir@ is kept here and stripped when slugged into the store path, so
+-- @effectful@ and @effectful-core@ (same repo) map to one checkout while a
+-- tarball keeps its per-name checkout. Pairs with 'lockRev' to name the dir.
+srcKey :: LockedPackage -> String
+srcKey p = case lockSource p of
+  GitSource repo _ -> repo
+  TarballSource _  -> lockName p
 
 -- | Parse a lockfile. An absent @[[locked]]@ array means no packages.
 parseLock :: String -> Either String [LockedPackage]

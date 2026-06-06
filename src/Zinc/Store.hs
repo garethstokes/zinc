@@ -5,16 +5,19 @@
 module Zinc.Store
   ( resolveStoreRoot
   , storeSrcPath
+  , srcDirName
+  , srcSlug
   , contentHash
   , verifyContent
   , hashString
   , withStoreLock
   ) where
 
+import Data.Char (isAlphaNum)
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Lazy.Char8 as BL8
 import Data.Digest.Pure.SHA (sha256, showDigest)
-import Data.List (sortOn)
+import Data.List (dropWhileEnd, sortOn)
 import Control.Concurrent (threadDelay)
 import Control.Exception (bracket)
 import Control.Monad (forM, when)
@@ -35,8 +38,30 @@ resolveStoreRoot = do
     _ -> (\home -> home </> ".zinc" </> "store") <$> getHomeDirectory
 
 -- | Canonical store location for a package's source at a resolved revision.
+-- Keyed by 'srcKey' (the repo, for git, so a monorepo's sub-packages share one
+-- clone; or the name, for a tarball) rather than the package name — see
+-- 'srcDirName' (zinc-qln).
 storeSrcPath :: FilePath -> String -> String -> FilePath
-storeSrcPath root name rev = root </> "src" </> (name ++ "-" ++ rev)
+storeSrcPath root key rev = root </> "src" </> srcDirName key rev
+
+-- | The @src/@ directory name for a source checkout: @\<slug>-\<rev>@. Computed
+-- identically here and in GC so the sweep keeps the dirs the builder creates.
+srcDirName :: String -> String -> FilePath
+srcDirName key rev = srcSlug key ++ "-" ++ rev
+
+-- | A filesystem-safe, collision-resistant slug for a source key (a repo URL or
+-- a package name): the readable basename plus a short hash of the full key.
+-- The basename keeps store dirs greppable; the hash keeps distinct repos that
+-- share a basename (or sanitise alike) apart. Any @#subdir@ is dropped first, so
+-- sub-packages of one monorepo (same repo, different subdir) slug identically
+-- and thus share a checkout (zinc-qln).
+srcSlug :: String -> String
+srcSlug key =
+  let root  = takeWhile (/= '#') key
+      trim  = dropWhileEnd (== '/') root
+      base  = reverse (takeWhile (/= '/') (reverse trim))
+      clean = map (\c -> if isAlphaNum c || c == '.' || c == '_' then c else '-') base
+   in (if null clean then "src" else clean) ++ "-" ++ take 12 (showDigest (sha256 (BL8.pack root)))
 
 -- | Deterministic content hash of a source tree, independent of git/tar/Nix
 -- internals: sha256 over each file's @relpath \\0 contents \\0@ in sorted path

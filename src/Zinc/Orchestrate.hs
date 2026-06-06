@@ -51,7 +51,7 @@ import Zinc.Quirks (quirkGhcOptions)
 import Zinc.Fetch (packageDirIn)
 import Zinc.Git (cloneAt)
 import Zinc.Hackage (fetchHackageTarball)
-import Zinc.Lock (LockedPackage (..), Source (..), lockRepo, lockRev, parseLock)
+import Zinc.Lock (LockedPackage (..), Source (..), lockRepo, lockRev, parseLock, srcKey)
 import Zinc.Manifest
   ( Component (compDepends, compGhcOptions, compKind)
   , ComponentKind (Executable, Library, TestSuite)
@@ -348,7 +348,7 @@ buildClosure sink wsDir storeRoot wsDb ghcVersion buildOpts mAcc = runResult $ d
     -- Content-addressed cache key from data available without the source, so a
     -- cached build is reused without even fetching. Includes the dep's
     -- [build-options] override so changing an override invalidates the cache.
-    cacheKeyOf l = buildCacheKey (BuildKey (lockRev l) ghcVersion (lockDepends l) (overrideFor l))
+    cacheKeyOf l = buildCacheKey (BuildKey (lockName l) (lockRev l) ghcVersion (lockDepends l) (overrideFor l))
 
     -- A dep's effective ghc-option override: the built-in quirk for the package
     -- (zinc-8uh) PLUS any workspace [build-options]. The quirk leads so a known
@@ -414,19 +414,31 @@ buildClosure sink wsDir storeRoot wsDb ghcVersion buildOpts mAcc = runResult $ d
     buildNode l key = do
       let pkgOut = storePkgPath storeRoot key
           report st = PackageReport (lockName l) (lockRev l) st Nothing
-          dest = storeSrcPath storeRoot (lockName l) (lockRev l)
-      exists <- liftIO (doesDirectoryExist dest)
-      when (not exists) $ do
-        liftIO (emit sink (FetchStart (lockName l)))
-        -- Fetch the pinned source by its kind: a git clone, or a Hackage sdist
-        -- tarball for a vendored pin (b1z). Either way the bytes are verified
-        -- against the lock's sha256 below, so build never resolves a version —
-        -- it only retrieves the already-pinned content.
-        let fetchLocked = case lockSource l of
-              GitSource repo rev -> fmap (const ()) <$> cloneAt repo rev dest
-              TarballSource ver  -> fmap (const ()) <$> fetchHackageTarball (lockName l) ver dest
-        _ <- orFail (accuminto mAcc "fetch" (first (("fetch " ++ lockName l ++ ": ") ++) <$> fetchLocked))
-        liftIO (emit sink (FetchDone (lockName l)))
+          -- Keyed by repo (srcKey), so a monorepo's sub-packages share ONE clone
+          -- instead of each re-cloning the identical tree (zinc-qln).
+          dest = storeSrcPath storeRoot (srcKey l) (lockRev l)
+          -- A clone-scoped lock so sibling sub-packages — which hold distinct
+          -- build-key locks — can't race to clone the same checkout. Re-checked
+          -- inside the lock (a peer may have just cloned it).
+          srcLockKey = "src-" ++ takeFileName dest
+      fetched <- liftIO $ withStoreLock storeRoot srcLockKey $ do
+        exists <- doesDirectoryExist dest
+        if exists
+          then pure (Right ())
+          else do
+            emit sink (FetchStart (lockName l))
+            -- Fetch the pinned source by its kind: a git clone, or a Hackage sdist
+            -- tarball for a vendored pin (b1z). Either way the bytes are verified
+            -- against the lock's sha256 below, so build never resolves a version —
+            -- it only retrieves the already-pinned content.
+            let fetchLocked = case lockSource l of
+                  GitSource repo rev -> fmap (const ()) <$> cloneAt repo rev dest
+                  TarballSource ver  -> fmap (const ()) <$> fetchHackageTarball (lockName l) ver dest
+            r <- accuminto mAcc "fetch" (first (("fetch " ++ lockName l ++ ": ") ++) <$> fetchLocked)
+            case r of
+              Right _ -> emit sink (FetchDone (lockName l)) >> pure (Right ())
+              Left e  -> pure (Left e)
+      orFail (pure fetched)
       orFailE (verifyFetched l dest)
       -- The package may live in a subdirectory of the repo (monorepo) — an
       -- explicit #subdir, or a <name>/ dir auto-detected for metadata-poor
@@ -503,7 +515,7 @@ runCachePush wsDir = runResult $ do
       opts = depGhcOptionsOf ws
       optsFor l = fromMaybe [] (lookup (lockName l) opts)
   fmap catMaybes $ forM locks $ \l -> do
-    let key = buildCacheKey (BuildKey (lockRev l) ghc (lockDepends l) (optsFor l))
+    let key = buildCacheKey (BuildKey (lockName l) (lockRev l) ghc (lockDepends l) (optsFor l))
         pkgDir = storePkgPath storeRoot key
     there <- liftIO (doesDirectoryExist pkgDir)
     if not there

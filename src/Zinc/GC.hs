@@ -19,9 +19,9 @@ import Zinc.Except (failWithError, liftEither, liftIO, runResult)
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory, removeDirectoryRecursive)
 import System.FilePath ((</>))
 import Zinc.Cache (BuildKey (..), buildCacheKey)
-import Zinc.Lock (LockedPackage (..), lockRev, parseLock)
+import Zinc.Lock (LockedPackage (..), lockRev, parseLock, srcKey)
 import Zinc.Manifest (WorkspaceManifest (wsGhc), parseWorkspace)
-import Zinc.Store (resolveStoreRoot)
+import Zinc.Store (resolveStoreRoot, srcDirName)
 
 -- | A live root: a workspace's locked closure and the GHC it builds with.
 -- Together these determine exactly which store entries are reachable.
@@ -36,13 +36,15 @@ data GCRoot = GCRoot
 liveKeys :: [GCRoot] -> Set.Set String
 liveKeys = Set.fromList . concatMap (\r -> map (keyFor (grGhc r)) (grLocks r))
   where
-    keyFor ghc l = buildCacheKey (BuildKey (lockRev l) ghc (lockDepends l) [])
+    keyFor ghc l = buildCacheKey (BuildKey (lockName l) (lockRev l) ghc (lockDepends l) [])
 
--- | The @src\/@ entry names (@name-rev@) kept alive by the roots.
+-- | The @src\/@ entry names (@\<slug>-\<rev>@) kept alive by the roots. Uses the
+-- same 'srcDirName' keying as the builder (by 'srcKey', so a monorepo's shared
+-- clone is one live entry, not one per sub-package) — zinc-qln.
 liveSrcNames :: [GCRoot] -> Set.Set String
 liveSrcNames = Set.fromList . concatMap (map srcName . grLocks)
   where
-    srcName l = lockName l ++ "-" ++ lockRev l
+    srcName l = srcDirName (srcKey l) (lockRev l)
 
 -- | Sweep the store, deleting every @pkg\/@ and @src\/@ entry not kept alive by
 -- the given roots. Returns the sorted names removed from @pkg\/@ and @src\/@.

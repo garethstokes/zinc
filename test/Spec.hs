@@ -8,7 +8,7 @@ import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (IOException, try)
 import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
-import Data.List (find, isInfixOf, sort)
+import Data.List (find, isInfixOf, isPrefixOf, isSuffixOf, sort)
 import Data.Maybe (isJust)
 import System.Directory
   ( createDirectoryIfMissing
@@ -19,7 +19,7 @@ import System.Directory
   , removeFile
   )
 import System.Environment (lookupEnv, setEnv, unsetEnv)
-import System.FilePath (takeDirectory, (</>))
+import System.FilePath (takeDirectory, takeFileName, (</>))
 import System.Process (readProcess)
 import Test.Hspec
 import System.Exit (ExitCode (..))
@@ -42,7 +42,7 @@ import Zinc.Quirks (quirkGhcOptions)
 import Zinc.Package (PackageFormat (..), dockerImageRef, formatName, packagingFlake, parsePackageFormat, storePathRefs)
 import Zinc.Delta (Change (..), ClosureDelta (..), closureDelta, isEmptyDelta)
 import Zinc.CacheBackend (CacheBackend (..), CacheConfig (..), PullOutcome (..), artifactUrl, curlOutcome, httpBackend, parseCacheTable, resolveCacheConfig)
-import Zinc.Store (contentHash, resolveStoreRoot, storeSrcPath, verifyContent, withStoreLock)
+import Zinc.Store (contentHash, resolveStoreRoot, srcDirName, storeSrcPath, verifyContent, withStoreLock)
 import Zinc.Manifest
   ( Component (..)
   , ComponentKind (..)
@@ -74,7 +74,7 @@ import Zinc.Report (BuildOutcome (..), CacheStats (..), PackageReport (..), Pack
 import Zinc.SysLibs (toNixpkgs)
 import Zinc.Resolve (DepManifest (..), ResolvedDep (..), isBootLib, resolve, topoLevels, topoSort)
 import Zinc.Version (newestTag, newestTagFor)
-import Zinc.Lock (LockedPackage (..), Source (..), lockRepo, lockRev, parseLock, renderLock)
+import Zinc.Lock (LockedPackage (..), Source (..), lockRepo, lockRev, parseLock, renderLock, srcKey)
 import Zinc.Metrics (MetricsRecord (..), appendMetrics, metricsLine, metricsPath)
 import Zinc.Perf (CommandStats (..), PerfRecord (..), Regression (..), PerfSummary (..), decodeRecord, percentile, perfSummaryJson, renderPerf, summarize)
 import Zinc.Scaffold (FileSpec (..), materialize, scaffoldNew, scaffoldWorkspace)
@@ -995,8 +995,21 @@ main = hspec $ do
   describe "Zinc.Store" $ do
     let base = "/tmp/zinc-store-test"
 
-    it "computes the canonical store source path" $
-      storeSrcPath "/store" "aeson" "abc123" `shouldBe` "/store/src/aeson-abc123"
+    it "computes the canonical store source path (repo-keyed slug; qln)" $ do
+      -- the path is <root>/src/<basename>-<hash>-<rev>: greppable basename, a
+      -- short hash for uniqueness, then the rev.
+      let p = storeSrcPath "/store" "https://github.com/o/effectful.git" "abc123"
+      ("/store/src/effectful.git-" `isPrefixOf` p) `shouldBe` True
+      ("-abc123" `isSuffixOf` p) `shouldBe` True
+
+    it "shares one src checkout across a monorepo's sub-packages, splits distinct repos (qln)" $ do
+      let repo = "https://github.com/haskell-effectful/effectful.git"
+          -- effectful + effectful-core: same repo (one with a #subdir), same rev
+          dirOf k = takeFileName (storeSrcPath "/store" k "rr")
+      -- the #subdir is stripped before keying, so sub-packages collapse to one dir
+      dirOf repo `shouldBe` dirOf (repo ++ "#effectful-core")
+      -- a different repo at the same rev keys to a different checkout
+      (dirOf repo == dirOf "https://github.com/o/other.git") `shouldBe` False
 
     it "hashes a tree deterministically" $ do
       let d = base ++ "/det"
@@ -1926,7 +1939,7 @@ main = hspec $ do
       (r, produced) `shouldBe` (Right (), True)
 
   describe "build cache key" $ do
-    let key deps opts = buildCacheKey (BuildKey "abc" "9.6.5" deps opts)
+    let key deps opts = buildCacheKey (BuildKey "pkg" "abc" "9.6.5" deps opts)
         k1 = key ["base-4", "aeson-2"] ["-O2"]
 
     it "is deterministic" $
@@ -1936,13 +1949,16 @@ main = hspec $ do
       key ["aeson-2", "base-4"] ["-O2"] `shouldBe` k1
 
     it "changes with the resolved rev" $
-      (buildCacheKey (BuildKey "xyz" "9.6.5" ["base-4", "aeson-2"] ["-O2"]) == k1) `shouldBe` False
+      (buildCacheKey (BuildKey "pkg" "xyz" "9.6.5" ["base-4", "aeson-2"] ["-O2"]) == k1) `shouldBe` False
 
     it "changes with the ghc version" $
-      (buildCacheKey (BuildKey "abc" "9.8.2" ["base-4", "aeson-2"] ["-O2"]) == k1) `shouldBe` False
+      (buildCacheKey (BuildKey "pkg" "abc" "9.8.2" ["base-4", "aeson-2"] ["-O2"]) == k1) `shouldBe` False
 
     it "changes with the build options (per-dep overrides)" $
       (key ["base-4", "aeson-2"] ["-XSafe"] == k1) `shouldBe` False
+
+    it "changes with the package name — monorepo siblings sharing a commit don't collide (qln)" $
+      (buildCacheKey (BuildKey "other" "abc" "9.6.5" ["base-4", "aeson-2"] ["-O2"]) == k1) `shouldBe` False
 
     it "lays out the package store path" $
       storePkgPath "/store" "deadbeef" `shouldBe` "/store/pkg/deadbeef"
@@ -2229,19 +2245,19 @@ main = hspec $ do
       -- 1) build locally; greet's artifact lands in the content-addressed store
       r1 <- buildAndRun ws []
       -- 2) harvest greet's pkg artifact into a file:// cache, keyed by its build key
-      let key = buildCacheKey (BuildKey rev "9.6.5" [] [])
+      let key = buildCacheKey (BuildKey "greet" rev "9.6.5" [] [])
           pkgDir = storePkgPath testStoreDir key
       createDirectoryIfMissing True cacheDir
       _ <- readProcess "tar" ["-czf", cacheDir ++ "/" ++ key ++ ".tar.gz", "-C", pkgDir, "."] ""
       -- 3) wipe greet's LOCAL store entry (pkg + src) to force a miss
       removeDirectoryRecursive pkgDir
-      removeDirectoryRecursive (storeSrcPath testStoreDir "greet" rev)
+      removeDirectoryRecursive (storeSrcPath testStoreDir greet rev)
       -- 4) rebuild with the remote cache: greet must be PULLED, not recompiled
       --    (its source is never re-fetched, so the src dir stays absent)
       setEnv "ZINC_CACHE" ("file://" ++ cacheDir)
       r2 <- buildAndRun ws []
       unsetEnv "ZINC_CACHE"
-      srcReFetched <- doesDirectoryExist (storeSrcPath testStoreDir "greet" rev)
+      srcReFetched <- doesDirectoryExist (storeSrcPath testStoreDir greet rev)
       (r1, r2, srcReFetched) `shouldBe` (Right "hi from cache\n", Right "hi from cache\n", False)
 
   describe "lockDrift" $ do
@@ -2411,7 +2427,7 @@ main = hspec $ do
       -- c3g: the generated .hs must NOT land in the content-addressed src tree
       -- (it would change the tree's hash and fail the lock sha256 on the next
       -- build); preprocessor output goes to the dist dir instead.
-      polluted <- doesFileExist (storeSrcPath testStoreDir "lexdep" rev </> "src" </> "Lexer.hs")
+      polluted <- doesFileExist (storeSrcPath testStoreDir dep rev </> "src" </> "Lexer.hs")
       polluted `shouldBe` False
 
   describe "per-dependency build overrides (end-to-end)" $
@@ -2816,36 +2832,41 @@ main = hspec $ do
       let root = "/tmp/zinc-gc-store"
           ghc = "9.6.5"
           liveLock = LockedPackage "a" (GitSource "r/a" "rev-a") "sha256:x" []
-          liveKey = buildCacheKey (BuildKey "rev-a" ghc [] [])
-          deadKey = buildCacheKey (BuildKey "rev-z" ghc [] [])
+          liveKey = buildCacheKey (BuildKey "a" "rev-a" ghc [] [])
+          deadKey = buildCacheKey (BuildKey "a" "rev-z" ghc [] [])
+          -- the src dir the builder would create for the live lock (repo-keyed slug; qln)
+          liveSrcDir = srcDirName (srcKey liveLock) (lockRev liveLock)
+          deadSrcDir = "b-rev-b" -- arbitrary unreferenced entry
       stale <- doesDirectoryExist root
       when stale $ removeDirectoryRecursive root
       writeFileIn (root ++ "/pkg/" ++ liveKey ++ "/package.conf") "live"
       writeFileIn (root ++ "/pkg/" ++ deadKey ++ "/package.conf") "dead"
-      writeFileIn (root ++ "/src/a-rev-a/x.hs") "live"
-      writeFileIn (root ++ "/src/b-rev-b/x.hs") "dead"
+      writeFileIn (root ++ "/src/" ++ liveSrcDir ++ "/x.hs") "live"
+      writeFileIn (root ++ "/src/" ++ deadSrcDir ++ "/x.hs") "dead"
       (rmPkg, rmSrc) <- gcStore root [GCRoot ghc [liveLock]]
       livePkg <- doesDirectoryExist (root ++ "/pkg/" ++ liveKey)
       deadPkg <- doesDirectoryExist (root ++ "/pkg/" ++ deadKey)
-      liveSrc <- doesDirectoryExist (root ++ "/src/a-rev-a")
-      deadSrc <- doesDirectoryExist (root ++ "/src/b-rev-b")
+      liveSrc <- doesDirectoryExist (root ++ "/src/" ++ liveSrcDir)
+      deadSrc <- doesDirectoryExist (root ++ "/src/" ++ deadSrcDir)
       (livePkg, deadPkg, liveSrc, deadSrc, rmPkg, rmSrc)
-        `shouldBe` (True, False, True, False, [deadKey], ["b-rev-b"])
+        `shouldBe` (True, False, True, False, [deadKey], [deadSrcDir])
 
   describe "runGc (workspace GC entry)" $
     it "collects store entries not referenced by the current workspace lock" $ do
       let dir = "/tmp/zinc-gc-ws"
           gcRoot = "/tmp/zinc-gc-ws-store"
           ghc = "9.6.5"
-          liveKey = buildCacheKey (BuildKey "rev-a" ghc [] [])
-          deadKey = buildCacheKey (BuildKey "rev-z" ghc [] [])
+          liveKey = buildCacheKey (BuildKey "a" "rev-a" ghc [] [])
+          deadKey = buildCacheKey (BuildKey "a" "rev-z" ghc [] [])
+          liveLock = LockedPackage "a" (GitSource "r/a" "rev-a") "sha256:x" []
+          liveSrcDir = srcDirName (srcKey liveLock) (lockRev liveLock)
       mapM_ (\p -> doesDirectoryExist p >>= \e -> when e (removeDirectoryRecursive p)) [dir, gcRoot]
       setEnv "ZINC_STORE" gcRoot
       writeFileIn (dir ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] ghc [Dependency "a" (Rev "rev-a") (Just "r/a") []]))
-      writeFileIn (dir ++ "/zinc.lock") (renderLock [LockedPackage "a" (GitSource "r/a" "rev-a") "sha256:x" []])
+      writeFileIn (dir ++ "/zinc.lock") (renderLock [liveLock])
       writeFileIn (gcRoot ++ "/pkg/" ++ liveKey ++ "/package.conf") "live"
       writeFileIn (gcRoot ++ "/pkg/" ++ deadKey ++ "/package.conf") "dead"
-      writeFileIn (gcRoot ++ "/src/a-rev-a/x.hs") "live"
+      writeFileIn (gcRoot ++ "/src/" ++ liveSrcDir ++ "/x.hs") "live"
       writeFileIn (gcRoot ++ "/src/zombie-rev-z/x.hs") "dead"
       r <- runGc dir
       setEnv "ZINC_STORE" testStoreDir -- restore shared isolation
