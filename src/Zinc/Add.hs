@@ -25,6 +25,7 @@ import Zinc.Delta (ClosureDelta, closureDelta)
 import Zinc.Diagnostic (ZincError (DepNoGitRepo, ManifestParse, NoZincToml))
 import Zinc.Except (Result, failWith, failWithError, liftEitherE, liftIO, orFail, orFailE, runResult)
 import Zinc.Fetch (gitFetchManifest, isHpackOnly, packageDirIn, resolveRef)
+import Zinc.Fmt (setManifestDependencies)
 import Zinc.Git (cloneAt)
 import Zinc.Hackage (fetchHackageTarball, hackageLatestVersion, hackageSourceRepo)
 import Zinc.Lock (LockedPackage (..), Source (..), parseLock, renderLock)
@@ -41,6 +42,15 @@ import Zinc.Manifest
 import Zinc.Report (renderResolution)
 import Zinc.Resolve (ResolvedDep (..), isBootLib, resolve)
 import Zinc.Store (contentHash, resolveStoreRoot)
+
+-- | Write @ws@'s dependencies back into the manifest at @wsFile@, rewriting only
+-- the dependency sections of the original @src@ and preserving everything else —
+-- crucially a flat project's @[package]@/@[build.*]@, which 'renderWorkspace'
+-- (modelling only @[workspace]@+@[dependencies]@) would drop (zinc-lnh). Falls
+-- back to a full render if the original text isn't a parseable workspace.
+writeManifestPreserving :: FilePath -> String -> WorkspaceManifest -> IO ()
+writeManifestPreserving wsFile src ws =
+  writeFile wsFile (either (const (renderWorkspace ws)) id (setManifestDependencies src (wsDependencies ws)))
 
 -- | Build a lock entry from a resolved dep and its resolved commit + hash. A
 -- vendored pin records a tarball source (version from the ref); everything else
@@ -130,7 +140,7 @@ runAdd wsFile storeRoot name ref repo = runResult $ do
   ws <- liftEitherE (first (ManifestParse wsFile) (parseWorkspace src))
   let ws' = addDep ws name ref repo
   res <- freezeWorkspace wsFile storeRoot ws'
-  liftIO $ writeFile wsFile (renderWorkspace ws')
+  liftIO $ writeManifestPreserving wsFile src ws'
   pure res
 
 -- | CLI entry: @zinc add \<name\>@ in the current workspace. If the package's
@@ -160,7 +170,7 @@ addInWorkspace name = runResult $ do
         failWithError (DepNoGitRepo (unwords (crNeedsVendoring rep)))
       let found = [(m, r) | (m, Just r) <- crMembers rep]
           enriched = enrichWithRepos ws found
-      liftIO (writeFile wsFile (renderWorkspace enriched))
+      liftIO (writeManifestPreserving wsFile src enriched)
       freezeWorkspace wsFile storeRoot enriched
 
 -- | Fold discovered @(name, repo)@ pairs into a workspace as pinned
@@ -240,7 +250,7 @@ runVendor wsFile storeRoot pkgs = runResult $ do
   resolved <- traverse resolveVendorVersion pkgs
   let ws' = foldl (\w (n, v) -> addVendored w n v) ws resolved
   res <- freezeWorkspace wsFile storeRoot ws'
-  liftIO (writeFile wsFile (renderWorkspace ws'))
+  liftIO (writeManifestPreserving wsFile src ws')
   pure res
 
 -- | Resolve a vendor target to @(name, version)@: an explicit @name-version@

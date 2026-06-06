@@ -6,6 +6,7 @@
 -- the file is already canonical (CI / non-interactive contract).
 module Zinc.Fmt
   ( canonicalizeManifest
+  , setManifestDependencies
   , runFmt
   ) where
 
@@ -16,7 +17,19 @@ import System.Directory (doesFileExist)
 import System.FilePath ((</>))
 import Zinc.Diagnostic (ZincError (NoZincToml))
 import Zinc.Except (failWithError, liftEither, liftIO, runResult)
-import Zinc.Manifest (parseWorkspace, renderDependencies, wsDependencies)
+import Zinc.Manifest (Dependency, parseWorkspace, renderDependencies, wsDependencies)
+
+-- | Rewrite a manifest's dependency sections to @deps@, preserving every other
+-- line — @[workspace]@, the member's @[package]@/@[build.*]@ (a flat
+-- single-package project keeps these in the same file), and comments. The
+-- text-level editor behind @zinc add@/@vendor@: 'renderWorkspace' alone models
+-- only @[workspace]@+@[dependencies]@ and would drop the rest (zinc-lnh). Fails
+-- (Left) if the manifest has no @[workspace]@.
+setManifestDependencies :: String -> [Dependency] -> Either String String
+setManifestDependencies src deps = do
+  _ <- parseWorkspace src -- validate it's a workspace manifest
+  let kept = dropTrailingBlank (stripDepSections (lines src))
+  pure (unlines (kept ++ [""] ++ renderDependencies deps))
 
 -- | Canonicalize a workspace manifest's text: drop the existing dependency
 -- sections (@[dependencies]@, @[dependencies.<name>]@, legacy @[registry]@ /
@@ -25,8 +38,7 @@ import Zinc.Manifest (parseWorkspace, renderDependencies, wsDependencies)
 canonicalizeManifest :: String -> Either String String
 canonicalizeManifest src = do
   ws <- parseWorkspace src
-  let kept = dropTrailingBlank (stripDepSections (lines src))
-  pure (unlines (kept ++ [""] ++ renderDependencies (wsDependencies ws)))
+  setManifestDependencies src (wsDependencies ws)
 
 -- | Drop every dependency-related section (header line through to the next
 -- top-level header), keeping all other lines in order.

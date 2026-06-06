@@ -30,7 +30,7 @@ import Zinc.Closure (discoverRepos, parseDependsField, pkgNameOf)
 import Zinc.Ansi (greenBold, style)
 import Zinc.Output (OutputEvent (..), OutputFlags (..), OutputMode (..), RProg (..), Sink (..), eventJson, nullSink, progressLine, verb, withRenderer)
 import Zinc.Docker (dockerfileText)
-import Zinc.Fmt (canonicalizeManifest)
+import Zinc.Fmt (canonicalizeManifest, setManifestDependencies)
 import Zinc.Doctor (doctorJson, doctorOk, flakesOffDiagnostic, lockDriftDiagnostic, renderDoctor, runDoctor)
 import Zinc.Introspect (DepStatus (..), explainJson, graphJson, runStatus, statusJson)
 import Zinc.Prime (onboardText, primeText)
@@ -477,6 +477,17 @@ main = hspec $ do
       let src = unlines ["[workspace]", "members = [\".\"]", "ghc = \"9.6.5\"", "[package]", "name = \"z\"", "[build.lib]", "source-dirs = [\"src\"]", "[dependencies]", "x = \"v1\""]
           out = either error id (canonicalizeManifest src)
       all (`isInfixOf` out) ["[package]", "[build.lib]", "source-dirs = [\"src\"]", "x = \"v1\""] `shouldBe` True
+
+    it "setManifestDependencies keeps a flat project's [package]/[build.*] when add rewrites deps (lnh)" $ do
+      -- the exact shape `zinc new <name>` scaffolds (flat single-package), then
+      -- `zinc add` injects a new [dependencies.dep]; package/build must survive.
+      let src = unlines ["[workspace]", "members = [\".\"]", "ghc = \"9.6.5\"", "", "[package]", "name = \"app\"", "version = \"0.1.0\"", "", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "", "[dependencies]"]
+          out = either error id (setManifestDependencies src [Dependency "dep" Latest (Just "r/dep") []])
+      all (`isInfixOf` out)
+        ["[package]", "name = \"app\"", "[build.exe.app]", "main = \"Main.hs\"", "[dependencies.dep]", "r/dep"]
+        `shouldBe` True
+      -- and the result round-trips: still parses, with the new dep present
+      (depName <$> either (const []) wsDependencies (parseWorkspace out)) `shouldBe` ["dep"]
 
   describe "dockerfile recipe (vwn.2)" $ do
     it "parses the `dockerfile` subcommand" $
