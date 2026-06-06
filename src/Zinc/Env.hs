@@ -7,14 +7,24 @@ module Zinc.Env
   ( envCacheKey
   , provisionEnv
   , nixPrintDevEnv
+  , nixPrintDevEnvJson
+  , devEnvVars
+  , toolchainPath
+  , toolchainVars
+  , applyDevEnv
+  , provisionToolchain
   ) where
 
+import Control.Monad (forM_, unless, when)
 import qualified Data.ByteString.Lazy.Char8 as BL8
 import Data.Digest.Pure.SHA (sha256, showDigest)
 import Data.List (intercalate, sort)
-import System.Directory (createDirectoryIfMissing, doesFileExist)
+import Data.Maybe (fromMaybe, isJust)
+import System.Directory (createDirectoryIfMissing, doesFileExist, findExecutable)
+import System.Environment (lookupEnv, setEnv)
 import Zinc.Diagnostic (ZincError)
 import Zinc.Except (liftIO, orFail, runResult)
+import Zinc.Json (Json (..), parseJson)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 import System.Process (readProcessWithExitCode)
@@ -64,3 +74,76 @@ nixPrintDevEnv workDir ghcVersion systemLibs = do
   pure $ case code of
     ExitSuccess   -> Right out
     ExitFailure _ -> Left (if null err then "nix print-dev-env failed" else err)
+
+-- | As 'nixPrintDevEnv', but @--json@ so the variables can be parsed structurally
+-- (rather than re-parsing bash). Used to provision the toolchain (zinc-y03).
+nixPrintDevEnvJson :: FilePath -> String -> [String] -> IO (Either String String)
+nixPrintDevEnvJson workDir ghcVersion systemLibs = do
+  createDirectoryIfMissing True workDir
+  writeFile (workDir </> "flake.nix") (generateFlake ghcVersion systemLibs)
+  _ <- readProcessWithExitCode "git" ["-C", workDir, "init", "-q"] ""
+  _ <- readProcessWithExitCode "git" ["-C", workDir, "add", "flake.nix"] ""
+  (code, out, err) <-
+    readProcessWithExitCode
+      "nix"
+      ["--extra-experimental-features", "nix-command flakes", "print-dev-env", "--json", workDir]
+      ""
+  pure $ case code of
+    ExitSuccess   -> Right out
+    ExitFailure _ -> Left (if null err then "nix print-dev-env --json failed" else err)
+
+-- | The EXPORTED @(name, value)@ variables from @nix print-dev-env --json@
+-- output. Pure (testable without Nix). Non-exported (@type: var@) and
+-- bash functions are ignored.
+devEnvVars :: String -> [(String, String)]
+devEnvVars json = case parseJson json of
+  Right (JObject top)
+    | Just (JObject vars) <- lookup "variables" top ->
+        [ (name, val)
+        | (name, JObject spec) <- vars
+        , Just (JString "exported") <- [lookup "type" spec]
+        , Just (JString val) <- [lookup "value" spec]
+        ]
+  _ -> []
+
+-- | The build-relevant variables zinc applies from a provisioned dev env. We
+-- deliberately apply a WHITELIST, never the whole set — the dev env carries
+-- sandbox values (@HOME=\/homeless-shelter@, @TMPDIR@, …) that would break a
+-- real build. @PATH@ is handled separately ('toolchainPath').
+toolchainVars :: [String]
+toolchainVars = ["NIX_CFLAGS_COMPILE", "NIX_LDFLAGS", "PKG_CONFIG_PATH"]
+
+-- | The PATH to use after provisioning: the dev env's @PATH@ PREPENDED to the
+-- ambient one, so the dev toolchain (ghc/alex/happy/…) wins while the user's own
+-- tools (curl, git, …) remain reachable. 'Nothing' when the dev env has no PATH.
+toolchainPath :: [(String, String)] -> String -> Maybe String
+toolchainPath vars ambient = case lookup "PATH" vars of
+  Just dev -> Just (dev ++ if null ambient then "" else ":" ++ ambient)
+  Nothing  -> Nothing
+
+-- | Apply a provisioned dev env to the current process: prepend its PATH and set
+-- the whitelisted build vars, so every subsequent toolchain shell-out inherits
+-- it (the process-env-once model, zinc-y03). Never sets sandbox-only vars.
+applyDevEnv :: [(String, String)] -> IO ()
+applyDevEnv vars = do
+  ambient <- fromMaybe "" <$> lookupEnv "PATH"
+  forM_ (toolchainPath vars ambient) (setEnv "PATH")
+  forM_ toolchainVars $ \k -> forM_ (lookup k vars) (setEnv k)
+
+-- | Provision the workspace's Nix toolchain into the process env so a build runs
+-- without a manual @nix develop@ (zinc-y03). A strict no-op when @ghc@ is
+-- already on PATH (the user is already in a provisioned shell — dev/CI/self-host
+-- stay exactly as they were), and best-effort otherwise: if @nix@ is absent the
+-- detect-and-guide preflight (gtv.2) handles it, and any eval failure leaves the
+-- ambient env untouched. The dev env is cached under @cacheRoot@ keyed by
+-- @ghc@ + @system-libs@, so re-provisioning is free.
+provisionToolchain :: FilePath -> FilePath -> String -> [String] -> IO ()
+provisionToolchain cacheRoot workDir ghcVersion systemLibs = do
+  ghcPresent <- isJust <$> findExecutable "ghc"
+  unless ghcPresent $ do
+    nixPresent <- isJust <$> findExecutable "nix"
+    when nixPresent $ do
+      r <- provisionEnv (nixPrintDevEnvJson workDir) cacheRoot ghcVersion systemLibs
+      case r of
+        Right json -> applyDevEnv (devEnvVars json)
+        Left _     -> pure () -- best-effort; gtv.2 preflight guides on a hard miss

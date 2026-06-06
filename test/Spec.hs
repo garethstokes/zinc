@@ -63,7 +63,7 @@ import Zinc.Add (enrichWithRepos, freezeClosure, lockEntry, runAdd, runUpdate, r
 import Zinc.Build (GhcInvocation (..), MemberBuild (..), PackageConf (..), archiveArgs, buildMember, ghcMakeArgs, installedVersions, preprocessorFor, registerPackage, renderConf, replArgs, runPreprocessor, writeFileIfChanged)
 import Zinc.Cache (BuildKey (..), buildCacheKey, cacheHit, storeConfPath, storePkgPath, writeCachedConf)
 import Zinc.Cabal (cabalBuildType, cabalVersion, parseCabalComponents, parseCabalComponentsForGhc)
-import Zinc.Env (envCacheKey, nixPrintDevEnv, provisionEnv)
+import Zinc.Env (devEnvVars, envCacheKey, nixPrintDevEnv, provisionEnv, toolchainPath, toolchainVars)
 import Zinc.Macros (emitCabalMacros)
 import Zinc.Nix (generateFlake)
 import Zinc.Orchestrate (buildAndRun, lockDrift, orderMembers, parMapBounded, resolveTarget, runBuild, runBuildMember, runClean, runTests, runWarm)
@@ -1422,6 +1422,27 @@ main = hspec $ do
 
     it "works with no system libraries" $
       ("haskell.compiler.ghc965" `isInfixOf` generateFlake "9.6.5" []) `shouldBe` True
+
+  describe "toolchain env provisioning (y03)" $ do
+    let sampleJson =
+          "{\"bashFunctions\":{\"f\":\"...\"},\"variables\":{"
+            ++ "\"PATH\":{\"type\":\"exported\",\"value\":\"/nix/x/bin\"},"
+            ++ "\"HOME\":{\"type\":\"exported\",\"value\":\"/homeless-shelter\"},"
+            ++ "\"HOSTTYPE\":{\"type\":\"var\",\"value\":\"x86_64\"},"
+            ++ "\"PKG_CONFIG_PATH\":{\"type\":\"exported\",\"value\":\"/nix/pc\"}}}"
+
+    it "extracts exported vars from `nix print-dev-env --json` (not type:var / functions)" $ do
+      let vs = devEnvVars sampleJson
+      lookup "PATH" vs `shouldBe` Just "/nix/x/bin"
+      lookup "PKG_CONFIG_PATH" vs `shouldBe` Just "/nix/pc"
+      lookup "HOSTTYPE" vs `shouldBe` Nothing
+
+    it "prepends the dev PATH to the ambient one (toolchain wins, user tools kept)" $
+      toolchainPath [("PATH", "/nix/x/bin")] "/usr/bin:/bin" `shouldBe` Just "/nix/x/bin:/usr/bin:/bin"
+
+    it "applies only a build whitelist — never sandbox vars like HOME" $ do
+      ("HOME" `elem` toolchainVars) `shouldBe` False
+      ("PKG_CONFIG_PATH" `elem` toolchainVars) `shouldBe` True
 
   describe "dev env provisioning" $ do
     it "key is order-independent for system libs" $

@@ -1,6 +1,7 @@
 module Main (main) where
 
-import Control.Monad (unless)
+import Control.Monad (unless, when)
+import System.IO.Error (catchIOError)
 import Data.List (intercalate)
 import System.Environment (getArgs)
 import System.Exit (ExitCode (ExitFailure), exitWith)
@@ -12,7 +13,10 @@ import Zinc.Closure (closureReportJson, renderClosure, runClosure)
 import Zinc.Diagnostic (ZincError, envelope, exitCodeFor, humanError, toDiagnostic, zincVersion, zincVersionLine)
 import Zinc.Delta (deltaJson, renderDelta)
 import Zinc.Docker (runDockerfile)
+import Zinc.Env (provisionToolchain)
 import Zinc.Git (gitInitIfNeeded)
+import Zinc.Manifest (parseWorkspace, wsGhc)
+import Zinc.Store (resolveStoreRoot)
 import Zinc.Doctor (doctorJson, doctorOk, renderDoctor, runDoctor)
 import Zinc.Fmt (runFmt)
 import Zinc.GC (runGc)
@@ -34,7 +38,33 @@ main = do
   args <- getArgs
   case parseArgs args of
     Left err          -> putStrLn err
-    Right (flags, cmd) -> resolveMode flags >>= \mode -> dispatch mode cmd
+    Right (flags, cmd) -> do
+      mode <- resolveMode flags
+      when (buildsToolchain cmd) provisionToolchainHere
+      dispatch mode cmd
+
+-- | Commands that shell out to the toolchain (ghc/ghc-pkg/ar/preprocessors) and
+-- therefore want it provisioned (zinc-y03).
+buildsToolchain :: Command -> Bool
+buildsToolchain c = case c of
+  Build _   -> True
+  Run _ _   -> True
+  Test _    -> True
+  Repl _    -> True
+  Warm      -> True
+  _         -> False
+
+-- | Provision the current workspace's Nix toolchain into the process env so the
+-- build runs without a manual @nix develop@ (zinc-y03). No-op when @ghc@ is
+-- already present; best-effort otherwise. ghc comes from the manifest;
+-- system-libs are a follow-up (the common case + self-host use none).
+provisionToolchainHere :: IO ()
+provisionToolchainHere = do
+  storeRoot <- resolveStoreRoot
+  manifest <- readFile "zinc.toml" `catchIOError` const (pure "")
+  let ghc = either (const "9.6.5") wsGhc (parseWorkspace manifest)
+      cacheRoot = storeRoot ++ "/devenv"
+  provisionToolchain cacheRoot (cacheRoot ++ "/flake") ghc []
 
 -- | True in @--json@ machine mode.
 machine :: OutputMode -> Bool
