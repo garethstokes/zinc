@@ -35,6 +35,7 @@ data Command
   | Help                   -- ^ the friendly no-args / `help` / `--help` overview
   | Outdated Bool          -- ^ report deps with newer versions; Bool = --all (whole closure)
   | CachePush              -- ^ `cache push`: publish closure artifacts to the remote cache
+  | Package String (Maybe String) (Maybe String) -- ^ `package <format>`: format, --tag, -o
   deriving (Eq, Show)
 
 -- | Pure, testable entry point: parse argv into the output flags + a 'Command'.
@@ -86,6 +87,7 @@ commandParser =
       , sub "fmt"    "Canonically format zinc.toml" (Fmt <$> switch (long "check" <> help "Exit non-zero if not already canonical; write nothing"))
       , sub "closure" "Discover a package's non-boot closure + repos" (Closure <$> strArgument (metavar "PKG"))
       , sub "version" "Print the zinc version" (pure Version)
+      , sub "package" "Build a deployable artifact (docker/static/bundle/nix)" (Package <$> strArgument (metavar "FORMAT") <*> optional (strOption (long "tag" <> metavar "TAG" <> help "Image tag (docker)")) <*> optional (strOption (long "output" <> short 'o' <> metavar "PATH" <> help "Write the artifact to PATH")))
       , sub "outdated" "Report dependencies with newer versions available" (Outdated <$> switch (long "all" <> help "Include the whole closure, not just direct dependencies"))
       , command "cache" (info (subparser (sub "push" "Publish built closure artifacts to the remote cache (ZINC_CACHE)" (pure CachePush)) <**> helper) (progDesc "Manage the remote artifact cache"))
       ]

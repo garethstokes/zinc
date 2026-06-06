@@ -39,6 +39,7 @@ import Zinc.Git (cloneAt, gitEnv, gitInitIfNeeded, isInsideRepo, listTags, split
 import Zinc.Hackage (hackageCabalUrl, hackageTarballUrl, sourceRepoOf)
 import Zinc.Outdated (OutdatedDep (..), Status (..), classify)
 import Zinc.Quirks (quirkGhcOptions)
+import Zinc.Package (PackageFormat (..), formatName, packagingFlake, parsePackageFormat)
 import Zinc.Delta (Change (..), ClosureDelta (..), closureDelta, isEmptyDelta)
 import Zinc.CacheBackend (CacheBackend (..), CacheConfig (..), PullOutcome (..), artifactUrl, curlOutcome, httpBackend, parseCacheTable, resolveCacheConfig)
 import Zinc.Store (contentHash, resolveStoreRoot, storeSrcPath, verifyContent, withStoreLock)
@@ -1414,6 +1415,23 @@ main = hspec $ do
       unsetEnv "ZINC_CACHE"
       (ccReadUrls fromTable, ccReadUrls fromEnv, ccWriteUrl fromEnv)
         `shouldBe` (["https://file/z"], ["https://env/z"], Just "https://env/z")
+
+  describe "Zinc.Package (7m6.1)" $ do
+    it "parses the deploy formats and rejects unknown ones" $ do
+      map parsePackageFormat ["docker", "static", "bundle", "nix"]
+        `shouldBe` map Right [Docker, Static, Bundle, NixClosure]
+      parsePackageFormat "rpm" `shouldSatisfy` isLeft
+      map formatName [Docker, Static, Bundle, NixClosure] `shouldBe` ["docker", "static", "bundle", "nix"]
+
+    it "parses the `package <format>` verb with --tag and -o" $ do
+      parseArgs ["package", "docker"] `shouldBe` Right (OutputFlags False False, Package "docker" Nothing Nothing)
+      parseArgs ["package", "docker", "--tag", "app:1.0"] `shouldBe` Right (OutputFlags False False, Package "docker" (Just "app:1.0") Nothing)
+      parseArgs ["package", "nix", "-o", "./dist"] `shouldBe` Right (OutputFlags False False, Package "nix" Nothing (Just "./dist"))
+
+    it "generates a packaging flake whose packages.default wraps the built binary" $ do
+      let fl = packagingFlake "myapp"
+      all (`isInfixOf` fl) ["packages = forAll", "default = app", "install -Dm755 ${./myapp}", "apps = forAll", "description = \"zinc package: myapp\""]
+        `shouldBe` True
 
   describe "build quirks table (8uh)" $ do
     it "applies -XSafe to colour automatically (no manifest escape hatch)" $

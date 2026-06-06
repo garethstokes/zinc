@@ -21,6 +21,7 @@ module Zinc.Orchestrate
   , runRepl
   , runClean
   , runCachePush
+  , runPackage
   , parMapBounded
   ) where
 
@@ -29,13 +30,13 @@ import GHC.Clock (getMonotonicTime)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.QSem (newQSem, signalQSem, waitQSem)
 import Control.Exception (SomeException, finally, try)
-import Control.Monad (forM, when)
+import Control.Monad (forM, forM_, when)
 import Data.Bifunctor (first)
 import Data.Char (isHexDigit)
 import Data.List (stripPrefix)
 import qualified Data.Map as Map
 import Data.Maybe (catMaybes, fromMaybe, isNothing, mapMaybe)
-import System.Directory (doesDirectoryExist, doesFileExist, findExecutable, listDirectory, makeAbsolute, removeDirectoryRecursive)
+import System.Directory (copyFile, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, findExecutable, listDirectory, makeAbsolute, removeDirectoryRecursive)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeExtension, takeFileName, (</>))
 import System.Process (callProcess, readProcess, readProcessWithExitCode)
@@ -59,7 +60,8 @@ import Zinc.Manifest
   , parseWorkspace
   , depGhcOptionsOf
   )
-import Zinc.Diagnostic (ZincError (AmbiguousTarget, ContentHashMismatch, ManifestParse, NoZincToml, OtherError, ToolchainMissing))
+import Zinc.Diagnostic (ZincError (AmbiguousTarget, ContentHashMismatch, ManifestParse, NixAbsent, NoZincToml, OtherError, ToolchainMissing))
+import Zinc.Package (PackageFormat (..), formatName, packagingFlake)
 import Zinc.Except (Result, failWith, failWithError, liftEither, liftEitherE, liftIO, orFail, orFailE, runResult)
 import Zinc.Output (OutputEvent (..), Sink, emit, nullSink)
 import Zinc.Report (BuildOutcome (..), PackageReport (..), PackageStatus (..), Timing (..), cacheStatsOf)
@@ -483,6 +485,46 @@ runCachePush wsDir = runResult $ do
       else do
         res <- liftIO (cbPush be key storeRoot)
         either (\e -> failWith ("cache push " ++ lockName l ++ ": " ++ e)) (const (pure (Just (lockName l)))) res
+
+-- | @zinc package \<format\>@ foundation (zinc-7m6.1): build the app, stage a
+-- packaging flake (its @packages.default@ wraps the built binary into a Nix
+-- store derivation), and emit the artifact. The @nix@ format is available now
+-- (the foundational closure); @docker@/@static@/@bundle@ extend the flake in
+-- 7m6.2/.3/.4. Nix is auto-provisioned (y03); a clear diagnostic when absent.
+runPackage :: PackageFormat -> Maybe String -> Maybe String -> FilePath -> IO (Either ZincError String)
+runPackage fmt _tag out wsDir = runResult $ do
+  haveNix <- liftIO (findExecutable "nix")
+  when (isNothing haveNix) (failWithError NixAbsent)
+  exe <- orFailE (resolveRunTarget wsDir Nothing) -- builds the app + resolves its executable
+  let name = takeFileName exe
+      pkgDir = wsDir </> ".zinc" </> "package"
+  liftIO $ do
+    stale <- doesDirectoryExist pkgDir
+    when stale (removeDirectoryRecursive pkgDir)
+    createDirectoryIfMissing True pkgDir
+    copyFile exe (pkgDir </> name)
+    writeFile (pkgDir </> "flake.nix") (packagingFlake name)
+    -- flakes only see tracked files; stage the binary + flake into a throwaway repo.
+    _ <- readProcessWithExitCode "git" ["-C", pkgDir, "init", "-q"] ""
+    _ <- readProcessWithExitCode "git" ["-C", pkgDir, "add", "."] ""
+    pure ()
+  case fmt of
+    NixClosure -> do
+      path <- orFail (nixBuildDefault pkgDir)
+      liftIO $ forM_ out $ \o -> readProcessWithExitCode "cp" ["-rfL", path, o] "" >> pure ()
+      pure ("Packaged " ++ name ++ " as a Nix closure: " ++ path ++ maybe "" (\o -> " (copied to " ++ o ++ ")") out)
+    _ ->
+      failWith (formatName fmt ++ ": this format is a follow-up (docker = 7m6.2, static = 7m6.3, bundle = 7m6.4); `zinc package nix` is available now")
+  where
+    nixBuildDefault dir = do
+      (code, o, e) <-
+        readProcessWithExitCode
+          "nix"
+          ["--extra-experimental-features", "nix-command flakes", "build", dir ++ "#default", "--no-link", "--print-out-paths"]
+          ""
+      pure $ case code of
+        ExitSuccess   -> Right (reverse (dropWhile (`elem` ("\n\r \t" :: String)) (reverse o)))
+        ExitFailure _ -> Left (if null e then "nix build failed" else e)
 
 -- | Direct dependencies declared in the manifest but absent from the lockfile
 -- — i.e. names that need (re-)resolving via @zinc add@. Empty means the lock

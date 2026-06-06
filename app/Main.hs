@@ -23,7 +23,8 @@ import Zinc.GC (runGc)
 import Zinc.Introspect (explainJson, graphJson, renderExplain, renderGraph, renderStatus, runExplain, runGraph, runStatus, statusJson)
 import Zinc.Json (Json (..), renderJson)
 import Zinc.Metrics (recordBuild)
-import Zinc.Orchestrate (checkLockDrift, resolveRunTarget, runBuildReport, runCachePush, runClean, runRepl, runTests, runWarm)
+import Zinc.Orchestrate (checkLockDrift, resolveRunTarget, runBuildReport, runCachePush, runClean, runPackage, runRepl, runTests, runWarm)
+import Zinc.Package (parsePackageFormat)
 import Zinc.Outdated (outdatedJson, renderOutdated, runOutdated)
 import Zinc.Output (OutputEvent (..), OutputMode (..), emit, resolveMode, withRenderer)
 import Zinc.Perf (perfSummaryJson, renderPerf, runPerf)
@@ -52,6 +53,7 @@ buildsToolchain c = case c of
   Test _    -> True
   Repl _    -> True
   Warm _    -> True
+  Package {} -> True
   _         -> False
 
 -- | A command's explicit @--ghc@ override, if any (build/warm carry it; ey4).
@@ -219,6 +221,10 @@ dispatch mode Version
   | machine mode = putStrLn (renderJson (envelope "version" True (Just (JObject [("version", JString zincVersion)])) Nothing []))
   | otherwise    = putStrLn zincVersionLine
 dispatch _ Help = putStr helpOverview
+dispatch mode (Package fmtStr tag out) =
+  case parsePackageFormat fmtStr of
+    Left err  -> hPutStrLn stderr err >> exitWith (ExitFailure 2)
+    Right fmt -> runPackage fmt tag out "." >>= either (failCmd mode) putStrLn
 dispatch mode CachePush =
   runCachePush "." >>= \r -> case r of
     Left e -> failCmd mode e
