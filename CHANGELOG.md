@@ -22,6 +22,16 @@ The first self-hosting, agent-first release.
 - Concurrency-safe shared store (per-key advisory lock) for parallel
   agents/worktrees.
 
+### WebAssembly targets
+
+- `zinc build --target wasm32-wasi` cross-compiles a pure-Haskell workspace to a
+  `<name>.wasm` command module, driving GHC's wasm cross-compiler (provisioned
+  via the `ghc-wasm-meta` flake). The compile target threads through the build
+  driver and keys the store per target, so native + wasm artifacts coexist;
+  native builds are byte-identical to before. A closure member that needs C
+  sources or system libraries fails fast with `ZINC_WASM_UNSUPPORTED` (the MVP
+  is pure-Haskell only).
+
 ### Agent-native DevEx
 
 - Machine-readable `--json` on every command: a `{ zinc, command, ok, data,

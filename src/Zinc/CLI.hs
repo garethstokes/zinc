@@ -13,7 +13,7 @@ data Command
   = New String Bool       -- ^ scaffold a new project; Bool = --workspace (multi-member layout)
   | Add String            -- ^ resolve a dependency closure and freeze it
   | Vendor [String]       -- ^ pin no-git deps from their Hackage tarballs
-  | Build (Maybe String) (Maybe String) -- ^ build the workspace/member; 2nd = --ghc override
+  | Build (Maybe String) (Maybe String) (Maybe String) -- ^ build the workspace/member; 2nd = --ghc override, 3rd = --target (native/wasm32-wasi, zinc-9po.3)
   | Run (Maybe String) [String] -- ^ build then run an executable: TARGET, then program ARGS
   | Repl (Maybe String)   -- ^ ghci for an optional target
   | Test (Maybe String)   -- ^ build and run tests for an optional target
@@ -109,10 +109,15 @@ commandParser =
     sub name desc p = command name (info (((,) <$> outputFlags <*> p) <**> helper) (progDesc desc))
     -- `build --deps-only` is a synonym for `warm` (build just the closure).
     buildCmd =
-      (\target depsOnly ghc -> if depsOnly then Warm ghc else Build target ghc)
+      (\member depsOnly ghc target -> if depsOnly then Warm ghc else Build member ghc target)
         <$> optional (strArgument (metavar "MEMBER"))
         <*> switch (long "deps-only" <> help "Build only the dependency closure (alias: zinc warm)")
         <*> ghcOption
+        <*> targetOption
+    -- The compile target (zinc-9po.3): native (default) or wasm32-wasi. Threaded
+    -- into the build driver + the provisioned toolchain; the store keys per target.
+    targetOption =
+      optional (strOption (long "target" <> metavar "TARGET" <> help "Compile target: native (default) or wasm32-wasi"))
     -- A per-build GHC override (ey4): build the whole workspace + closure against
     -- a specific GHC (provisioned via Nix, y03); the store keys on it.
     ghcOption =

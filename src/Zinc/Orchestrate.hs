@@ -43,9 +43,10 @@ import System.Directory (canonicalizePath, copyFile, createDirectoryIfMissing, d
 import System.Exit (ExitCode (..))
 import System.FilePath (takeExtension, takeFileName, (</>))
 import System.Process (callProcess, readProcess, readProcessWithExitCode)
-import Zinc.Build (LibBuild (..), MemberBuild (..), buildLib, buildLibArtifacts, buildMember, initPackageDb, installedVersions, isRegistered, registerPackage, replArgs)
+import Zinc.Build (LibBuild (..), MemberBuild (..), buildLibArtifactsFor, buildLibFor, buildMemberFor, initPackageDb, initPackageDbFor, installedVersionsFor, isRegistered, registerPackage, replArgs)
 import Zinc.Cabal (bootConflicts, cabalBuildType, cabalVersion, parseCabalComponentsForGhc)
-import Zinc.Cache (BuildKey (..), buildCacheKey, storeConfPath, storePkgPath)
+import Zinc.Cache (BuildKey (..), buildCacheKey, buildCacheKeyFor, storeConfPath, storePkgPath)
+import Zinc.Target (Target (Native))
 import Zinc.CacheBackend (CacheBackend (cbPull, cbPush), CacheConfig (ccReadUrls, ccWriteUrl), PullOutcome (Pulled), httpBackend, resolveCacheConfig)
 import Zinc.Quirks (quirkGhcOptions)
 import Zinc.Fetch (packageDirIn)
@@ -86,13 +87,13 @@ ensureToolchain = do
   when (isNothing ghc) (failWithError (ToolchainMissing "ghc"))
 
 buildWorkspace :: FilePath -> Maybe String -> (ComponentKind -> Bool) -> IO (Either ZincError [FilePath])
-buildWorkspace wsDir target keep = fmap (fmap (\(o, _, _) -> boExes o)) (buildWorkspaceReport nullSink wsDir target Nothing keep)
+buildWorkspace wsDir member keep = fmap (fmap (\(o, _, _) -> boExes o)) (buildWorkspaceReport nullSink Native wsDir member Nothing keep)
 
 -- | As 'buildWorkspace', but also returns the per-package closure report (spec
 -- §3.2) and per-phase wall-clock timings (perf spec §2) for the structured
 -- @--json@ surface. 'buildWorkspace' is the thin exes-only projection.
-buildWorkspaceReport :: Sink -> FilePath -> Maybe String -> Maybe String -> (ComponentKind -> Bool) -> IO (Either ZincError (BuildOutcome, [(String, Int)], [(String, Int)]))
-buildWorkspaceReport sink wsDir target ghcOverride keep = runResult $ do
+buildWorkspaceReport :: Sink -> Target -> FilePath -> Maybe String -> Maybe String -> (ComponentKind -> Bool) -> IO (Either ZincError (BuildOutcome, [(String, Int)], [(String, Int)]))
+buildWorkspaceReport sink target wsDir member ghcOverride keep = runResult $ do
   ensureToolchain
   let wsFile = wsDir </> "zinc.toml"
   present <- liftIO (doesFileExist wsFile)
@@ -108,7 +109,7 @@ buildWorkspaceReport sink wsDir target ghcOverride keep = runResult $ do
   -- Keep the package db across builds (inner-loop incrementality): registration
   -- is idempotent (ghc-pkg register --force) and the closure builder skips deps
   -- already registered at their current key-addressed pkg dir.
-  orFail (initPackageDb wsDb)
+  orFail (initPackageDbFor target wsDb)
   storeRoot <- liftIO resolveStoreRoot
   -- Coarse phases (perf spec §2): the dependency-closure build (fetch + compile
   -- + register of deps) and the workspace-member build (compile + link). Finer
@@ -116,7 +117,7 @@ buildWorkspaceReport sink wsDir target ghcOverride keep = runResult $ do
   -- Shared accumulator for the finer cumulative per-phase breakdown (nti.3),
   -- written from the parallel closure builds and the member builds alike.
   acc <- liftIO (newIORef Map.empty)
-  (pkgs, closureMs) <- timed (orFailE (buildClosure sink wsDir storeRoot wsDb effectiveGhc (depGhcOptionsOf ws) (Just acc)))
+  (pkgs, closureMs) <- timed (orFailE (buildClosure sink target wsDir storeRoot wsDb effectiveGhc (depGhcOptionsOf ws) (Just acc)))
   (exes, memberMs) <- timed (concat <$> traverse (buildMemberAll (Just acc) wsDb) (orderMembers members))
   breakdownMap <- liftIO (readIORef acc)
   -- Present in build order, only the phases that actually ran.
@@ -145,14 +146,14 @@ buildWorkspaceReport sink wsDir target ghcOverride keep = runResult $ do
           -- rejects relative paths, and (with the db now persisted) a relative
           -- entry can't be cleanly re-registered across builds.
           libDir <- liftIO (makeAbsolute (dir </> ".zinc" </> "lib"))
-          orFailE (accuminto acc "compile" (buildLib (LibBuild dir libDir wsDb (pkgName mem) (pkgVersion mem) lib)))
-      exes <- traverse (\comp -> orFailE (accuminto acc "link" (buildMember (MemberBuild dir (dir </> ".zinc" </> "build") (Just wsDb) comp)))) (wanted mem)
+          orFailE (accuminto acc "compile" (buildLibFor target (LibBuild dir libDir wsDb (pkgName mem) (pkgVersion mem) lib)))
+      exes <- traverse (\comp -> orFailE (accuminto acc "link" (buildMemberFor target (MemberBuild dir (dir </> ".zinc" </> "build") (Just wsDb) comp)))) (wanted mem)
       t1 <- liftIO getMonotonicTime
       liftIO (emit sink (CompileDone (pkgName mem) (round ((t1 - t0) * 1000) :: Int) False))
       pure exes
 
     wanted mem
-      | maybe True (== pkgName mem) target = filter (keep . compKind) (pkgComponents mem)
+      | maybe True (== pkgName mem) member = filter (keep . compKind) (pkgComponents mem)
       | otherwise = []
 
 -- | @zinc build@: build every member's executables (libraries first).
@@ -179,15 +180,15 @@ runWarm sink wsDir ghcOverride = runResult $ do
   let wsDb = wsDir </> ".zinc" </> "pkgdb"
   orFail (initPackageDb wsDb)
   storeRoot <- liftIO resolveStoreRoot
-  orFailE (buildClosure sink wsDir storeRoot wsDb (fromMaybe (wsGhc ws) ghcOverride) (depGhcOptionsOf ws) Nothing)
+  orFailE (buildClosure sink Native wsDir storeRoot wsDb (fromMaybe (wsGhc ws) ghcOverride) (depGhcOptionsOf ws) Nothing)
 
 -- | @zinc build [member] --json@: build, returning the structured outcome
 -- (executables + per-package closure report) and the 'Timing' block (total
 -- wall-clock, per-phase durations, cache stats) for the machine surface.
-runBuildReport :: Sink -> FilePath -> Maybe String -> Maybe String -> IO (Either ZincError (BuildOutcome, Timing))
-runBuildReport sink wsDir target ghcOverride = do
+runBuildReport :: Sink -> Target -> FilePath -> Maybe String -> Maybe String -> IO (Either ZincError (BuildOutcome, Timing))
+runBuildReport sink target wsDir member ghcOverride = do
   t0 <- getMonotonicTime
-  r <- buildWorkspaceReport sink wsDir target ghcOverride (== Executable)
+  r <- buildWorkspaceReport sink target wsDir member ghcOverride (== Executable)
   t1 <- getMonotonicTime
   let totalMs = round ((t1 - t0) * 1000) :: Int
   pure $ fmap (\(o, phases, breakdown) -> (o, Timing totalMs phases breakdown (cacheStatsOf (boPackages o)))) r
@@ -309,8 +310,8 @@ parMapBounded n f xs = do
 -- its library compiled + registered. (Compiling arbitrary upstream packages
 -- with Setup.hs / Template Haskell / deep closures is a further follow-up;
 -- this handles zinc-native git library deps.)
-buildClosure :: Sink -> FilePath -> FilePath -> FilePath -> String -> [(String, [String])] -> Maybe (IORef (Map.Map String Int)) -> IO (Either ZincError [PackageReport])
-buildClosure sink wsDir storeRoot wsDb ghcVersion buildOpts mAcc = runResult $ do
+buildClosure :: Sink -> Target -> FilePath -> FilePath -> FilePath -> String -> [(String, [String])] -> Maybe (IORef (Map.Map String Int)) -> IO (Either ZincError [PackageReport])
+buildClosure sink target wsDir storeRoot wsDb ghcVersion buildOpts mAcc = runResult $ do
   let lockFile = wsDir </> "zinc.lock"
   present <- liftIO (doesFileExist lockFile)
   if not present
@@ -348,7 +349,7 @@ buildClosure sink wsDir storeRoot wsDb ghcVersion buildOpts mAcc = runResult $ d
     -- Content-addressed cache key from data available without the source, so a
     -- cached build is reused without even fetching. Includes the dep's
     -- [build-options] override so changing an override invalidates the cache.
-    cacheKeyOf l = buildCacheKey (BuildKey (lockName l) (lockRev l) ghcVersion (lockDepends l) (overrideFor l))
+    cacheKeyOf l = buildCacheKeyFor target (BuildKey (lockName l) (lockRev l) ghcVersion (lockDepends l) (overrideFor l))
 
     -- A dep's effective ghc-option override: the built-in quirk for the package
     -- (zinc-8uh) PLUS any workspace [build-options]. The quirk leads so a known
@@ -460,7 +461,7 @@ buildClosure sink wsDir storeRoot wsDb ghcVersion buildOpts mAcc = runResult $ d
           -- e.g. -XSafe) from the workspace [build-options].
           let lib' = lib {compGhcOptions = compGhcOptions lib ++ overrideFor l}
           liftIO (emit sink (CompileStart (lockName l)))
-          (conf, _) <- orFailE (accuminto mAcc "compile" (buildLibArtifacts (LibBuild pkgDir pkgOut wsDb (lockName l) version lib')))
+          (conf, _) <- orFailE (accuminto mAcc "compile" (buildLibArtifactsFor target (LibBuild pkgDir pkgOut wsDb (lockName l) version lib')))
           pure (report Built, Just (lockName l, pkgOut, conf))
 
     -- sib: for a cabal-based dep, fail with a typed ZINC_DEP_BOOT_CONFLICT if its
@@ -474,7 +475,7 @@ buildClosure sink wsDir storeRoot wsDb ghcVersion buildOpts mAcc = runResult $ d
         []          -> pure (Right ())
         (cabal : _) -> do
           src <- readFile (pkgDir </> cabal)
-          installed <- installedVersions
+          installed <- installedVersionsFor target
           case bootConflicts isBootLib installed ghcVersion src of
             Right ((bootLib, range, ver) : _) -> do
               suggested <- probeHeadFix l installed

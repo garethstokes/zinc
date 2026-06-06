@@ -7,19 +7,26 @@ module Zinc.Build
   , renderConf
   , archiveArgs
   , registerPackage
+  , registerPackageFor
   , isRegistered
   , preprocessorFor
   , runPreprocessor
   , MemberBuild (..)
   , buildMember
+  , buildMemberFor
+  , wasmSupported
   , replArgs
   , LibBuild (..)
   , buildLib
+  , buildLibFor
   , buildLibArtifacts
+  , buildLibArtifactsFor
   , writeFileIfChanged
   , discoverModules
   , initPackageDb
+  , initPackageDbFor
   , installedVersions
+  , installedVersionsFor
   ) where
 
 import Data.Maybe (fromMaybe, isJust)
@@ -30,12 +37,13 @@ import System.Exit (ExitCode (..))
 import System.FilePath (dropExtension, makeRelative, takeDirectory, takeExtension, (-<.>), (<.>), (</>))
 import System.IO (readFile')
 import System.Process (readProcessWithExitCode)
-import Zinc.Diagnostic (ZincError (GhcCompile))
+import Zinc.Diagnostic (ZincError (GhcCompile, WasmUnsupported))
 import Zinc.Except (liftIO, orFail, orFailE, runResult)
 import Zinc.Macros (emitCabalMacros)
 import Zinc.Manifest (Component (..))
 import Zinc.Paths (pathsModuleName, synthesizePaths)
 import Zinc.Resolve (isBootLib)
+import Zinc.Target (Target (Native), ghcFor, ghcPkgFor, hsc2hsFor, isWasm)
 
 -- | Everything needed to compile one component with @ghc --make@.
 data GhcInvocation = GhcInvocation
@@ -103,8 +111,13 @@ archiveArgs libDir unitId objs =
 -- needed). Uses @--force@ so a freshly-built package registers even before
 -- ghc-pkg can re-validate every path.
 registerPackage :: FilePath -> String -> IO (Either String ())
-registerPackage db confText = do
-  initResult <- initPackageDb db
+registerPackage = registerPackageFor Native
+
+-- | As 'registerPackage', for an explicit 'Target' (zinc-9po.3): uses the
+-- target's @ghc-pkg@ (e.g. @wasm32-wasi-ghc-pkg@). Native is byte-identical.
+registerPackageFor :: Target -> FilePath -> String -> IO (Either String ())
+registerPackageFor target db confText = do
+  initResult <- initPackageDbFor target db
   case initResult of
     Left err -> pure (Left err)
     Right () -> do
@@ -115,15 +128,20 @@ registerPackage db confText = do
       -- (inner-loop incrementality) is a clean overwrite: ghc-pkg register
       -- --force is unreliable at replacing a package that has dependencies.
       -- Ignore failure (the package may not be registered yet).
-      _ <- readProcessWithExitCode "ghc-pkg" ["--package-db", db, "unregister", "--force", pkgId] ""
-      runUnit "ghc-pkg" ["--package-db", db, "register", "--force", confFile]
+      _ <- readProcessWithExitCode (ghcPkgFor target) ["--package-db", db, "unregister", "--force", pkgId] ""
+      runUnit (ghcPkgFor target) ["--package-db", db, "register", "--force", confFile]
 
 -- | Create an empty package db (no-op if it already exists).
 initPackageDb :: FilePath -> IO (Either String ())
-initPackageDb db = do
+initPackageDb = initPackageDbFor Native
+
+-- | As 'initPackageDb', for an explicit 'Target': the db is created by the
+-- target's @ghc-pkg@ so its package.cache matches that compiler (zinc-9po.3).
+initPackageDbFor :: Target -> FilePath -> IO (Either String ())
+initPackageDbFor target db = do
   createDirectoryIfMissing True (takeDirectory db)
   exists <- doesDirectoryExist db
-  if exists then pure (Right ()) else runUnit "ghc-pkg" ["init", db]
+  if exists then pure (Right ()) else runUnit (ghcPkgFor target) ["init", db]
 
 runUnit :: String -> [String] -> IO (Either String ())
 runUnit cmd args = do
@@ -136,8 +154,13 @@ runUnit cmd args = do
 -- 'GhcCompile' carrying GHC's RAW stderr (no @ghc:@ prefix) so the diagnostic
 -- renderer can parse a file:line:col location and draw a caret (hw6.5).
 runGhc :: String -> [String] -> IO (Either ZincError ())
-runGhc pkg args = do
-  (code, _out, err) <- readProcessWithExitCode "ghc" args ""
+runGhc = runGhcFor Native
+
+-- | As 'runGhc', for an explicit 'Target': invokes the target's @ghc@
+-- (e.g. @wasm32-wasi-ghc@). Native is byte-identical (zinc-9po.3).
+runGhcFor :: Target -> String -> [String] -> IO (Either ZincError ())
+runGhcFor target pkg args = do
+  (code, _out, err) <- readProcessWithExitCode (ghcFor target) args ""
   pure $ case code of
     ExitSuccess   -> Right ()
     ExitFailure _ -> Left (GhcCompile pkg err)
@@ -147,15 +170,15 @@ runGhc pkg args = do
 -- package's @include-dirs@ on the C search path. A separate @ghc -c@ step, so
 -- the objects land in the dist dir and get archived into the library — see the
 -- call site for why @ghc --make@ cannot place them there (zinc-i98).
-compileCSources :: LibBuild -> Component -> IO (Either ZincError ())
-compileCSources lb comp = runResult (mapM_ one (compCSources comp))
+compileCSources :: Target -> LibBuild -> Component -> IO (Either ZincError ())
+compileCSources target lb comp = runResult (mapM_ one (compCSources comp))
   where
     incs = ["-I" ++ (lbMemberDir lb </> d) | d <- compIncludeDirs comp]
     one c = do
       let src = lbMemberDir lb </> c
           obj = lbDistDir lb </> (c -<.> "o")
       liftIO (createDirectoryIfMissing True (takeDirectory obj))
-      orFailE (runGhc (lbName lb) (["-c", src, "-o", obj] ++ incs))
+      orFailE (runGhcFor target (lbName lb) (["-c", src, "-o", obj] ++ incs))
 
 -- | The preprocessor command for a source @file@ writing its generated @.hs@ to
 -- @out@ (alex/happy/hsc2hs), or 'Nothing' for a plain @.hs@.
@@ -205,11 +228,19 @@ packageFlags deps = concatMap flag (nub ("base" : deps))
 -- executable path. Isolation via @-hide-all-packages@ + explicit @-package@
 -- (base is always available).
 buildMember :: MemberBuild -> IO (Either ZincError FilePath)
-buildMember mb = do
-  createDirectoryIfMissing True (mbBuildDir mb)
+buildMember = buildMemberFor Native
+
+-- | As 'buildMember', for an explicit 'Target' (zinc-9po.3). For @wasm32-wasi@:
+-- the output is a @\<name\>.wasm@ command module, the compiler is the wasm
+-- cross-@ghc@, and a member needing C sources / system-libs is rejected up front
+-- with 'WasmUnsupported' (the MVP is pure-Haskell only). Native is byte-identical.
+buildMemberFor :: Target -> MemberBuild -> IO (Either ZincError FilePath)
+buildMemberFor target mb = runResult $ do
   let comp = mbComponent mb
-      srcDirs = if null (compSourceDirs comp) then ["."] else compSourceDirs comp
-      exe = mbBuildDir mb </> compName comp
+  orFailE (pure (wasmSupported target comp))
+  liftIO (createDirectoryIfMissing True (mbBuildDir mb))
+  let srcDirs = if null (compSourceDirs comp) then ["."] else compSourceDirs comp
+      exe = mbBuildDir mb </> compName comp ++ (if isWasm target then ".wasm" else "")
       mainFile = mbMemberDir mb </> head srcDirs </> maybe "Main.hs" id (compMain comp)
       args =
         ["--make", "-j"]
@@ -220,8 +251,20 @@ buildMember mb = do
           ++ map ("-X" ++) (compExtensions comp)
           ++ compGhcOptions comp
           ++ ["-outputdir", mbBuildDir mb, mainFile, "-o", exe]
-  result <- runGhc (compName comp) args
-  pure (fmap (const exe) result)
+  orFailE (runGhcFor target (compName comp) args)
+  pure exe
+
+-- | Reject a component that cannot build for a wasm target: the wasm32-wasi MVP
+-- is pure-Haskell only, so C sources (cabal @c-sources@) or system libraries
+-- (@extra-libraries@) are an up-front 'WasmUnsupported' rather than a cryptic
+-- link failure (zinc-9po.3 / spec §5). Native always passes.
+wasmSupported :: Target -> Component -> Either ZincError ()
+wasmSupported target comp
+  | isWasm target, not (null (compCSources comp)) =
+      Left (WasmUnsupported (compName comp) "has C sources (cabal c-sources); wasm32-wasi builds pure-Haskell closures only")
+  | isWasm target, not (null (compSystemLibs comp)) =
+      Left (WasmUnsupported (compName comp) "needs system libraries (extra-libraries); wasm32-wasi builds pure-Haskell closures only")
+  | otherwise = Right ()
 
 -- | Inputs to build a member's library so siblings can link against it.
 data LibBuild = LibBuild
@@ -236,12 +279,17 @@ data LibBuild = LibBuild
 -- | Compile a library component, archive it, and register it into the
 -- workspace package db so sibling members can @-package@ it.
 buildLib :: LibBuild -> IO (Either ZincError ())
-buildLib lb = runResult $ do
-  (conf, confChanged) <- orFailE (buildLibArtifacts lb)
+buildLib = buildLibFor Native
+
+-- | As 'buildLib', for an explicit 'Target' (zinc-9po.3): artifacts + registration
+-- go through the target's toolchain. Native is byte-identical.
+buildLibFor :: Target -> LibBuild -> IO (Either ZincError ())
+buildLibFor target lb = runResult $ do
+  (conf, confChanged) <- orFailE (buildLibArtifactsFor target lb)
   -- Skip re-registration on a persisted db when the conf is unchanged and the
   -- lib is already registered at this dir (inner-loop incrementality).
-  reg <- liftIO (isRegistered (lbPackageDb lb) (lbName lb) (lbDistDir lb))
-  when (confChanged || not reg) (orFail (registerPackage (lbPackageDb lb) conf))
+  reg <- liftIO (isRegisteredFor target (lbPackageDb lb) (lbName lb) (lbDistDir lb))
+  when (confChanged || not reg) (orFail (registerPackageFor target (lbPackageDb lb) conf))
 
 -- | Compile and archive a library and persist its @package.conf@ into the
 -- store, returning the conf text — but /without/ registering it into the
@@ -249,7 +297,14 @@ buildLib lb = runResult $ do
 -- be compiled concurrently and then registered serially (ghc-pkg register on a
 -- shared db is not concurrency-safe).
 buildLibArtifacts :: LibBuild -> IO (Either ZincError (String, Bool))
-buildLibArtifacts lb = runResult $ do
+buildLibArtifacts = buildLibArtifactsFor Native
+
+-- | As 'buildLibArtifacts', for an explicit 'Target' (zinc-9po.3): compiles +
+-- archives with the target's toolchain. A wasm target rejects a C-source /
+-- system-lib library up front ('WasmUnsupported'). Native is byte-identical.
+buildLibArtifactsFor :: Target -> LibBuild -> IO (Either ZincError (String, Bool))
+buildLibArtifactsFor target lb = runResult $ do
+  orFailE (pure (wasmSupported target (lbComponent lb)))
   liftIO $ createDirectoryIfMissing True (lbDistDir lb)
   -- Synthesize the Cabal-autogen files (Paths_<pkg>, cabal_macros.h) into a
   -- generated-source dir so the package's own modules can import/use them.
@@ -266,7 +321,7 @@ buildLibArtifacts lb = runResult $ do
       pathsMod = pathsModuleName (lbName lb)
       macrosHeader = gen </> "cabal_macros.h"
   _ <- liftIO $ writeFileIfChanged (gen </> pathsMod <.> "hs") (synthesizePaths (lbName lb) (versionInts (lbVersion lb)))
-  installed <- liftIO installedVersions
+  installed <- liftIO (installedVersionsFor target)
   let depVersion d = fromMaybe [0] (lookup d installed)
       -- A direct dep's id for the conf's @depends@ (drives a dependent's
       -- linking): zinc-built deps by bare name (their unit-id); non-base boot
@@ -312,15 +367,15 @@ buildLibArtifacts lb = runResult $ do
   -- Generate sources from any .x/.y/.hsc the dep ships (e.g. toml-parser's
   -- alex/happy lexer+parser) so ghc --make finds the resulting .hs modules,
   -- then compile and archive. orFail short-circuits on the first failure.
-  orFail (runPreprocessorsTo ppGen (map (lbMemberDir lb </>) srcDirs))
-  orFailE (runGhc (lbName lb) compileArgs)
+  orFail (runPreprocessorsTo target ppGen (map (lbMemberDir lb </>) srcDirs))
+  orFailE (runGhcFor target (lbName lb) compileArgs)
   -- C sources (cabal c-sources, e.g. primitive's cbits/primitive-memops.c) are
   -- compiled in a SEPARATE `ghc -c` step into the dist dir, NOT via `ghc --make`:
   -- --make writes a C object next to its (absolute) source — outside -outputdir
   -- and into the content-addressed src tree — so findObjs would never archive it
   -- and a dependent linking the library hits "undefined reference" (zinc-i98:
   -- hsprimitive_memset_*, splitmix_init). Built with the package's include-dirs.
-  orFailE (compileCSources lb comp)
+  orFailE (compileCSources target lb comp)
   objs <- liftIO (findObjs (lbDistDir lb))
   -- Re-archive only when an object is newer than the archive: ghc --make keeps
   -- objects incremental, so an unchanged lib's .a (and the exe linking it)
@@ -395,8 +450,12 @@ writeFileIfChanged path content = do
 -- to decide whether a (sibling) lib still needs (re-)registering on a persisted
 -- db. A changed rev yields a different pkg dir, so this re-registers correctly.
 isRegistered :: FilePath -> String -> FilePath -> IO Bool
-isRegistered db unitId pkgDir = do
-  (code, out, _) <- readProcessWithExitCode "ghc-pkg" ["--package-db", db, "field", unitId, "library-dirs"] ""
+isRegistered = isRegisteredFor Native
+
+-- | As 'isRegistered', querying the target's @ghc-pkg@ (zinc-9po.3).
+isRegisteredFor :: Target -> FilePath -> String -> FilePath -> IO Bool
+isRegisteredFor target db unitId pkgDir = do
+  (code, out, _) <- readProcessWithExitCode (ghcPkgFor target) ["--package-db", db, "field", unitId, "library-dirs"] ""
   pure (code == ExitSuccess && pkgDir `isInfixOf` out)
 
 -- | Does the archive need rebuilding — i.e. it is missing or some object is
@@ -447,8 +506,8 @@ preprocessableUnder root = do
 -- would change its hash and fail the lock's sha256 check on the next build
 -- (zinc-c3g). @genRoot@ must be on ghc's @-i@ search path so the generated
 -- modules are found. First failure wins.
-runPreprocessorsTo :: FilePath -> [FilePath] -> IO (Either String ())
-runPreprocessorsTo genRoot dirs = do
+runPreprocessorsTo :: Target -> FilePath -> [FilePath] -> IO (Either String ())
+runPreprocessorsTo target genRoot dirs = do
   pairs <- concat <$> mapM (\d -> map ((,) d) <$> preprocessableUnder d) dirs
   go pairs
   where
@@ -459,7 +518,10 @@ runPreprocessorsTo genRoot dirs = do
             Nothing -> go rest
             Just (prog, args) -> do
               createDirectoryIfMissing True (takeDirectory out)
-              runUnit prog args >>= either (pure . Left) (const (go rest))
+              -- alex/happy are host code generators (stay native); only hsc2hs
+              -- is the cross-prefixed tool for a wasm target (zinc-9po.3).
+              let prog' = if prog == "hsc2hs" then hsc2hsFor target else prog
+              runUnit prog' args >>= either (pure . Left) (const (go rest))
 
 -- | ghci argument list to load a component for @zinc repl@: the package db,
 -- isolation flags + exposed deps, source roots, and the targets to load (the
@@ -493,8 +555,13 @@ versionInts = map readInt . splitDots
 -- | Versions of packages currently visible to ghc-pkg (boot libs + already
 -- registered deps), for emitting correct MIN_VERSION_* CPP macros.
 installedVersions :: IO [(String, [Int])]
-installedVersions = do
-  (_, out, _) <- readProcessWithExitCode "ghc-pkg" ["list", "--simple-output"] ""
+installedVersions = installedVersionsFor Native
+
+-- | As 'installedVersions', for the target's @ghc-pkg@ (zinc-9po.3): a wasm
+-- build reads the wasm cross-compiler's boot-library versions.
+installedVersionsFor :: Target -> IO [(String, [Int])]
+installedVersionsFor target = do
+  (_, out, _) <- readProcessWithExitCode (ghcPkgFor target) ["list", "--simple-output"] ""
   pure [(name, versionInts ver) | pid <- words out, Just (name, ver) <- [splitNameVer pid]]
   where
     splitNameVer pid = case reverse (splitOnDash pid) of

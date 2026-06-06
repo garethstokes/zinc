@@ -15,7 +15,8 @@ import Zinc.Diagnostic (ZincError, envelope, exitCodeFor, humanError, toDiagnost
 import Zinc.Delta (deltaJson, renderDelta)
 import Zinc.Deploy (ProbeChecks (..), ResolvedDeploy (..), deployReadyJson, dhHost, resolveDeploy, runDeploy, runInit)
 import Zinc.Docker (runDockerfile)
-import Zinc.Env (provisionToolchain)
+import Zinc.Env (provisionToolchainFor)
+import Zinc.Target (Target (Native), parseTarget, targetTriple)
 import Zinc.Git (gitInitIfNeeded)
 import Zinc.Manifest (parseDeployTargets, parseWorkspace, wsGhc)
 import Zinc.Store (resolveStoreRoot)
@@ -45,14 +46,14 @@ main = do
     Left err          -> putStrLn err
     Right (flags, cmd) -> do
       mode <- resolveMode flags
-      when (buildsToolchain cmd) (provisionToolchainHere (ghcOverrideOf cmd))
+      when (buildsToolchain cmd) (provisionToolchainHere (targetOf cmd) (ghcOverrideOf cmd))
       dispatch mode cmd
 
 -- | Commands that shell out to the toolchain (ghc/ghc-pkg/ar/preprocessors) and
 -- therefore want it provisioned (zinc-y03).
 buildsToolchain :: Command -> Bool
 buildsToolchain c = case c of
-  Build _ _ -> True
+  Build {}  -> True
   Run _ _   -> True
   Test _    -> True
   Repl _    -> True
@@ -62,22 +63,32 @@ buildsToolchain c = case c of
 
 -- | A command's explicit @--ghc@ override, if any (build/warm carry it; ey4).
 ghcOverrideOf :: Command -> Maybe String
-ghcOverrideOf (Build _ g) = g
-ghcOverrideOf (Warm g)    = g
-ghcOverrideOf _           = Nothing
+ghcOverrideOf (Build _ g _) = g
+ghcOverrideOf (Warm g)      = g
+ghcOverrideOf _             = Nothing
+
+-- | A command's compile target (zinc-9po.3): the @--target@ on @build@, else
+-- 'Native'. An unparseable value falls back to 'Native' here (the build
+-- dispatch re-parses and reports the usage error), so provisioning still runs.
+targetOf :: Command -> Target
+targetOf (Build _ _ (Just t)) = either (const Native) id (parseTarget t)
+targetOf _                    = Native
 
 -- | Provision the current workspace's Nix toolchain into the process env so the
 -- build runs without a manual @nix develop@ (zinc-y03). No-op when the requested
 -- @ghc@ is already present; best-effort otherwise. The requested GHC is the
 -- @--ghc@ override (ey4) when given, else the manifest's; system-libs are a
 -- follow-up (the common case + self-host use none).
-provisionToolchainHere :: Maybe String -> IO ()
-provisionToolchainHere ghcOverride = do
+provisionToolchainHere :: Target -> Maybe String -> IO ()
+provisionToolchainHere target ghcOverride = do
   storeRoot <- resolveStoreRoot
   manifest <- readFile "zinc.toml" `catchIOError` const (pure "")
   let ghc = maybe (either (const "9.6.5") wsGhc (parseWorkspace manifest)) id ghcOverride
       cacheRoot = storeRoot ++ "/devenv"
-  provisionToolchain cacheRoot (cacheRoot ++ "/flake") ghc []
+      -- Target-suffixed flake dir so the native + wasm toolchains don't clobber
+      -- each other's flake/lock (zinc-9po.3).
+      flakeDir = cacheRoot ++ "/flake" ++ (if target == Native then "" else "-" ++ targetTriple target)
+  provisionToolchainFor target cacheRoot flakeDir ghc []
 
 -- | True in @--json@ machine mode.
 machine :: OutputMode -> Bool
@@ -131,36 +142,43 @@ dispatch mode (Add name) =
   addInWorkspace name >>= either (failCmd mode) putStr
 dispatch mode (Vendor pkgs) =
   vendorInWorkspace pkgs >>= either (failCmd mode) putStr
-dispatch mode (Build target ghcOverride) = do
-  -- Human path shows the lock-drift hint up front; the machine envelope stays
-  -- pure JSON. Both run the report-bearing build and persist a metrics record.
-  unless (machine mode) $ do
-    drift <- checkLockDrift "."
-    unless (null drift) $
-      putStrLn ("warning: zinc.lock is missing: " ++ intercalate ", " drift ++ " (run `zinc add`)")
-  -- The renderer owns stdout for the live event stream; the final summary /
-  -- envelope is emitted below, AFTER withRenderer drains and returns, so it
-  -- lands last and never races the renderer thread.
-  r <- withRenderer mode $ \sink -> do
-    res <- runBuildReport sink "." target ghcOverride
-    case res of
-      Right (_, timing) -> emit sink (Finished (buildSummaryLine False timing))
-      Left _            -> pure ()
-    pure res
-  case r of
-    Left e
-      | machine mode -> putStrLn (renderJson (envelope "build" False Nothing Nothing [toDiagnostic e])) >> exitWith (exitCodeFor e)
-      | otherwise    -> failCmd mode e
-    Right (outcome, timing) -> do
-      recordBuild "." "build" target timing [(prName p, ms) | p <- boPackages outcome, Just ms <- [prTimeMs p]]
-      if machine mode
-        then putStrLn (renderJson (envelope "build" True (Just (buildDataJson outcome)) (Just (timingJson timing)) []))
-        else do
-          -- hw6.3 spectacle: the speed + cache summary headline, then the
-          -- optional finer per-phase breakdown (nti.3), then the exes.
-          putStrLn (buildSummaryLine (humanColor mode) timing)
-          mapM_ putStrLn (maybeToList (buildBreakdownLine (humanColor mode) timing))
-          mapM_ (putStrLn . ("  " ++)) (boExes outcome)
+dispatch mode (Build member ghcOverride targetStr) =
+  -- Resolve the compile target (zinc-9po.3); an unknown --target is a usage
+  -- error (exit 2), like an unknown package format.
+  case maybe (Right Native) parseTarget targetStr of
+    Left err -> hPutStrLn stderr err >> exitWith (ExitFailure 2)
+    Right tgt -> buildWith tgt
+  where
+   buildWith tgt = do
+    -- Human path shows the lock-drift hint up front; the machine envelope stays
+    -- pure JSON. Both run the report-bearing build and persist a metrics record.
+    unless (machine mode) $ do
+      drift <- checkLockDrift "."
+      unless (null drift) $
+        putStrLn ("warning: zinc.lock is missing: " ++ intercalate ", " drift ++ " (run `zinc add`)")
+    -- The renderer owns stdout for the live event stream; the final summary /
+    -- envelope is emitted below, AFTER withRenderer drains and returns, so it
+    -- lands last and never races the renderer thread.
+    r <- withRenderer mode $ \sink -> do
+      res <- runBuildReport sink tgt "." member ghcOverride
+      case res of
+        Right (_, timing) -> emit sink (Finished (buildSummaryLine False timing))
+        Left _            -> pure ()
+      pure res
+    case r of
+      Left e
+        | machine mode -> putStrLn (renderJson (envelope "build" False Nothing Nothing [toDiagnostic e])) >> exitWith (exitCodeFor e)
+        | otherwise    -> failCmd mode e
+      Right (outcome, timing) -> do
+        recordBuild "." "build" member timing [(prName p, ms) | p <- boPackages outcome, Just ms <- [prTimeMs p]]
+        if machine mode
+          then putStrLn (renderJson (envelope "build" True (Just (buildDataJson outcome)) (Just (timingJson timing)) []))
+          else do
+            -- hw6.3 spectacle: the speed + cache summary headline, then the
+            -- optional finer per-phase breakdown (nti.3), then the exes.
+            putStrLn (buildSummaryLine (humanColor mode) timing)
+            mapM_ putStrLn (maybeToList (buildBreakdownLine (humanColor mode) timing))
+            mapM_ (putStrLn . ("  " ++)) (boExes outcome)
 dispatch mode (Run target args) =
   resolveRunTarget "." target >>= \r -> case r of
     Left e -> failCmd mode e

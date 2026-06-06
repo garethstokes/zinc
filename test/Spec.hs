@@ -84,7 +84,7 @@ import Zinc.Manifest
 import Zinc.Fetch (gitFetchManifest, isHpackOnly, namedCabal, packageDirIn)
 import Zinc.GC (GCRoot (..), gcStore, runGc)
 import Zinc.Add (enrichWithRepos, freezeClosure, lockEntry, runAdd, runUpdate, runVendor, splitNameVersion)
-import Zinc.Build (GhcInvocation (..), MemberBuild (..), PackageConf (..), archiveArgs, buildMember, ghcMakeArgs, installedVersions, preprocessorFor, registerPackage, renderConf, replArgs, runPreprocessor, writeFileIfChanged)
+import Zinc.Build (GhcInvocation (..), MemberBuild (..), PackageConf (..), archiveArgs, buildMember, ghcMakeArgs, installedVersions, preprocessorFor, registerPackage, renderConf, replArgs, runPreprocessor, wasmSupported, writeFileIfChanged)
 import Zinc.Cache (BuildKey (..), buildCacheKey, buildCacheKeyFor, cacheHit, storeConfPath, storePkgPath, writeCachedConf)
 import Zinc.Cabal (bootConflicts, cabalBuildType, cabalVersion, parseCabalComponents, parseCabalComponentsForGhc)
 import Zinc.Env (devEnvVars, envCacheKey, envCacheKeyFor, nixPrintDevEnv, provisionEnv, toolchainPath, toolchainVars)
@@ -755,18 +755,22 @@ main = hspec $ do
     setEnv "ZINC_STORE" testStoreDir
   describe "parseArgs" $ do
     it "parses the `build` subcommand" $
-      parseArgs ["build"] `shouldBe` Right (OutputFlags False False, Build Nothing Nothing)
+      parseArgs ["build"] `shouldBe` Right (OutputFlags False False, Build Nothing Nothing Nothing)
 
     it "parses `build <member>` with a target" $
-      parseArgs ["build", "mylib"] `shouldBe` Right (OutputFlags False False, Build (Just "mylib") Nothing)
+      parseArgs ["build", "mylib"] `shouldBe` Right (OutputFlags False False, Build (Just "mylib") Nothing Nothing)
 
     it "parses `build --json` (machine surface)" $ do
-      parseArgs ["build", "--json"] `shouldBe` Right (OutputFlags True False, Build Nothing Nothing)
-      parseArgs ["build", "mylib", "--json"] `shouldBe` Right (OutputFlags True False, Build (Just "mylib") Nothing)
+      parseArgs ["build", "--json"] `shouldBe` Right (OutputFlags True False, Build Nothing Nothing Nothing)
+      parseArgs ["build", "mylib", "--json"] `shouldBe` Right (OutputFlags True False, Build (Just "mylib") Nothing Nothing)
+
+    it "parses `build --target wasm32-wasi` (zinc-9po.3)" $ do
+      parseArgs ["build", "--target", "wasm32-wasi"] `shouldBe` Right (OutputFlags False False, Build Nothing Nothing (Just "wasm32-wasi"))
+      parseArgs ["build", "mylib", "--target", "native"] `shouldBe` Right (OutputFlags False False, Build (Just "mylib") Nothing (Just "native"))
 
     it "parses the `--ghc <version>` override on build and warm (ey4)" $ do
-      parseArgs ["build", "--ghc", "9.10"] `shouldBe` Right (OutputFlags False False, Build Nothing (Just "9.10"))
-      parseArgs ["build", "mylib", "--ghc", "9.8.2"] `shouldBe` Right (OutputFlags False False, Build (Just "mylib") (Just "9.8.2"))
+      parseArgs ["build", "--ghc", "9.10"] `shouldBe` Right (OutputFlags False False, Build Nothing (Just "9.10") Nothing)
+      parseArgs ["build", "mylib", "--ghc", "9.8.2"] `shouldBe` Right (OutputFlags False False, Build (Just "mylib") (Just "9.8.2") Nothing)
       parseArgs ["warm", "--ghc", "9.10"] `shouldBe` Right (OutputFlags False False, Warm (Just "9.10"))
       parseArgs ["build", "--deps-only", "--ghc", "9.10"] `shouldBe` Right (OutputFlags False False, Warm (Just "9.10"))
 
@@ -3322,6 +3326,32 @@ main = hspec $ do
         , "/nix/store/abc-app"
         ]
         `shouldBe` True
+
+  describe "Zinc.Build wasm support gate (9po.3)" $ do
+    let pureLib =
+          Component
+            { compKind = Library
+            , compName = "lib"
+            , compSourceDirs = ["src"]
+            , compModules = []
+            , compMain = Nothing
+            , compExtensions = []
+            , compGhcOptions = []
+            , compDepends = ["base"]
+            , compSystemLibs = []
+            , compIncludeDirs = []
+            , compCppOptions = []
+            , compCSources = []
+            }
+        code = either (Just . errorCode) (const Nothing)
+    it "passes a pure-Haskell component for both native and wasm" $
+      (code (wasmSupported Native pureLib), code (wasmSupported Wasm32Wasi pureLib)) `shouldBe` (Nothing, Nothing)
+    it "rejects C sources for wasm only (native unaffected)" $ do
+      let withC = pureLib {compCSources = ["cbits/x.c"]}
+      (code (wasmSupported Native withC), code (wasmSupported Wasm32Wasi withC))
+        `shouldBe` (Nothing, Just "ZINC_WASM_UNSUPPORTED")
+    it "rejects system libraries for wasm only" $
+      code (wasmSupported Wasm32Wasi (pureLib {compSystemLibs = ["zlib"]})) `shouldBe` Just "ZINC_WASM_UNSUPPORTED"
 
   describe "Zinc.Cabal.bootConflicts (sib)" $ do
     let isBoot = (`elem` ["transformers", "base"])

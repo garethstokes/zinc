@@ -67,6 +67,7 @@ data ZincError
   | NoZincToml String                 -- ^ directory
   | NoRepoInRegistry String String    -- ^ name, requiring parent
   | StaticUnsupported String          -- ^ binary name: fully-static (musl) packaging not supported for this toolchain
+  | WasmUnsupported String String     -- ^ package, reason: a closure member needs C sources / system-libs, unsupported for wasm32-wasi (zinc-9po.3)
   | DepBootConflict String String String String (Maybe String) -- ^ package, boot lib, declared range, toolchain version, suggested forward commit (HEAD-probe; stale tag vs toolchain, zinc-sib)
   | DeploySsh String String           -- ^ host, detail (SSH connect/auth failed)
   | DeployNoNix String                -- ^ host (no Nix daemon on the target)
@@ -178,6 +179,7 @@ errorCode e = case e of
   NoZincToml {}          -> "ZINC_NO_ZINC_TOML"
   NoRepoInRegistry {}    -> "ZINC_NO_REPO_IN_REGISTRY"
   StaticUnsupported {}   -> "ZINC_STATIC_UNSUPPORTED"
+  WasmUnsupported {}     -> "ZINC_WASM_UNSUPPORTED"
   DepBootConflict {}     -> "ZINC_DEP_BOOT_CONFLICT"
   DeploySsh {}           -> "ZINC_DEPLOY_SSH"
   DeployNoNix {}         -> "ZINC_DEPLOY_NO_NIX"
@@ -245,6 +247,9 @@ toDiagnostic e =
         , Just (bin ++ " is dynamically linked; zinc builds against the dynamic GHC, and fully-static (musl) re-linking of GHC binaries is not available")
         , Nothing, Nothing
         , Just "use `zinc package docker` (a self-contained image) or `zinc package bundle` (a portable single-file) — both carry the runtime closure without static linking" )
+      WasmUnsupported pkg reason ->
+        ( "package is not supported for the wasm32-wasi target", Just (pkg ++ ": " ++ reason), Nothing, Just pkg
+        , Just "the wasm32-wasi MVP builds pure-Haskell closures only — drop the dependency, or build it for the native target" )
       DepBootConflict pkg bootLib range toolchainVer suggested ->
         ( "dependency's tag conflicts with a toolchain boot library"
         , Just (pkg ++ " requires " ++ bootLib ++ " " ++ range ++ ", but the toolchain ships " ++ bootLib ++ " " ++ toolchainVer)
@@ -348,6 +353,7 @@ exitCodeFor e = ExitFailure $ case e of
   GhcCompile {}          -> 4
   BuildTypeCustom {}     -> 4
   StaticUnsupported {}   -> 4
+  WasmUnsupported {}     -> 4
   NixAbsent              -> 5
   ToolchainMissing {}    -> 5
   DeploySsh {}           -> 5
