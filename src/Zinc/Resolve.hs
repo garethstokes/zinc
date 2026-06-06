@@ -17,6 +17,7 @@ module Zinc.Resolve
 
 import Control.Monad (foldM)
 import Control.Monad.Trans.Except (ExceptT (ExceptT), runExceptT)
+import Data.Maybe (fromMaybe)
 import Zinc.Diagnostic (ZincError (NoRepoInRegistry, OtherError))
 import qualified Data.Map as Map
 import Data.Set (Set)
@@ -52,10 +53,11 @@ resolve
   => (String -> Bool)                                             -- ^ is this a GHC boot lib?
   -> (String -> String -> Ref -> m (Either ZincError DepManifest)) -- ^ fetch: name repo ref
   -> (String -> m (Maybe String))                                 -- ^ discover a repo (Hackage) when not in any registry
+  -> [(String, Ref)]                                              -- ^ SOFT pins: hold these names at a ref WITHOUT forcing inclusion (90j.3)
   -> [Dependency]                                                 -- ^ root @[dependencies]@
   -> [(String, String)]                                           -- ^ root @[registry]@
   -> m (Either ZincError [ResolvedDep])
-resolve isBoot fetch discoverRepo rootDeps rootReg = runExceptT $ do
+resolve isBoot fetch discoverRepo pins rootDeps rootReg = runExceptT $ do
   reqs <- ExceptT (resolveReqs rootReg "<workspace>" rootDeps)
   go Map.empty reqs
   where
@@ -69,15 +71,21 @@ resolve isBoot fetch discoverRepo rootDeps rootReg = runExceptT $ do
     -- also draws a blank is it a hard 'NoRepoInRegistry'.
     -- A vendored pin has no git repo to discover: its source is the Hackage
     -- tarball, fetched by name+version, so skip registry/Hackage lookup (b1z).
-    toReq reg parent d
-      | isVendored (depRef d) = pure (Right (Req (depName d) (depRef d) ""))
-      | otherwise = case lookup (depName d) (reg ++ rootReg) of
-          Just repo -> pure (Right (Req (depName d) (depRef d) repo))
-          Nothing -> do
-            mRepo <- discoverRepo (depName d)
-            pure $ case mRepo of
-              Just repo -> Right (Req (depName d) (depRef d) repo)
-              Nothing   -> Left (NoRepoInRegistry (depName d) parent)
+    -- A SOFT pin overrides a name's ref when it is walked, but never forces it
+    -- into the closure — so @update \<pkg\>@ holds every other dep at its locked
+    -- ref while letting deps the new \<pkg\> version drops fall out (90j.3).
+    toReq reg parent d =
+      let name = depName d
+          ref = fromMaybe (depRef d) (lookup name pins)
+       in if isVendored ref
+            then pure (Right (Req name ref ""))
+            else case lookup name (reg ++ rootReg) of
+              Just repo -> pure (Right (Req name ref repo))
+              Nothing -> do
+                mRepo <- discoverRepo name
+                pure $ case mRepo of
+                  Just repo -> Right (Req name ref repo)
+                  Nothing   -> Left (NoRepoInRegistry name parent)
 
     go seen [] = pure (Map.elems seen)
     go seen (Req name ref repo : rest)

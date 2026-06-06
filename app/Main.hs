@@ -129,8 +129,8 @@ dispatch mode (Test _) =
     Right n -> putStrLn (show n ++ " test suite(s) passed")
 dispatch mode (Repl _) =
   runRepl "." >>= either (failCmd mode) (const (pure ()))
-dispatch mode (Update _ dryRun) =
-  updateInWorkspace dryRun >>= emitIntrospection "update" mode deltaJson (renderDelta dryRun)
+dispatch mode (Update mpkg dryRun) =
+  updateInWorkspace mpkg dryRun >>= emitIntrospection "update" mode deltaJson (renderDelta dryRun)
 dispatch _ Clean = do
   runClean "."
   putStrLn "Cleaned build artifacts (kept the store)."

@@ -1077,7 +1077,7 @@ main = hspec $ do
         fetchFrom fix n _ _ = pure (maybe (Left (OtherError ("missing: " ++ n))) Right (lookup n fix))
         noDiscover _ = pure Nothing
         run fix deps reg =
-          runIdentity (resolve boot (fetchFrom fix) noDiscover deps reg)
+          runIdentity (resolve boot (fetchFrom fix) noDiscover [] deps reg)
         findRD n r = either (const Nothing) (find ((== n) . rdName)) r
 
         fixture =
@@ -1156,7 +1156,7 @@ main = hspec $ do
             , ("b", DepManifest [] [])
             ]
           discover n = pure (lookup n [("b", "hackage/b")])
-          r = runIdentity (resolve boot (fetchFrom fix) discover [dep "a" Latest] [("a", "r/a")])
+          r = runIdentity (resolve boot (fetchFrom fix) discover [] [dep "a" Latest] [("a", "r/a")])
       (sort . map rdName <$> r) `shouldBe` Right ["a", "b"]
       (rdRepo <$> (r >>= maybe (Left (OtherError "no b")) Right . find ((== "b") . rdName)))
         `shouldBe` Right "hackage/b"
@@ -1172,6 +1172,19 @@ main = hspec $ do
           r = run fix [dep "a" Latest] [("a", "r/a")]
       (sort . map rdName <$> r) `shouldBe` Right ["a", "colour"]
       ((\d -> (rdRepo d, rdRef d)) <$> findRD "colour" r) `shouldBe` Just ("", Vendored "2.3.6")
+
+    it "soft-pins a walked name to its pinned ref (90j.3)" $ do
+      -- 'a' (root) declares 'b'; a soft pin holds 'b' at a specific rev.
+      let fix = [("a", DepManifest [dep "b" Latest] [("b", "r/b")]), ("b", DepManifest [] [])]
+          r = runIdentity (resolve boot (fetchFrom fix) noDiscover [("b", Rev "pinned-rev")] [dep "a" Latest] [("a", "r/a")])
+      (rdRef <$> findRD "b" r) `shouldBe` Just (Rev "pinned-rev")
+
+    it "a soft pin never forces an unrequired dep into the closure (90j.3)" $ do
+      -- 'a' depends on nothing; pinning 'gone' must NOT pull it in (so deps a new
+      -- version drops fall out under `update <pkg>`).
+      let fix = [("a", DepManifest [] [])]
+          r = runIdentity (resolve boot (fetchFrom fix) noDiscover [("gone", Rev "x")] [dep "a" Latest] [("a", "r/a")])
+      (sort . map rdName <$> r) `shouldBe` Right ["a"]
 
   describe "topoSort" $ do
     let rd n ds = ResolvedDep n ("r/" ++ n) Latest ds
@@ -2468,7 +2481,7 @@ main = hspec $ do
           writeFileIn (ws ++ "/packages/app/zinc.toml") (unlines ["[package]", "name = \"app\"", "version = \"1.0\"", "[build.exe.app]", "source-dirs = [\"app\"]", "main = \"Main.hs\"", "depends = [\"toml-parser\"]"])
           writeFileIn (ws ++ "/packages/app/app/Main.hs") "module Main where\nimport Toml (parse)\nmain :: IO ()\nmain = putStrLn (either (const \"err\") (const \"parsed-ok\") (parse \"x = 1\\n\"))\n"
           -- zinc resolves the real closure (.cabal + registry) and freezes a lock
-          upd <- runUpdate False (ws ++ "/zinc.toml") store
+          upd <- runUpdate Nothing False (ws ++ "/zinc.toml") store
           upd `shouldSatisfy` isRight
           lockSrc <- readFile (ws ++ "/zinc.lock")
           (isInfixOf "toml-parser" lockSrc && isInfixOf "prettyprinter" lockSrc) `shouldBe` True
@@ -2717,7 +2730,7 @@ main = hspec $ do
     (wsFile, store, _leafRepo) <- runIO setupAddFixture
 
     it "re-resolves and rewrites the lockfile" $ do
-      r <- runUpdate False wsFile store
+      r <- runUpdate Nothing False wsFile store
       lockText <- readFile (takeDirectory wsFile </> "zinc.lock")
       case r of
         Right _ -> ("leaf" `isInfixOf` lockText) `shouldBe` True
@@ -2727,9 +2740,16 @@ main = hspec $ do
       let lockFile = takeDirectory wsFile </> "zinc.lock"
       stale <- doesFileExist lockFile
       when stale $ removeFile lockFile
-      r <- runUpdate True wsFile store
+      r <- runUpdate Nothing True wsFile store
       wrote <- doesFileExist lockFile
       (isRight r, wrote) `shouldBe` (True, False)
+
+    it "update <pkg> targets a single dep and still rewrites the lock (90j.3)" $ do
+      r <- runUpdate (Just "leaf") False wsFile store
+      lockText <- readFile (takeDirectory wsFile </> "zinc.lock")
+      case r of
+        Right _ -> ("leaf" `isInfixOf` lockText) `shouldBe` True
+        Left err -> expectationFailure (renderError err)
 
   describe "full workspace lifecycle (integration, rung 1)" $
     it "scaffolds, builds, runs, then cleans a synthetic workspace" $ do
