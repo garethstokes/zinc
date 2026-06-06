@@ -15,6 +15,7 @@ module Zinc.Report
   , cacheStatsOf
   , timingJson
   , buildSummaryLine
+  , buildBreakdownLine
   , fmtMs
   ) where
 
@@ -90,9 +91,10 @@ data CacheStats = CacheStats
 -- (ms, in build order), and cache stats. Hangs off the JSON envelope so perf
 -- work (5ko inner-loop, vwn caching) has a measurement/validation feedback loop.
 data Timing = Timing
-  { tiTotalMs :: Int
-  , tiPhases  :: [(String, Int)] -- ^ phase name -> milliseconds, ordered
-  , tiCache   :: CacheStats
+  { tiTotalMs   :: Int
+  , tiPhases    :: [(String, Int)] -- ^ coarse wall-clock phases (closure/member), ordered
+  , tiBreakdown :: [(String, Int)] -- ^ finer CUMULATIVE per-phase work (fetch/compile/register/link), summed across parallel builds — NOT wall-clock, kept separate to avoid mixing units (zinc-nti.3)
+  , tiCache     :: CacheStats
   }
   deriving (Eq, Show)
 
@@ -128,6 +130,21 @@ buildSummaryLine color t =
     built = csPkgsBuilt (tiCache t)
     n = cached + built
 
+-- | The optional finer-phase line shown under the build summary (zinc-nti.3):
+-- @  breakdown · fetch 1.2s · compile 8.4s · register 0.3s · link 2.1s (cumulative)@.
+-- 'Nothing' when no instrumented phase ran (a no-op build), so trivial builds
+-- keep their clean one-line summary. A fully dep-cached build still shows the
+-- member recompile time (the workspace members re-run @ghc --make@ regardless of
+-- the cached closure). Cumulative across the parallel closure builds, so the sum
+-- exceeds wall-clock — labelled as such to keep the units honest.
+buildBreakdownLine :: Bool -> Timing -> Maybe String
+buildBreakdownLine color t
+  | null phs  = Nothing
+  | otherwise = Just (dim color ("  breakdown" ++ concatMap part phs ++ " (cumulative)"))
+  where
+    phs = [(p, ms) | (p, ms) <- tiBreakdown t, ms > 0]
+    part (p, ms) = " \183 " ++ p ++ " " ++ fmtMs ms
+
 -- | Render a millisecond duration compactly: @3.2s@ at or above a second
 -- (one decimal), else @450ms@.
 fmtMs :: Int -> String
@@ -135,13 +152,16 @@ fmtMs ms
   | ms >= 1000 = show (ms `div` 1000) ++ "." ++ show (ms `mod` 1000 `div` 100) ++ "s"
   | otherwise  = show ms ++ "ms"
 
--- | A 'Timing' as JSON: @{ totalMs, phases:{…}, cache:{…} }@.
+-- | A 'Timing' as JSON: @{ totalMs, phases:{…}, breakdown:{…}, cache:{…} }@.
+-- @breakdown@ (cumulative per-phase work; zinc-nti.3) is omitted when empty.
 timingJson :: Timing -> Json
 timingJson t =
-  JObject
+  JObject $
     [ ("totalMs", JInt (tiTotalMs t))
     , ("phases", JObject [(p, JInt ms) | (p, ms) <- tiPhases t])
-    , ( "cache"
+    ]
+      ++ [("breakdown", JObject [(p, JInt ms) | (p, ms) <- tiBreakdown t]) | not (null (tiBreakdown t))]
+      ++ [ ( "cache"
       , JObject
           [ ("hits", JInt (csHits c))
           , ("misses", JInt (csMisses c))

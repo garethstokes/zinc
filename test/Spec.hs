@@ -70,7 +70,7 @@ import Zinc.Macros (emitCabalMacros)
 import Zinc.Nix (generateFlake)
 import Zinc.Orchestrate (buildAndRun, lockDrift, orderMembers, parMapBounded, resolveTarget, runBuild, runBuildMember, runClean, runTests, runWarm)
 import Zinc.Paths (pathsModuleName, synthesizePaths)
-import Zinc.Report (BuildOutcome (..), CacheStats (..), PackageReport (..), PackageStatus (..), Timing (..), buildDataJson, buildSummaryLine, cacheStatsOf, fmtMs, packageReportJson, renderResolution, statusText, timingJson)
+import Zinc.Report (BuildOutcome (..), CacheStats (..), PackageReport (..), PackageStatus (..), Timing (..), buildBreakdownLine, buildDataJson, buildSummaryLine, cacheStatsOf, fmtMs, packageReportJson, renderResolution, statusText, timingJson)
 import Zinc.SysLibs (toNixpkgs)
 import Zinc.Resolve (DepManifest (..), ResolvedDep (..), isBootLib, resolve, topoLevels, topoSort)
 import Zinc.Version (newestTag, newestTagFor)
@@ -288,12 +288,21 @@ main = hspec $ do
           c = cacheStatsOf pkgs
       (csHits c, csMisses c, csPkgsBuilt c, csPkgsCached c) `shouldBe` (2, 1, 1, 2)
 
-    it "renders the timing block (totalMs, phases, cache)" $
-      renderJson (timingJson (Timing 1234 [("closure", 900), ("member", 300)] (CacheStats 2 1 1 2)))
-        `shouldBe` "{\"totalMs\":1234,\"phases\":{\"closure\":900,\"member\":300},\"cache\":{\"hits\":2,\"misses\":1,\"pkgsBuilt\":1,\"pkgsCached\":2}}"
+    it "renders the timing block with the finer breakdown (totalMs, phases, breakdown, cache; nti.3)" $
+      renderJson (timingJson (Timing 1234 [("closure", 900), ("member", 300)] [("fetch", 120), ("compile", 1500), ("link", 200)] (CacheStats 2 1 1 2)))
+        `shouldBe` "{\"totalMs\":1234,\"phases\":{\"closure\":900,\"member\":300},\"breakdown\":{\"fetch\":120,\"compile\":1500,\"link\":200},\"cache\":{\"hits\":2,\"misses\":1,\"pkgsBuilt\":1,\"pkgsCached\":2}}"
+
+    it "omits the breakdown object when no finer phases were measured (nti.3)" $
+      renderJson (timingJson (Timing 1234 [("closure", 900)] [] (CacheStats 2 1 1 2)))
+        `shouldBe` "{\"totalMs\":1234,\"phases\":{\"closure\":900},\"cache\":{\"hits\":2,\"misses\":1,\"pkgsBuilt\":1,\"pkgsCached\":2}}"
+
+    it "renders the cumulative breakdown line, dropping zero phases (nti.3)" $ do
+      buildBreakdownLine False (Timing 9 [] [("fetch", 0), ("compile", 8400), ("link", 2100)] (CacheStats 0 5 5 0))
+        `shouldBe` Just "  breakdown \183 compile 8.4s \183 link 2.1s (cumulative)"
+      buildBreakdownLine False (Timing 9 [] [] (CacheStats 5 0 0 5)) `shouldBe` Nothing
 
     it "includes the timing block in the envelope when present" $
-      renderJson (envelope "build" True (Just (buildDataJson (BuildOutcome [] []))) (Just (timingJson (Timing 5 [] (CacheStats 0 0 0 0)))) [])
+      renderJson (envelope "build" True (Just (buildDataJson (BuildOutcome [] []))) (Just (timingJson (Timing 5 [] [] (CacheStats 0 0 0 0)))) [])
         `shouldBe` "{\"zinc\":\"0.1.0.0\",\"command\":\"build\",\"ok\":true,\"data\":{\"executables\":[],\"packages\":[]},\"timing\":{\"totalMs\":5,\"phases\":{},\"cache\":{\"hits\":0,\"misses\":0,\"pkgsBuilt\":0,\"pkgsCached\":0}},\"diagnostics\":[]}"
 
   describe "Zinc.Json parser (hbv.3)" $ do
@@ -410,11 +419,11 @@ main = hspec $ do
       fmtMs 1000 `shouldBe` "1.0s"
 
     it "buildSummaryLine is a cargo-style speed + cache summary (hw6.3)" $
-      buildSummaryLine False (Timing 3200 [] (CacheStats 35 12 12 35))
+      buildSummaryLine False (Timing 3200 [] [] (CacheStats 35 12 12 35))
         `shouldBe` "    Finished in 3.2s \183 47 packages (35 cached, 12 built)"
 
     it "buildSummaryLine singularizes a one-package closure (hw6.3)" $
-      buildSummaryLine False (Timing 800 [] (CacheStats 1 0 0 1))
+      buildSummaryLine False (Timing 800 [] [] (CacheStats 1 0 0 1))
         `shouldBe` "    Finished in 800ms \183 1 package (1 cached, 0 built)"
 
   describe "closure discovery (49o)" $ do
@@ -659,16 +668,16 @@ main = hspec $ do
 
   describe "metrics persistence (hbv.2)" $ do
     it "renders a metrics record as one JSON line (packages omitted when empty)" $
-      metricsLine (MetricsRecord "build" "" "sha256:abc" "9.6.5" "2026-06-04T00:00:00Z" (Timing 7 [("closure", 4)] (CacheStats 1 0 0 1)) [])
+      metricsLine (MetricsRecord "build" "" "sha256:abc" "9.6.5" "2026-06-04T00:00:00Z" (Timing 7 [("closure", 4)] [] (CacheStats 1 0 0 1)) [])
         `shouldBe` "{\"timestamp\":\"2026-06-04T00:00:00Z\",\"command\":\"build\",\"argsSummary\":\"\",\"lockHash\":\"sha256:abc\",\"ghcVersion\":\"9.6.5\",\"timing\":{\"totalMs\":7,\"phases\":{\"closure\":4},\"cache\":{\"hits\":1,\"misses\":0,\"pkgsBuilt\":0,\"pkgsCached\":1}}}\n"
 
     it "includes per-package timing in the record when present (nti)" $
-      metricsLine (MetricsRecord "build" "" "h" "9.6.5" "t" (Timing 5 [] (CacheStats 0 1 1 0)) [("alpha", 900)])
+      metricsLine (MetricsRecord "build" "" "h" "9.6.5" "t" (Timing 5 [] [] (CacheStats 0 1 1 0)) [("alpha", 900)])
         `shouldBe` "{\"timestamp\":\"t\",\"command\":\"build\",\"argsSummary\":\"\",\"lockHash\":\"h\",\"ghcVersion\":\"9.6.5\",\"timing\":{\"totalMs\":5,\"phases\":{},\"cache\":{\"hits\":0,\"misses\":1,\"pkgsBuilt\":1,\"pkgsCached\":0}},\"packages\":[{\"name\":\"alpha\",\"timeMs\":900}]}\n"
 
     it "appends (never rewrites) records to .zinc/metrics.jsonl" $ do
       let d = "/tmp/zinc-metrics-test"
-          rec n = MetricsRecord "build" n "h" "9.6.5" "t" (Timing 1 [] (CacheStats 0 0 0 0)) []
+          rec n = MetricsRecord "build" n "h" "9.6.5" "t" (Timing 1 [] [] (CacheStats 0 0 0 0)) []
       stale <- doesDirectoryExist d
       when stale $ removeDirectoryRecursive d
       createDirectoryIfMissing True d

@@ -3,6 +3,7 @@ module Main (main) where
 import Control.Monad (unless, when)
 import System.IO.Error (catchIOError)
 import Data.List (intercalate)
+import Data.Maybe (maybeToList)
 import System.Environment (getArgs)
 import System.Exit (ExitCode (ExitFailure), exitWith)
 import System.IO (hPutStrLn, stderr)
@@ -29,7 +30,7 @@ import Zinc.Outdated (outdatedJson, renderOutdated, runOutdated)
 import Zinc.Output (OutputEvent (..), OutputMode (..), emit, resolveMode, withRenderer)
 import Zinc.Perf (perfSummaryJson, renderPerf, runPerf)
 import Zinc.Prime (runOnboard, runPrime)
-import Zinc.Report (PackageReport, PackageStatus (Built, Cached), boExes, boPackages, buildDataJson, buildSummaryLine, packageReportJson, prName, prStatus, prTimeMs, timingJson)
+import Zinc.Report (PackageReport, PackageStatus (Built, Cached), boExes, boPackages, buildBreakdownLine, buildDataJson, buildSummaryLine, packageReportJson, prName, prStatus, prTimeMs, timingJson)
 import Zinc.Scaffold (materialize, scaffoldNew, scaffoldWorkspace)
 
 -- | Thin executable shim: parse argv into the output flags + a 'Command',
@@ -152,8 +153,10 @@ dispatch mode (Build target ghcOverride) = do
       if machine mode
         then putStrLn (renderJson (envelope "build" True (Just (buildDataJson outcome)) (Just (timingJson timing)) []))
         else do
-          -- hw6.3 spectacle: the speed + cache summary headline, then the exes.
+          -- hw6.3 spectacle: the speed + cache summary headline, then the
+          -- optional finer per-phase breakdown (nti.3), then the exes.
           putStrLn (buildSummaryLine (humanColor mode) timing)
+          mapM_ putStrLn (maybeToList (buildBreakdownLine (humanColor mode) timing))
           mapM_ (putStrLn . ("  " ++)) (boExes outcome)
 dispatch mode (Run target args) =
   resolveRunTarget "." target >>= \r -> case r of

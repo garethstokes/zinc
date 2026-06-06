@@ -26,6 +26,7 @@ module Zinc.Orchestrate
   ) where
 
 import Control.Concurrent (forkIO, getNumCapabilities)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import GHC.Clock (getMonotonicTime)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.QSem (newQSem, signalQSem, waitQSem)
@@ -85,12 +86,12 @@ ensureToolchain = do
   when (isNothing ghc) (failWithError (ToolchainMissing "ghc"))
 
 buildWorkspace :: FilePath -> Maybe String -> (ComponentKind -> Bool) -> IO (Either ZincError [FilePath])
-buildWorkspace wsDir target keep = fmap (fmap (boExes . fst)) (buildWorkspaceReport nullSink wsDir target Nothing keep)
+buildWorkspace wsDir target keep = fmap (fmap (\(o, _, _) -> boExes o)) (buildWorkspaceReport nullSink wsDir target Nothing keep)
 
 -- | As 'buildWorkspace', but also returns the per-package closure report (spec
 -- §3.2) and per-phase wall-clock timings (perf spec §2) for the structured
 -- @--json@ surface. 'buildWorkspace' is the thin exes-only projection.
-buildWorkspaceReport :: Sink -> FilePath -> Maybe String -> Maybe String -> (ComponentKind -> Bool) -> IO (Either ZincError (BuildOutcome, [(String, Int)]))
+buildWorkspaceReport :: Sink -> FilePath -> Maybe String -> Maybe String -> (ComponentKind -> Bool) -> IO (Either ZincError (BuildOutcome, [(String, Int)], [(String, Int)]))
 buildWorkspaceReport sink wsDir target ghcOverride keep = runResult $ do
   ensureToolchain
   let wsFile = wsDir </> "zinc.toml"
@@ -112,9 +113,15 @@ buildWorkspaceReport sink wsDir target ghcOverride keep = runResult $ do
   -- Coarse phases (perf spec §2): the dependency-closure build (fetch + compile
   -- + register of deps) and the workspace-member build (compile + link). Finer
   -- breakdown (resolve/provision/fetch/register/link split) is a follow-up.
-  (pkgs, closureMs) <- timed (orFailE (buildClosure sink wsDir storeRoot wsDb effectiveGhc (depGhcOptionsOf ws)))
-  (exes, memberMs) <- timed (concat <$> traverse (buildMemberAll wsDb) (orderMembers members))
-  pure (BuildOutcome exes pkgs, [("closure", closureMs), ("member", memberMs)])
+  -- Shared accumulator for the finer cumulative per-phase breakdown (nti.3),
+  -- written from the parallel closure builds and the member builds alike.
+  acc <- liftIO (newIORef Map.empty)
+  (pkgs, closureMs) <- timed (orFailE (buildClosure sink wsDir storeRoot wsDb effectiveGhc (depGhcOptionsOf ws) (Just acc)))
+  (exes, memberMs) <- timed (concat <$> traverse (buildMemberAll (Just acc) wsDb) (orderMembers members))
+  breakdownMap <- liftIO (readIORef acc)
+  -- Present in build order, only the phases that actually ran.
+  let breakdown = [(p, ms) | p <- ["fetch", "compile", "register", "link"], Just ms <- [Map.lookup p breakdownMap]]
+  pure (BuildOutcome exes pkgs, [("closure", closureMs), ("member", memberMs)], breakdown)
   where
     loadMember member = do
       let dir = wsDir </> member
@@ -126,7 +133,9 @@ buildWorkspaceReport sink wsDir target ghcOverride keep = runResult $ do
     -- @keep@-selected component, returning the executable paths. Brackets the
     -- member's compile with CompileStart/Done events (the visible "build zinc"
     -- step) carrying its own wall-clock.
-    buildMemberAll wsDb (dir, mem) = do
+    -- @acc@ collects the finer breakdown (nti.3): the member library counts as
+    -- @compile@, its executables as @link@ (the final ghc --make against the libs).
+    buildMemberAll acc wsDb (dir, mem) = do
       liftIO (emit sink (CompileStart (pkgName mem)))
       t0 <- liftIO getMonotonicTime
       case filter ((== Library) . compKind) (pkgComponents mem) of
@@ -136,8 +145,8 @@ buildWorkspaceReport sink wsDir target ghcOverride keep = runResult $ do
           -- rejects relative paths, and (with the db now persisted) a relative
           -- entry can't be cleanly re-registered across builds.
           libDir <- liftIO (makeAbsolute (dir </> ".zinc" </> "lib"))
-          orFailE (buildLib (LibBuild dir libDir wsDb (pkgName mem) (pkgVersion mem) lib))
-      exes <- traverse (\comp -> orFailE (buildMember (MemberBuild dir (dir </> ".zinc" </> "build") (Just wsDb) comp))) (wanted mem)
+          orFailE (accuminto acc "compile" (buildLib (LibBuild dir libDir wsDb (pkgName mem) (pkgVersion mem) lib)))
+      exes <- traverse (\comp -> orFailE (accuminto acc "link" (buildMember (MemberBuild dir (dir </> ".zinc" </> "build") (Just wsDb) comp)))) (wanted mem)
       t1 <- liftIO getMonotonicTime
       liftIO (emit sink (CompileDone (pkgName mem) (round ((t1 - t0) * 1000) :: Int) False))
       pure exes
@@ -170,7 +179,7 @@ runWarm sink wsDir ghcOverride = runResult $ do
   let wsDb = wsDir </> ".zinc" </> "pkgdb"
   orFail (initPackageDb wsDb)
   storeRoot <- liftIO resolveStoreRoot
-  orFailE (buildClosure sink wsDir storeRoot wsDb (fromMaybe (wsGhc ws) ghcOverride) (depGhcOptionsOf ws))
+  orFailE (buildClosure sink wsDir storeRoot wsDb (fromMaybe (wsGhc ws) ghcOverride) (depGhcOptionsOf ws) Nothing)
 
 -- | @zinc build [member] --json@: build, returning the structured outcome
 -- (executables + per-package closure report) and the 'Timing' block (total
@@ -181,7 +190,22 @@ runBuildReport sink wsDir target ghcOverride = do
   r <- buildWorkspaceReport sink wsDir target ghcOverride (== Executable)
   t1 <- getMonotonicTime
   let totalMs = round ((t1 - t0) * 1000) :: Int
-  pure $ fmap (\(o, phases) -> (o, Timing totalMs phases (cacheStatsOf (boPackages o)))) r
+  pure $ fmap (\(o, phases, breakdown) -> (o, Timing totalMs phases breakdown (cacheStatsOf (boPackages o)))) r
+
+-- | Time an IO step and add its duration (ms) to a named bucket in a shared
+-- accumulator, for the cumulative per-phase breakdown (zinc-nti.3). Safe to call
+-- from the parallel 'produceOne' threads — 'atomicModifyIORef'' serialises the
+-- updates. 'Nothing' (e.g. @warm@) is a no-op, so instrumented call sites stay
+-- uniform whether or not a breakdown is being collected.
+accuminto :: Maybe (IORef (Map.Map String Int)) -> String -> IO a -> IO a
+accuminto Nothing _ act = act
+accuminto (Just ref) name act = do
+  t0 <- getMonotonicTime
+  a <- act
+  t1 <- getMonotonicTime
+  let ms = round ((t1 - t0) * 1000) :: Int
+  atomicModifyIORef' ref (\m -> (Map.insertWith (+) name ms m, ()))
+  pure a
 
 -- | Run a pipeline step, returning its wall-clock duration in milliseconds.
 timed :: Result a -> Result (a, Int)
@@ -285,8 +309,8 @@ parMapBounded n f xs = do
 -- its library compiled + registered. (Compiling arbitrary upstream packages
 -- with Setup.hs / Template Haskell / deep closures is a further follow-up;
 -- this handles zinc-native git library deps.)
-buildClosure :: Sink -> FilePath -> FilePath -> FilePath -> String -> [(String, [String])] -> IO (Either ZincError [PackageReport])
-buildClosure sink wsDir storeRoot wsDb ghcVersion buildOpts = runResult $ do
+buildClosure :: Sink -> FilePath -> FilePath -> FilePath -> String -> [(String, [String])] -> Maybe (IORef (Map.Map String Int)) -> IO (Either ZincError [PackageReport])
+buildClosure sink wsDir storeRoot wsDb ghcVersion buildOpts mAcc = runResult $ do
   let lockFile = wsDir </> "zinc.lock"
   present <- liftIO (doesFileExist lockFile)
   if not present
@@ -319,7 +343,7 @@ buildClosure sink wsDir storeRoot wsDb ghcVersion buildOpts = runResult $ do
 
     registerNeeded (unitId, pkgOut, conf) = do
       done <- liftIO (isRegistered wsDb unitId pkgOut)
-      when (not done) (orFail (registerPackage wsDb conf) >> liftIO (emit sink (RegisterDone unitId)))
+      when (not done) (orFail (accuminto mAcc "register" (registerPackage wsDb conf)) >> liftIO (emit sink (RegisterDone unitId)))
 
     -- Content-addressed cache key from data available without the source, so a
     -- cached build is reused without even fetching. Includes the dep's
@@ -401,7 +425,7 @@ buildClosure sink wsDir storeRoot wsDb ghcVersion buildOpts = runResult $ do
         let fetchLocked = case lockSource l of
               GitSource repo rev -> fmap (const ()) <$> cloneAt repo rev dest
               TarballSource ver  -> fmap (const ()) <$> fetchHackageTarball (lockName l) ver dest
-        _ <- orFail (first (("fetch " ++ lockName l ++ ": ") ++) <$> fetchLocked)
+        _ <- orFail (accuminto mAcc "fetch" (first (("fetch " ++ lockName l ++ ": ") ++) <$> fetchLocked))
         liftIO (emit sink (FetchDone (lockName l)))
       orFailE (verifyFetched l dest)
       -- The package may live in a subdirectory of the repo (monorepo) — an
@@ -417,7 +441,7 @@ buildClosure sink wsDir storeRoot wsDb ghcVersion buildOpts = runResult $ do
           -- e.g. -XSafe) from the workspace [build-options].
           let lib' = lib {compGhcOptions = compGhcOptions lib ++ overrideFor l}
           liftIO (emit sink (CompileStart (lockName l)))
-          (conf, _) <- orFailE (buildLibArtifacts (LibBuild pkgDir pkgOut wsDb (lockName l) version lib'))
+          (conf, _) <- orFailE (accuminto mAcc "compile" (buildLibArtifacts (LibBuild pkgDir pkgOut wsDb (lockName l) version lib')))
           pure (report Built, Just (lockName l, pkgOut, conf))
 
     -- Tamper detection (spec §8): a fetched tree's content hash must match the
