@@ -92,6 +92,7 @@ import Zinc.Add (enrichWithRepos, freezeClosure, lockEntry, runAdd, runUpdate, r
 import Zinc.Build (GhcInvocation (..), LibBuild (..), MemberBuild (..), PackageConf (..), archiveArgs, buildLib, buildMember, discoverModules, externalInterpFlags, ghcMakeArgs, initPackageDb, installedVersions, memberBuildDir, packageFlags, ppCommand, preprocessorFor, reactorLinkFlags, registeredExposedMatches, registerPackage, renderConf, replArgs, runPreprocessor, wasmSupported, writeFileIfChanged, zincBuiltUnitIds)
 import Zinc.Cache (BuildKey (..), buildCacheKey, buildCacheKeyFor, cacheHit, cacheKeyPayload, confCodegenEpoch, storeConfPath, storePkgPath, writeCachedConf)
 import Zinc.Cabal (bootConflicts, cabalBuildType, cabalJsSources, cabalVersion, parseCabalComponents, parseCabalComponentsForGhc, parseCabalComponentsForPlatform)
+import Zinc.Configure (configureIncludeDirs)
 import Distribution.System (Arch (Wasm32), OS (Wasi), Platform (Platform), buildPlatform)
 import Zinc.Env (devEnvVars, envCacheKey, envCacheKeyFor, nixPrintDevEnv, provisionEnv, toolchainPath, toolchainVars)
 import Zinc.Macros (emitCabalMacros)
@@ -2418,6 +2419,17 @@ main = hspec $ do
         `shouldBe` Just ("hsc2hs", ["Net.hsc", "-o", "Net.hs", "--cflag=-I/pkg/include", "--cflag=-I/pkg/other"])
       ppCommand cflags "Lexer.x" "Lexer.hs" `shouldBe` Just ("alex", ["Lexer.x", "-o", "Lexer.hs"])
       ppCommand cflags "Parser.y" "Parser.hs" `shouldBe` Just ("happy", ["Parser.y", "-o", "Parser.hs"])
+
+    it "configure include-dirs thread the package's OWN dirs from the sdist copy first (zinc-hz2)" $ do
+      -- unix-time generates cbits/config.h via configure; the package's own
+      -- include-dir (cbits) must point at the CONFIGURED sdist copy and lead, so
+      -- the generated header shadows the git checkout's config.h.in-only copy.
+      -- network still works: include/ + the sdist root are kept as a fallback.
+      configureIncludeDirs "/out/zinc-configure" ["cbits"]
+        `shouldBe` ["/out/zinc-configure/cbits", "/out/zinc-configure/include", "/out/zinc-configure"]
+      -- a package declaring no include-dirs (network) keeps the conventional set
+      configureIncludeDirs "/out/zinc-configure" []
+        `shouldBe` ["/out/zinc-configure/include", "/out/zinc-configure"]
 
     it "runPreprocessor runs hsc2hs and produces the .hs" $ do
       let dir = "/tmp/zinc-pp-test"

@@ -17,6 +17,7 @@
 --     cc, and ghc).
 module Zinc.Configure
   ( configureComponent
+  , configureIncludeDirs
   ) where
 
 import Data.Bifunctor (first)
@@ -45,7 +46,7 @@ configureComponent name version pkgDir outDir comp = do
   if bt /= Just "Configure"
     then pure (Right comp)
     else do
-      gen <- configureGenerate name version outDir
+      gen <- configureGenerate name version outDir (compIncludeDirs comp)
       pure (fmap (\incs -> comp {compIncludeDirs = incs ++ compIncludeDirs comp}) gen)
 
 -- | The package's declared @build-type@, read from the @.cabal@ in @pkgDir@.
@@ -61,9 +62,14 @@ buildTypeOf pkgDir = do
 
 -- | Fetch the package's Hackage sdist into a fresh writable dir under @outDir@,
 -- run its @./configure@ in place, and return the absolute include dirs holding
--- the generated headers (e.g. @HsNetworkConfig.h@, written under @include/@).
-configureGenerate :: String -> String -> FilePath -> IO (Either String [FilePath])
-configureGenerate name version outDir = do
+-- the generated headers. These cover the package's OWN @include-dirs@ resolved
+-- against the CONFIGURED sdist copy (@includeDirs@) — so a header configure
+-- writes into e.g. @cbits/config.h@ (unix-time, zinc-hz2) is on the C include
+-- path, not just the conventional @include/@ (network's @HsNetworkConfig.h@).
+-- The sdist-copy dirs lead so the generated header shadows the git checkout's
+-- @config.h.in@-only copy.
+configureGenerate :: String -> String -> FilePath -> [FilePath] -> IO (Either String [FilePath])
+configureGenerate name version outDir includeDirs = do
   let sdistDir = outDir </> "zinc-configure"
   fetched <- fetchHackageTarball name version sdistDir
   case first ((name ++ ": fetch sdist for configure: ") ++) fetched of
@@ -75,7 +81,18 @@ configureGenerate name version outDir = do
         then pure (Left (name ++ ": build-type Configure but the sdist ships no ./configure"))
         else do
           run <- runConfigure name sdistDir
-          pure (fmap (const [sdistDir </> "include", sdistDir]) run)
+          pure (fmap (const (configureIncludeDirs sdistDir includeDirs)) run)
+
+-- | The include dirs to fold onto the build after @configure@ (zinc-hz2): the
+-- package's OWN @include-dirs@ resolved against the configured sdist copy lead —
+-- so a header configure writes into one of them (e.g. unix-time's
+-- @cbits/config.h@) shadows the git checkout's @config.h.in@-only copy — then
+-- the conventional @include/@ and the sdist root (network's @HsNetworkConfig.h@).
+-- @sdistDir@ is absolute, so each entry stays absolute and threads verbatim
+-- through the downstream @pkgDir </> d@ join.
+configureIncludeDirs :: FilePath -> [FilePath] -> [FilePath]
+configureIncludeDirs sdistDir includeDirs =
+  [sdistDir </> d | d <- includeDirs] ++ [sdistDir </> "include", sdistDir]
 
 -- | Run @sh ./configure@ in @dir@ (the writable sdist copy). Out-of-tree VPATH
 -- is unnecessary since the copy is writable, so the generated headers land in
