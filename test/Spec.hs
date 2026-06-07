@@ -84,7 +84,7 @@ import Zinc.Manifest
 import Zinc.Fetch (gitFetchManifest, isHpackOnly, namedCabal, packageDirIn)
 import Zinc.GC (GCRoot (..), gcStore, runGc)
 import Zinc.Add (enrichWithRepos, freezeClosure, lockEntry, runAdd, runUpdate, runVendor, splitNameVersion)
-import Zinc.Build (GhcInvocation (..), LibBuild (..), MemberBuild (..), PackageConf (..), archiveArgs, buildLib, buildMember, ghcMakeArgs, initPackageDb, installedVersions, memberBuildDir, ppCommand, preprocessorFor, reactorLinkFlags, registeredExposedMatches, registerPackage, renderConf, replArgs, runPreprocessor, wasmSupported, writeFileIfChanged)
+import Zinc.Build (GhcInvocation (..), LibBuild (..), MemberBuild (..), PackageConf (..), archiveArgs, buildLib, buildMember, discoverModules, ghcMakeArgs, initPackageDb, installedVersions, memberBuildDir, ppCommand, preprocessorFor, reactorLinkFlags, registeredExposedMatches, registerPackage, renderConf, replArgs, runPreprocessor, wasmSupported, writeFileIfChanged)
 import Zinc.Cache (BuildKey (..), buildCacheKey, buildCacheKeyFor, cacheHit, storeConfPath, storePkgPath, writeCachedConf)
 import Zinc.Cabal (bootConflicts, cabalBuildType, cabalVersion, parseCabalComponents, parseCabalComponentsForGhc, parseCabalComponentsForPlatform)
 import Distribution.System (Arch (Wasm32), OS (Wasi), Platform (Platform), buildPlatform)
@@ -1157,6 +1157,7 @@ main = hspec $ do
             , compCSources = []
             , compReexports = []
             , compWasmExports = []
+            , compFromCabal = False
             }
 
     it "parses a named executable component" $
@@ -1717,6 +1718,7 @@ main = hspec $ do
             , compCSources = []
             , compReexports = []
             , compWasmExports = []
+            , compFromCabal = True
             }
 
     it "derives an executable component" $
@@ -2442,6 +2444,7 @@ main = hspec $ do
               , compCSources = []
               , compReexports = []
               , compWasmExports = []
+              , compFromCabal = False
               }
       r <- buildMember (MemberBuild dir (dir ++ "/build") Nothing comp)
       case r of
@@ -2468,7 +2471,7 @@ main = hspec $ do
   describe "orderMembers" $
     it "orders a member after the siblings it depends on" $ do
       let comp deps =
-            Component Library "x" [] [] Nothing [] [] deps [] [] [] [] [] []
+            Component Library "x" [] [] Nothing [] [] deps [] [] [] [] [] [] False
           core = ("packages/core", MemberManifest "core" "1.0" [comp []])
           app = ("packages/app", MemberManifest "app" "1.0" [comp ["core"]])
       map (pkgName . snd) (orderMembers [app, core]) `shouldBe` ["core", "app"]
@@ -2502,7 +2505,7 @@ main = hspec $ do
     it "builds + runs a consumer that declares only the umbrella, importing a re-exported symbol" $ do
       let base = "/tmp/zinc-umbrella-consumer"
           db = base ++ "/db/pkg.db"
-          lib nm = Component Library nm ["src"] [] Nothing [] [] ["base"] [] [] [] [] [] []
+          lib nm = Component Library nm ["src"] [] Nothing [] [] ["base"] [] [] [] [] [] [] False
       stale <- doesDirectoryExist base
       when stale $ removeDirectoryRecursive base
       _ <- initPackageDb db
@@ -2639,7 +2642,7 @@ main = hspec $ do
 
   describe "replArgs" $ do
     let exeComp =
-          Component Executable "app" ["app"] [] (Just "Main.hs") [] [] [] [] [] [] [] [] []
+          Component Executable "app" ["app"] [] (Just "Main.hs") [] [] [] [] [] [] [] [] [] False
 
     it "builds ghci args loading the member's main" $
       replArgs (Just "/db") "/m" exeComp
@@ -2653,7 +2656,7 @@ main = hspec $ do
       materialize dir (scaffoldNew "demo")
       -- flat scaffold: the member is the repo root itself (member "."), source at app/
       let memberDir = dir
-          comp = Component Executable "demo" ["app"] [] (Just "Main.hs") [] [] [] [] [] [] [] [] []
+          comp = Component Executable "demo" ["app"] [] (Just "Main.hs") [] [] [] [] [] [] [] [] [] False
       out <- readProcess "ghci" (replArgs Nothing memberDir comp ++ ["-e", "main"]) ""
       out `shouldBe` "Hello from demo!\n"
 
@@ -3517,6 +3520,7 @@ main = hspec $ do
             , compCSources = []
             , compReexports = []
             , compWasmExports = []
+            , compFromCabal = False
             }
         code = either (Just . errorCode) (const Nothing)
     it "passes a pure-Haskell component for both native and wasm" $
@@ -3569,3 +3573,47 @@ main = hspec $ do
       (diagNextAction (toDiagnostic (DepBootConflict "monad-control" "transformers" "<0.6" "0.6.1.0" (Just "3785240")))
         >>= \na -> if "3785240" `isInfixOf` na then Just () else Nothing)
         `shouldBe` Just ()
+
+  describe "zinc-iaj.1 (don't auto-sweep cabal deps; exclude Setup.hs)" $ do
+    it "discoverModules excludes Setup.hs (and Main)" $ do
+      let dir = "/tmp/zinc-iaj1-discover"
+      createDirectoryIfMissing True dir
+      writeFile (dir </> "A.hs") "module A where\n"
+      writeFile (dir </> "Setup.hs") "import Distribution.Simple\nmain = defaultMain\n"
+      writeFile (dir </> "Main.hs") "main = pure ()\n"
+      mods <- discoverModules [dir]
+      mods `shouldContain` ["A"]
+      mods `shouldNotContain` ["Setup"]
+      mods `shouldNotContain` ["Main"]
+
+    it "a native [build.lib] component has compFromCabal == False" $ do
+      let src = unlines
+            [ "[package]"
+            , "name = \"native\""
+            , "version = \"1.0\""
+            , "[build.lib]"
+            , "source-dirs = [\"src\"]"
+            ]
+      case parseMember src of
+        Right mm ->
+          fmap compFromCabal (find ((== Library) . compKind) (pkgComponents mm))
+            `shouldBe` Just False
+        Left err -> expectationFailure err
+
+    it "a cabal-derived library component has compFromCabal == True" $ do
+      let cabal = unlines
+            [ "cabal-version: 2.4"
+            , "name: demo"
+            , "version: 1.0"
+            , ""
+            , "library"
+            , "  exposed-modules: Demo"
+            , "  hs-source-dirs: src"
+            , "  build-depends: base"
+            , "  default-language: Haskell2010"
+            ]
+      case parseCabalComponents cabal of
+        Right comps ->
+          fmap compFromCabal (find ((== Library) . compKind) comps)
+            `shouldBe` Just True
+        Left err -> expectationFailure err

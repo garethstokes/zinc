@@ -107,6 +107,7 @@ data Component = Component
   , compCSources       :: [String]     -- ^ C sources to compile + archive (cabal c-sources), relative to the package
   , compReexports      :: [(String, Maybe String, String)] -- ^ cabal reexported-modules as (newName, originalPackage?, originalName); origin pkg is Nothing for a bare reexport, resolved at conf time (zinc-jdf)
   , compWasmExports    :: [String]     -- ^ exe wasm-exports: a non-empty list makes a wasm build a browser REACTOR module exporting these symbols (+ ghc_wasm_jsffi.js glue); empty = a WASI command module (zinc-9po.5)
+  , compFromCabal      :: Bool          -- ^ True if derived from a .cabal (trust its module list even when empty); False for zinc-native [build.*]
   }
   deriving (Eq, Show)
 
@@ -161,6 +162,7 @@ mkComponent kind name t =
     , compCSources = strs "c-sources"
     , compReexports = [] -- zinc-native components don't reexport (cabal-only, zinc-jdf)
     , compWasmExports = strs "wasm-exports" -- presence → browser reactor flavor (zinc-9po.5)
+    , compFromCabal = False -- zinc-native: an empty module list means "auto-discover" (zinc-iaj.1)
     }
   where
     strs k = either (const []) id (optStringArray k t)

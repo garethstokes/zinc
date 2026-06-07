@@ -285,6 +285,7 @@ fromBuildInfo kind name bi =
     , compCSources = cSources bi
     , compReexports = [] -- set by 'fromLibrary' (only libraries reexport); exes/tests have none
     , compWasmExports = [] -- wasm reactor exports are a zinc.toml exe setting, not a cabal field (zinc-9po.5)
+    , compFromCabal = True -- cabal-sourced: trust the .cabal module list even when empty (Configure deps), never auto-discover (zinc-iaj.1)
     }
   where
     pkgconfigNames b = [unPkgconfigName n | PkgconfigDependency n _ <- pkgconfigDepends b]

@@ -429,8 +429,12 @@ buildLibArtifactsFor target lb = runResult $ do
   -- source dirs (spec §4 "no module hiding" — zinc-native packages list none;
   -- cabal deps carry their .cabal module list). Every discovered module is
   -- exposed.
+  -- Only zinc-native components auto-discover on an empty module list; a
+  -- cabal-sourced component (compFromCabal) trusts its .cabal list even when
+  -- empty — e.g. a build-type: Configure dep — so we never sweep its root and
+  -- mistakenly compile Setup.hs (zinc-iaj.1).
   discovered <-
-    if null (compModules comp)
+    if null (compModules comp) && not (compFromCabal comp)
       then liftIO (discoverModules [lbMemberDir lb </> d | d <- srcDirs])
       else pure (compModules comp)
   -- nub so a package that already lists Paths_<pkg> doesn't collide with the
@@ -510,7 +514,8 @@ buildLibArtifactsFor target lb = runResult $ do
 
 -- | Discover a library's modules by walking its source dirs: every
 -- @.hs\/.lhs\/.hsc\/.x\/.y@ file becomes a dotted module name (its path under the
--- source dir, @\/@ -> @.@, extension dropped), excluding @Main@. This backs the
+-- source dir, @\/@ -> @.@, extension dropped), excluding @Main@ and @Setup@ (a
+-- cabal build driver). This backs the
 -- "no module hiding" model (spec §4): a zinc-native package lists no modules and
 -- every one it ships is compiled and exposed.
 discoverModules :: [FilePath] -> IO [String]
@@ -528,6 +533,7 @@ discoverModules dirs = nub . concat <$> mapM fromDir dirs
             , takeExtension f `elem` [".hs", ".lhs", ".hsc", ".x", ".y"]
             , let m = toModule (makeRelative dir f)
             , m /= "Main"
+            , m /= "Setup" -- Setup.hs/.lhs is a cabal build driver, not a module (zinc-iaj.1)
             ]
     toModule = map (\c -> if c == '/' then '.' else c) . dropExtension
 
