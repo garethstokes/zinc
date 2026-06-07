@@ -130,18 +130,26 @@ namedCabal name = find ((== lower (name ++ ".cabal")) . lower)
 packageDirIn :: FilePath -> String -> String -> IO FilePath
 packageDirIn dest repo name =
   case snd (splitRepoSubdir repo) of
-    Just s  -> pure (dest </> s)
-    Nothing -> do
-      -- Prefer the dir that holds THIS package's manifest (<name>.cabal /
-      -- zinc.toml): the root, then a <name>/ subdir. Only when neither names
-      -- this package do we fall back to any-manifest dir, then the root.
+    -- An explicit @url#subdir@ wins — UNLESS it no longer exists in the
+    -- checkout. A package's @source-repository@ subdir hint can lag the repo
+    -- layout (e.g. crypton-x509-store-1.9.0 still says @subdir: x509-store@, but
+    -- the monorepo renamed it to @crypton-x509-store/@), so a stale hint must
+    -- not hard-fail — fall back to <name>/ detection (zinc-y24).
+    Just s  -> do
+      there <- doesDirectoryExist (dest </> s)
+      if there then pure (dest </> s) else byName
+    Nothing -> byName
+  where
+    -- Prefer the dir that holds THIS package's manifest (<name>.cabal /
+    -- zinc.toml): the root, then a <name>/ subdir. Only when neither names
+    -- this package do we fall back to any-manifest dir, then the root.
+    byName = do
       named <- firstThatM hasNamedManifest cands
       case named of
         Just d  -> pure d
         Nothing -> do
           anyd <- firstThatM hasAnyManifest cands
           pure (maybe dest id anyd)
-  where
     cands = [dest, dest </> name]
     hasNamedManifest d = do
       z <- doesFileExist (d </> "zinc.toml")

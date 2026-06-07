@@ -37,6 +37,7 @@ import Zinc.Manifest
   , MemberManifest (pkgComponents)
   , Ref (Latest, Rev, Vendored)
   , WorkspaceManifest (wsDependencies, wsGhc)
+  , isVendored
   , depRepos
   , depFlagsOf
   , addDep
@@ -151,7 +152,15 @@ freezeWorkspace wsFile storeRoot ws = do
 -- resolve. Returns the resolved closure + its locks.
 resolveFreeze :: FilePath -> [(String, Ref)] -> WorkspaceManifest -> Result ([ResolvedDep], [LockedPackage])
 resolveFreeze storeRoot pins ws = do
-  closure <- orFailE (resolve isBootLib (gitFetchManifest storeRoot (wsGhc ws) (depFlagsOf ws)) hackageDiscover pins (wsDependencies ws) (depRepos ws))
+  -- A workspace-vendored dependency (pinned to a Hackage tarball in
+  -- [dependencies]) must satisfy TRANSITIVE requirements too. A deep dep like
+  -- tls's `hpke`, whose Hackage .cabal carries no source-repository, can't be
+  -- auto-discovered (zinc-49o), so without a soft pin the resolver errors
+  -- NoRepoInRegistry before ever consulting the vendor pin. Fold vendored root
+  -- deps into the soft pins so any transitive edge to them resolves to the
+  -- tarball (caller pins still win — they come first). (zinc-y24)
+  let vendoredPins = [(depName d, depRef d) | d <- wsDependencies ws, isVendored (depRef d)]
+  closure <- orFailE (resolve isBootLib (gitFetchManifest storeRoot (wsGhc ws) (depFlagsOf ws)) hackageDiscover (pins ++ vendoredPins) (wsDependencies ws) (depRepos ws))
   locks <- orFailE (freezeClosure storeRoot (depFlagsOf ws) closure)
   pure (closure, locks)
 
