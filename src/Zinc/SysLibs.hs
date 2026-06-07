@@ -23,4 +23,8 @@ toNixpkgs lib
         , ("ssl", "openssl")
         , ("ffi", "libffi")
         , ("sqlite3", "sqlite")
+        , -- libpq ships under pkgs.postgresql in nixpkgs (no pkgs.libpq/pq); both
+          -- the pkgconfig module (libpq) and the C link name (pq) map to it (zinc-389).
+          ("pq", "postgresql")
+        , ("libpq", "postgresql")
         ]

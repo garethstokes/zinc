@@ -110,7 +110,8 @@ data Component = Component
   , compExtensions     :: [String]
   , compGhcOptions     :: [String]
   , compDepends        :: [String]
-  , compSystemLibs     :: [String]     -- ^ nixpkgs attr names
+  , compSystemLibs     :: [String]     -- ^ nixpkgs attr names (for the env flake's @system-libs@)
+  , compExtraLibs      :: [String]     -- ^ external C library LINK names (cabal @extra-libraries@ + @pkgconfig-depends@ normalized, e.g. @libpq@ -> @pq@); emitted as the conf's @extra-libraries:@ so GHC auto-adds @-l<name>@ for dependents (zinc-389)
   , compIncludeDirs    :: [String]     -- ^ C-header search dirs for CPP, relative to the package
   , compCppOptions     :: [String]     -- ^ CPP @-D@ defines (cabal cpp-options), passed via @-optP@
   , compCSources       :: [String]     -- ^ C sources to compile + archive (cabal c-sources), relative to the package
@@ -166,6 +167,7 @@ mkComponent kind name t =
     , compGhcOptions = strs "ghc-options"
     , compDepends = strs "depends"
     , compSystemLibs = strs "system-libs"
+    , compExtraLibs = strs "extra-libraries"
     , compIncludeDirs = strs "include-dirs"
     , compCppOptions = strs "cpp-options"
     , compCSources = strs "c-sources"

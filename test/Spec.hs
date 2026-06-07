@@ -1220,6 +1220,7 @@ main = hspec $ do
             , compGhcOptions = ["-Wall"]
             , compDepends = ["aeson"]
             , compSystemLibs = ["zlib"]
+            , compExtraLibs = []
             , compIncludeDirs = []
             , compCppOptions = []
             , compCSources = []
@@ -1818,6 +1819,7 @@ main = hspec $ do
             , compGhcOptions = ["-Wall"]
             , compDepends = ["aeson", "base"] -- finalizePD normalizes build-depends order
             , compSystemLibs = ["zlib"]
+            , compExtraLibs = ["z", "pthread"]
             , compIncludeDirs = []
             , compCppOptions = []
             , compCSources = []
@@ -1984,6 +1986,10 @@ main = hspec $ do
     it "falls back to identity for unknown libs" $
       toNixpkgs "ncurses" `shouldBe` Just "ncurses"
 
+    it "maps libpq / pq to pkgs.postgresql (no pkgs.libpq in nixpkgs; zinc-389)" $ do
+      toNixpkgs "libpq" `shouldBe` Just "postgresql"
+      toNixpkgs "pq" `shouldBe` Just "postgresql"
+
   describe "freeze engine" $ do
     repo <- runIO setupDepRepo
 
@@ -2110,6 +2116,7 @@ main = hspec $ do
                 , confHsLibraries = ["HSmyapp-0.1.0-abc"]
                 , confDepends = []
                 , confReexports = []
+                , confExtraLibraries = []
                 }
        in all
             (`isInfixOf` out)
@@ -2133,8 +2140,26 @@ main = hspec $ do
                 , confHsLibraries = ["HSfacade"]
                 , confDepends = ["effectful-core"]
                 , confReexports = [("Effectful", "effectful-core", "Effectful")]
+                , confExtraLibraries = []
                 }
        in ("exposed-modules: Own Effectful from effectful-core:Effectful" `isInfixOf` out) `shouldBe` True
+
+    it "renderConf emits extra-libraries so GHC auto-links external C libs for dependents (zinc-389)" $
+      let out =
+            renderConf
+              PackageConf
+                { confName = "postgresql-libpq"
+                , confVersion = "0.11"
+                , confId = "postgresql-libpq"
+                , confExposedModules = ["Database.PostgreSQL.LibPQ"]
+                , confImportDirs = ["/d"]
+                , confLibraryDirs = ["/d"]
+                , confHsLibraries = ["HSpostgresql-libpq"]
+                , confDepends = ["bytestring"]
+                , confReexports = []
+                , confExtraLibraries = ["pq"]
+                }
+       in ("extra-libraries: pq" `isInfixOf` out) `shouldBe` True
 
     it "registers a synthesized conf (accepted by ghc-pkg)" $ do
       let base = "/tmp/zinc-pkgdb-test"
@@ -2153,6 +2178,7 @@ main = hspec $ do
                 , confHsLibraries = ["HSdemo-1.0-deadbeef"]
                 , confDepends = []
                 , confReexports = []
+                , confExtraLibraries = []
                 }
       r <- registerPackage db conf
       r `shouldBe` Right ()
@@ -2178,13 +2204,14 @@ main = hspec $ do
                 , confHsLibraries = []
                 , confDepends = ["origin"]
                 , confReexports = reexs
+                , confExtraLibraries = []
                 }
           oldConf = mk ["Own"] [] -- pre-jdf: no reexports
           newConf = mk ["Own"] [("Effectful", "origin", "Effectful")] -- post-jdf
       stale <- doesDirectoryExist base
       when stale $ removeDirectoryRecursive base
       -- origin must exist so ghc-pkg accepts the reexport's `from origin:...`.
-      _ <- registerPackage db (renderConf (PackageConf "origin" "1.0" "origin" ["Effectful"] [base ++ "/d"] [base ++ "/d"] [] [] []))
+      _ <- registerPackage db (renderConf (PackageConf "origin" "1.0" "origin" ["Effectful"] [base ++ "/d"] [base ++ "/d"] [] [] [] []))
       _ <- registerPackage db oldConf
       -- The registered (old) conf does NOT match the new conf → must re-register.
       drifted <- registeredExposedMatches db "umbrella" newConf
@@ -2571,6 +2598,7 @@ main = hspec $ do
               , compGhcOptions = []
               , compDepends = []
               , compSystemLibs = []
+              , compExtraLibs = []
               , compIncludeDirs = []
               , compCppOptions = []
               , compCSources = []
@@ -2603,7 +2631,7 @@ main = hspec $ do
   describe "orderMembers" $
     it "orders a member after the siblings it depends on" $ do
       let comp deps =
-            Component Library "x" [] [] Nothing [] [] deps [] [] [] [] [] [] False
+            Component Library "x" [] [] Nothing [] [] deps [] [] [] [] [] [] [] False
           core = ("packages/core", MemberManifest "core" "1.0" [comp []])
           app = ("packages/app", MemberManifest "app" "1.0" [comp ["core"]])
       map (pkgName . snd) (orderMembers [app, core]) `shouldBe` ["core", "app"]
@@ -2637,7 +2665,7 @@ main = hspec $ do
     it "builds + runs a consumer that declares only the umbrella, importing a re-exported symbol" $ do
       let base = "/tmp/zinc-umbrella-consumer"
           db = base ++ "/db/pkg.db"
-          lib nm = Component Library nm ["src"] [] Nothing [] [] ["base"] [] [] [] [] [] [] False
+          lib nm = Component Library nm ["src"] [] Nothing [] [] ["base"] [] [] [] [] [] [] [] False
       stale <- doesDirectoryExist base
       when stale $ removeDirectoryRecursive base
       _ <- initPackageDb db
@@ -2663,6 +2691,7 @@ main = hspec $ do
                 , confHsLibraries = []
                 , confDepends = ["origin"]
                 , confReexports = [("Origin", "origin", "Origin")]
+                , confExtraLibraries = []
                 }
       umbR <- registerPackage db umbrella
       -- consumer executable declaring ONLY the umbrella (not origin).
@@ -2774,7 +2803,7 @@ main = hspec $ do
 
   describe "replArgs" $ do
     let exeComp =
-          Component Executable "app" ["app"] [] (Just "Main.hs") [] [] [] [] [] [] [] [] [] False
+          Component Executable "app" ["app"] [] (Just "Main.hs") [] [] [] [] [] [] [] [] [] [] False
 
     it "builds ghci args loading the member's main" $
       replArgs (Just "/db") "/m" exeComp
@@ -2788,7 +2817,7 @@ main = hspec $ do
       materialize dir (scaffoldNew "demo")
       -- flat scaffold: the member is the repo root itself (member "."), source at app/
       let memberDir = dir
-          comp = Component Executable "demo" ["app"] [] (Just "Main.hs") [] [] [] [] [] [] [] [] [] False
+          comp = Component Executable "demo" ["app"] [] (Just "Main.hs") [] [] [] [] [] [] [] [] [] [] False
       out <- readProcess "ghci" (replArgs Nothing memberDir comp ++ ["-e", "main"]) ""
       out `shouldBe` "Hello from demo!\n"
 
@@ -3615,6 +3644,26 @@ main = hspec $ do
       fmap (concatMap compReexports . filter ((== Library) . compKind)) (parseCabalComponents cabal)
         `shouldBe` Right [("Effectful", Nothing, "Effectful"), ("Renamed", Nothing, "Orig")]
 
+  describe "Zinc.Cabal external C libraries (zinc-389)" $
+    -- extra-libraries are already link names; a pkgconfig-depends module is
+    -- normalized to its link name by dropping a leading 'lib' (libpq -> pq). Both
+    -- land in compExtraLibs (the conf's extra-libraries:), and the nixpkgs attr
+    -- (postgresql) in compSystemLibs (the env flake).
+    it "reads extra-libraries + pkgconfig-depends into link names (libpq -> pq)" $ do
+      let cabal =
+            unlines
+              [ "cabal-version: 2.4"
+              , "name: pglib"
+              , "version: 1.0"
+              , "library"
+              , "  build-depends: base"
+              , "  extra-libraries: pq"
+              , "  pkgconfig-depends: libpq"
+              , "  default-language: Haskell2010"
+              ]
+          libOf f = either (const []) (concatMap f . filter ((== Library) . compKind)) (parseCabalComponents cabal)
+      (sort (libOf compExtraLibs), libOf compSystemLibs) `shouldBe` (["pq"], ["postgresql"])
+
   describe "Zinc.Cabal platform finalization (xum)" $
     -- A wasm build must finalize against Platform Wasm32 Wasi so arch(wasm32)
     -- conditionals pick a package's wasm variant (e.g. miso's ffi/wasm +
@@ -3701,6 +3750,7 @@ main = hspec $ do
             , compGhcOptions = []
             , compDepends = ["base"]
             , compSystemLibs = []
+            , compExtraLibs = []
             , compIncludeDirs = []
             , compCppOptions = []
             , compCSources = []

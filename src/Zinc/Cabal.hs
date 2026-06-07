@@ -16,8 +16,8 @@ module Zinc.Cabal
 
 import qualified Data.ByteString.Char8 as BS
 import Data.Foldable (toList)
-import Data.List (intercalate, nub)
-import Data.Maybe (mapMaybe)
+import Data.List (intercalate, nub, stripPrefix)
+import Data.Maybe (fromMaybe, mapMaybe)
 import Distribution.Compiler
   ( AbiTag (NoAbiTag)
   , CompilerFlavor (GHC)
@@ -228,6 +228,7 @@ mergeLib sub acc =
     , compCppOptions  = compCppOptions acc ++ compCppOptions sub
     , compCSources    = nub (compCSources acc ++ compCSources sub)
     , compSystemLibs  = nub (compSystemLibs acc ++ compSystemLibs sub)
+    , compExtraLibs   = nub (compExtraLibs acc ++ compExtraLibs sub)
     , compReexports   = nub (compReexports acc ++ compReexports sub)
     , compWasmExports = nub (compWasmExports acc ++ compWasmExports sub)
     }
@@ -287,6 +288,11 @@ fromBuildInfo kind name bi =
     , compGhcOptions = hcOptions GHC bi
     , compDepends = map (unPackageName . depPkgName) (targetBuildDepends bi)
     , compSystemLibs = nub (mapMaybe toNixpkgs (extraLibs bi ++ pkgconfigNames bi))
+    , -- C library LINK names for the conf's @extra-libraries:@ (zinc-389):
+      -- cabal @extra-libraries@ are already link names; a @pkgconfig-depends@
+      -- module is normalized by dropping a leading @lib@ (@libpq@ -> @pq@), the
+      -- usual module-vs-link-name convention.
+      compExtraLibs = nub (extraLibs bi ++ map pkgconfigLink (pkgconfigNames bi))
     , compIncludeDirs = includeDirs bi
     , compCppOptions = cppOptions bi
     , compCSources = cSources bi
@@ -296,6 +302,8 @@ fromBuildInfo kind name bi =
     }
   where
     pkgconfigNames b = [unPkgconfigName n | PkgconfigDependency n _ <- pkgconfigDepends b]
+    -- A pkgconfig module's C link name: drop a leading @lib@ (@libpq@ -> @pq@).
+    pkgconfigLink m = fromMaybe m (stripPrefix "lib" m)
 
 -- | The declared @build-type@ of a @.cabal@ (e.g. @"Simple"@, @"Custom"@).
 -- zinc only builds Simple-ish packages directly; Custom (Setup.hs) deps are

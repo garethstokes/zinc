@@ -92,6 +92,7 @@ data PackageConf = PackageConf
   , confHsLibraries    :: [String]
   , confDepends        :: [String]   -- ^ dependency unit-ids
   , confReexports      :: [(String, String, String)] -- ^ resolved reexports: (newName, originUnitId, originName) — emitted inline in exposed-modules (zinc-jdf)
+  , confExtraLibraries :: [String]   -- ^ external C library link names; GHC auto-adds @-l<name>@ for a dependent (zinc-389)
   }
   deriving (Eq, Show)
 
@@ -111,6 +112,10 @@ renderConf c =
     , "import-dirs: " ++ unwords (confImportDirs c)
     , "library-dirs: " ++ unwords (confLibraryDirs c)
     , "hs-libraries: " ++ unwords (confHsLibraries c)
+    , -- External C libraries (cabal extra-libraries / pkgconfig-depends): GHC
+      -- auto-emits @-l<name>@ when a dependent links, so a consumer of a package
+      -- that FFIs into e.g. libpq doesn't hit "undefined reference" (zinc-389).
+      "extra-libraries: " ++ unwords (confExtraLibraries c)
     , "depends: " ++ unwords (confDepends c)
     ]
 
@@ -515,6 +520,7 @@ buildLibArtifactsFor target lb = runResult $ do
               -- zinc deps by bare name, non-base boot libs by real id.
               confDepends = [depConfId d | d <- nub (compDepends comp), d /= "base"]
             , confReexports = reexports
+            , confExtraLibraries = compExtraLibs comp
             }
   -- Persist the conf alongside the build (the artifact cache re-registers it
   -- without recompiling); report whether it changed so a sibling lib can skip
