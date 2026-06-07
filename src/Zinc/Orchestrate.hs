@@ -54,7 +54,8 @@ import Distribution.System (Arch (Wasm32), OS (Wasi), Platform (Platform), build
 import Zinc.CacheBackend (CacheBackend (cbPull, cbPush), CacheConfig (ccReadUrls, ccWriteUrl), PullOutcome (Pulled), httpBackend, resolveCacheConfig)
 import Zinc.Quirks (quirkGhcOptions)
 import Zinc.Fetch (packageDirIn)
-import Zinc.Git (cloneAt)
+import Zinc.Git (cloneAt, splitRepoSubdir)
+import Zinc.Override (loadOverrides, overrideLocalFile)
 import Zinc.Hackage (fetchHackageTarball)
 import Zinc.Lock (LockedPackage (..), Source (..), lockRepo, lockRev, parseLock, srcKey)
 import Zinc.Manifest
@@ -69,7 +70,7 @@ import Zinc.Manifest
   , depGhcOptionsOf
   , depFlagsOf
   )
-import Zinc.Diagnostic (ZincError (AmbiguousTarget, ContentHashMismatch, DepBootConflict, ManifestParse, NixAbsent, NoZincToml, OtherError, StaticUnsupported, ToolchainMissing))
+import Zinc.Diagnostic (Diagnostic (..), Severity (SWarning), ZincError (AmbiguousTarget, ContentHashMismatch, DepBootConflict, ManifestParse, NixAbsent, NoZincToml, OtherError, StaticUnsupported, ToolchainMissing))
 import Zinc.Package (PackageFormat (..), dockerImageRef, packagingFlake, storePathRefs)
 import Zinc.Except (Result, failWith, failWithError, liftEither, liftEitherE, liftIO, orFail, orFailE, runResult)
 import Zinc.Output (OutputEvent (..), Sink, emit, nullSink)
@@ -122,7 +123,8 @@ buildWorkspaceReport sink target wsDir member ghcOverride keep = runResult $ do
   -- Shared accumulator for the finer cumulative per-phase breakdown (nti.3),
   -- written from the parallel closure builds and the member builds alike.
   acc <- liftIO (newIORef Map.empty)
-  (pkgs, closureMs) <- timed (orFailE (buildClosure sink target wsDir storeRoot wsDb effectiveGhc (depGhcOptionsOf ws) (depFlagsOf ws) (Just acc)))
+  overrides <- liftIO (loadOverrides wsDir)
+  (pkgs, closureMs) <- timed (orFailE (buildClosure sink target wsDir storeRoot wsDb effectiveGhc (depGhcOptionsOf ws) (depFlagsOf ws) overrides (Just acc)))
   (exes, memberMs) <- timed (concat <$> traverse (buildMemberAll (Just acc) wsDb) (orderMembers members))
   -- For a wasm build, surface each member's + closure deps' js-sources next to
   -- the built .wasm so a browser page can load them (zinc-gdk).
@@ -231,7 +233,8 @@ runWarm sink target wsDir ghcOverride = runResult $ do
   -- objects. The pkgdb + store keys are target-scoped, like the full build.
   orFail (initPackageDbFor target wsDb)
   storeRoot <- liftIO resolveStoreRoot
-  orFailE (buildClosure sink target wsDir storeRoot wsDb (fromMaybe (wsGhc ws) ghcOverride) (depGhcOptionsOf ws) (depFlagsOf ws) Nothing)
+  overrides <- liftIO (loadOverrides wsDir)
+  orFailE (buildClosure sink target wsDir storeRoot wsDb (fromMaybe (wsGhc ws) ghcOverride) (depGhcOptionsOf ws) (depFlagsOf ws) overrides Nothing)
 
 -- | @zinc build [member] --json@: build, returning the structured outcome
 -- (executables + per-package closure report) and the 'Timing' block (total
@@ -370,8 +373,23 @@ parMapBounded n f xs = do
 -- its library compiled + registered. (Compiling arbitrary upstream packages
 -- with Setup.hs / Template Haskell / deep closures is a further follow-up;
 -- this handles zinc-native git library deps.)
-buildClosure :: Sink -> Target -> FilePath -> FilePath -> FilePath -> String -> [(String, [String])] -> [(String, [(String, Bool)])] -> Maybe (IORef (Map.Map String Int)) -> IO (Either ZincError [PackageReport])
-buildClosure sink target wsDir storeRoot wsDb ghcVersion buildOpts depFlagsMap mAcc = runResult $ do
+-- | A loud, warning-severity diagnostic announcing an active local override
+-- (zinc-g1b), so a non-reproducible build (live local tree, not the locked sha)
+-- is never silent — same spirit as the no-silent-caps rule.
+overrideNote :: String -> FilePath -> Diagnostic
+overrideNote name path =
+  Diagnostic
+    { diagCode = "ZINC_LOCAL_OVERRIDE"
+    , diagSeverity = SWarning
+    , diagTitle = "using local override: " ++ name ++ " -> " ++ path
+    , diagDetail = Just "building from a live local checkout (not the locked sha); zinc.toml/zinc.lock are unchanged"
+    , diagLocation = Nothing
+    , diagPackage = Just name
+    , diagNextAction = Just ("remove its [overrides] entry in " ++ overrideLocalFile ++ " to restore the locked, reproducible build")
+    }
+
+buildClosure :: Sink -> Target -> FilePath -> FilePath -> FilePath -> String -> [(String, [String])] -> [(String, [(String, Bool)])] -> [(String, FilePath)] -> Maybe (IORef (Map.Map String Int)) -> IO (Either ZincError [PackageReport])
+buildClosure sink target wsDir storeRoot wsDb ghcVersion buildOpts depFlagsMap overrides mAcc = runResult $ do
   let lockFile = wsDir </> "zinc.lock"
   present <- liftIO (doesFileExist lockFile)
   if not present
@@ -379,6 +397,13 @@ buildClosure sink target wsDir storeRoot wsDb ghcVersion buildOpts depFlagsMap m
     else do
       liftIO (emit sink ResolveStart)
       locks <- liftEither . parseLock =<< liftIO (readFile lockFile)
+      -- LOUDLY surface active local overrides (zinc-g1b): a non-reproducible
+      -- build (live local tree, not the locked sha) must never be silent. Only
+      -- overrides that match a dep in this closure are reported.
+      liftIO $ sequence_
+        [ emit sink (Note (overrideNote name path))
+        | l <- locks, (name, path) <- overrides, name == lockName l
+        ]
       liftIO (emit sink (Plan (length locks)))
       levels <- liftEitherE (topoLevels (map toResolved locks))
       let byName = Map.fromList [(lockName l, l) | l <- locks]
@@ -416,6 +441,20 @@ buildClosure sink target wsDir storeRoot wsDb ghcVersion buildOpts depFlagsMap m
     -- [build-options] override so changing an override invalidates the cache.
     cacheKeyOf l = buildCacheKeyFor target (BuildKey (lockName l) (lockRev l) ghcVersion (lockDepends l) (overrideFor l) (flagsFor l))
 
+    -- The cache key for a node, folding the LIVE content hash of a local override
+    -- (zinc-g1b) in place of the locked rev — so working-tree edits invalidate
+    -- the cache and rebuild, and a stale store-pkg from a prior edit is never
+    -- reused. A non-overridden dep uses the pure 'cacheKeyOf' (locked rev).
+    keyFor l = case lookup (lockName l) overrides of
+      Nothing    -> pure (cacheKeyOf l)
+      Just opath -> do
+        h <- contentHash (overridePkgDir opath)
+        pure (buildCacheKeyFor target (BuildKey (lockName l) ("override:" ++ h) ghcVersion (lockDepends l) (overrideFor l) (flagsFor l)))
+
+    -- The package dir of an override value: its checkout root, plus an optional
+    -- @path#subdir@ for a monorepo override (matching the resolver's #subdir).
+    overridePkgDir opath = let (base, msub) = splitRepoSubdir opath in maybe base (base </>) msub
+
     -- A dep's effective ghc-option override: the built-in quirk for the package
     -- (zinc-8uh) PLUS any workspace [build-options]. The quirk leads so a known
     -- fix (e.g. colour -XSafe) applies even when the workspace lists nothing.
@@ -430,8 +469,8 @@ buildClosure sink target wsDir storeRoot wsDb ghcVersion buildOpts depFlagsMap m
     -- concurrently), re-check the cache inside the lock — a peer may have built
     -- it while we waited — and only then fetch + compile.
     produceOne l = do
-      let key = cacheKeyOf l
-          confPath = storeConfPath storeRoot key
+      key <- keyFor l
+      let confPath = storeConfPath storeRoot key
       cached <- doesFileExist confPath
       if cached
         then reuseCached l key
@@ -480,36 +519,42 @@ buildClosure sink target wsDir storeRoot wsDb ghcVersion buildOpts depFlagsMap m
     buildNode l key = do
       let pkgOut = storePkgPath storeRoot key
           report st = PackageReport (lockName l) (lockRev l) st Nothing
+      pkgDir <- case lookup (lockName l) overrides of
+        -- Local override (zinc-g1b): build straight from the live working tree —
+        -- no clone, no fetch, and NO sha256 verify (a mutable tree can't be
+        -- content-pinned; the override hash already gates the cache via 'keyFor').
+        Just opath -> pure (overridePkgDir opath)
+        Nothing -> do
           -- Keyed by repo (srcKey), so a monorepo's sub-packages share ONE clone
           -- instead of each re-cloning the identical tree (zinc-qln).
-          dest = storeSrcPath storeRoot (srcKey l) (lockRev l)
-          -- A clone-scoped lock so sibling sub-packages — which hold distinct
-          -- build-key locks — can't race to clone the same checkout. Re-checked
-          -- inside the lock (a peer may have just cloned it).
-          srcLockKey = "src-" ++ takeFileName dest
-      fetched <- liftIO $ withStoreLock storeRoot srcLockKey $ do
-        exists <- doesDirectoryExist dest
-        if exists
-          then pure (Right ())
-          else do
-            emit sink (FetchStart (lockName l))
-            -- Fetch the pinned source by its kind: a git clone, or a Hackage sdist
-            -- tarball for a vendored pin (b1z). Either way the bytes are verified
-            -- against the lock's sha256 below, so build never resolves a version —
-            -- it only retrieves the already-pinned content.
-            let fetchLocked = case lockSource l of
-                  GitSource repo rev -> fmap (const ()) <$> cloneAt repo rev dest
-                  TarballSource ver  -> fmap (const ()) <$> fetchHackageTarball (lockName l) ver dest
-            r <- accuminto mAcc "fetch" (first (("fetch " ++ lockName l ++ ": ") ++) <$> fetchLocked)
-            case r of
-              Right _ -> emit sink (FetchDone (lockName l)) >> pure (Right ())
-              Left e  -> pure (Left e)
-      orFail (pure fetched)
-      orFailE (verifyFetched l dest)
-      -- The package may live in a subdirectory of the repo (monorepo) — an
-      -- explicit #subdir, or a <name>/ dir auto-detected for metadata-poor
-      -- monorepos. Resolve it the same way the resolver did.
-      pkgDir <- liftIO (packageDirIn dest (lockRepo l) (lockName l))
+          let dest = storeSrcPath storeRoot (srcKey l) (lockRev l)
+              -- A clone-scoped lock so sibling sub-packages — which hold distinct
+              -- build-key locks — can't race to clone the same checkout. Re-checked
+              -- inside the lock (a peer may have just cloned it).
+              srcLockKey = "src-" ++ takeFileName dest
+          fetched <- liftIO $ withStoreLock storeRoot srcLockKey $ do
+            exists <- doesDirectoryExist dest
+            if exists
+              then pure (Right ())
+              else do
+                emit sink (FetchStart (lockName l))
+                -- Fetch the pinned source by its kind: a git clone, or a Hackage
+                -- sdist tarball for a vendored pin (b1z). Either way the bytes are
+                -- verified against the lock's sha256 below, so build never resolves
+                -- a version — it only retrieves the already-pinned content.
+                let fetchLocked = case lockSource l of
+                      GitSource repo rev -> fmap (const ()) <$> cloneAt repo rev dest
+                      TarballSource ver  -> fmap (const ()) <$> fetchHackageTarball (lockName l) ver dest
+                r <- accuminto mAcc "fetch" (first (("fetch " ++ lockName l ++ ": ") ++) <$> fetchLocked)
+                case r of
+                  Right _ -> emit sink (FetchDone (lockName l)) >> pure (Right ())
+                  Left e  -> pure (Left e)
+          orFail (pure fetched)
+          orFailE (verifyFetched l dest)
+          -- The package may live in a subdirectory of the repo (monorepo) — an
+          -- explicit #subdir, or a <name>/ dir auto-detected for metadata-poor
+          -- monorepos. Resolve it the same way the resolver did.
+          liftIO (packageDirIn dest (lockRepo l) (lockName l))
       comps <- liftIO (loadDepComponents (flagsFor l) pkgDir)
       (version, components) <- liftEither (first ((lockName l ++ ": ") ++) comps)
       case filter ((== Library) . compKind) components of

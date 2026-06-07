@@ -89,11 +89,13 @@ scaffoldWorkspace name =
         ]
 
 -- | The @.gitignore@ shared by both scaffolds (zinc-6hf.3): zinc's build dir and
--- Nix's @result@ symlinks plus stray GHC artifacts.
+-- Nix's @result@ symlinks plus stray GHC artifacts, and the per-developer local
+-- dependency-override file (zinc-g1b), which must never be committed.
 gitignore :: String
 gitignore =
   unlines
     [ ".zinc/"
+    , "zinc.local.toml"
     , "result"
     , "result-*"
     , "*.hi"

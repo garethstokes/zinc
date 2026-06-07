@@ -9,6 +9,8 @@ dist-newstyle/
 .zinc/
 *.hi
 *.o
+# per-developer local dependency overrides (zinc-g1b); never committed
+zinc.local.toml
 result
 result-*
 

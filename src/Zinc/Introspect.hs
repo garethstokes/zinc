@@ -28,6 +28,7 @@ import Zinc.Cache (BuildKey (..), buildCacheKey, storeConfPath)
 import Data.Bifunctor (first)
 import Zinc.Diagnostic (ZincError (ManifestParse, NoZincToml))
 import Zinc.Except (Result, failWithError, liftEitherE, liftIO, runResult)
+import Zinc.Override (loadOverrides)
 import Zinc.Json (Json (..))
 import Zinc.Lock (LockedPackage (..), lockRepo, lockRev, parseLock)
 import Zinc.Skill (LockedSkill (..), parseSkillLock)
@@ -86,7 +87,7 @@ driftOf ws locks =
 
 -- | @zinc status@: gather toolchain, members, per-dep cache status, and drift.
 -- Returns the pieces so the caller can render either JSON or human text.
-runStatus :: FilePath -> IO (Either ZincError (String, [String], [DepStatus], [String], [String]))
+runStatus :: FilePath -> IO (Either ZincError (String, [String], [DepStatus], [String], [String], [(String, FilePath)]))
 runStatus wsDir = runResult $ do
   (_, ws) <- loadWorkspace wsDir
   locks <- liftIO (loadLocks wsDir)
@@ -95,21 +96,27 @@ runStatus wsDir = runResult $ do
       flags = depFlagsOf ws
   deps <- liftIO (mapM (depStatus storeRoot (wsGhc ws) opts flags) locks)
   skills <- liftIO (loadSkillNames wsDir)
-  pure (wsGhc ws, wsMembers ws, deps, driftOf ws locks, skills)
+  -- Active local overrides (zinc-g1b), surfaced loudly: only those matching a
+  -- locked dep (an override for a non-dep is inert) — so status never silently
+  -- hides a non-reproducible build.
+  allOverrides <- liftIO (loadOverrides wsDir)
+  let overrides = [(n, p) | (n, p) <- allOverrides, n `elem` map lockName locks]
+  pure (wsGhc ws, wsMembers ws, deps, driftOf ws locks, skills, overrides)
   where
     depStatus storeRoot ghc opts flags l = do
       let key = buildCacheKey (BuildKey (lockName l) (lockRev l) ghc (lockDepends l) (fromMaybe [] (lookup (lockName l) opts)) (fromMaybe [] (lookup (lockName l) flags)))
       cached <- doesFileExist (storeConfPath storeRoot key)
       pure (DepStatus (lockName l) (lockRev l) cached)
 
-statusJson :: String -> [String] -> [DepStatus] -> [String] -> [String] -> Json
-statusJson ghc members deps drift skills =
+statusJson :: String -> [String] -> [DepStatus] -> [String] -> [String] -> [(String, FilePath)] -> Json
+statusJson ghc members deps drift skills overrides =
   JObject
     [ ("ghc", JString ghc)
     , ("members", JArray (map JString members))
     , ("dependencies", JArray (map depJson deps))
     , ("drift", JArray (map JString drift))
     , ("skills", JArray (map JString skills))
+    , ("overrides", JArray [JObject [("name", JString n), ("path", JString p)] | (n, p) <- overrides])
     ]
   where
     depJson d =
@@ -119,13 +126,16 @@ statusJson ghc members deps drift skills =
         , ("cached", JBool (dsCached d))
         ]
 
-renderStatus :: String -> [String] -> [DepStatus] -> [String] -> [String] -> String
-renderStatus ghc members deps drift skills =
+renderStatus :: String -> [String] -> [DepStatus] -> [String] -> [String] -> [(String, FilePath)] -> String
+renderStatus ghc members deps drift skills overrides =
   unlines $
     ["GHC " ++ ghc, "members: " ++ list members, show (length deps) ++ " dependency(ies):"]
       ++ map depLine deps
       ++ ["lock drift: " ++ (if null drift then "none" else list drift)]
       ++ ["skills: " ++ (if null skills then "(none)" else list skills) | not (null skills)]
+      -- Loud, last so it isn't lost: a non-reproducible build via a local override
+      -- (zinc-g1b). Absent when there are none, so a clean build says nothing.
+      ++ ["local overrides (NOT reproducible): " ++ intercalate ", " [n ++ " -> " ++ p | (n, p) <- overrides] | not (null overrides)]
   where
     list xs = if null xs then "(none)" else intercalate ", " xs
     depLine d = "  " ++ dsName d ++ " @ " ++ take 8 (dsRef d) ++ (if dsCached d then " (cached)" else " (to build)")

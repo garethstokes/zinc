@@ -254,7 +254,7 @@ dispatch mode Doctor = do
     else putStr (renderDoctor diags)
   unless (doctorOk diags) (exitWith (ExitFailure 1))
 dispatch mode Status =
-  runStatus "." >>= emitIntrospection "status" mode (\(g, m, d, dr, sk) -> statusJson g m d dr sk) (\(g, m, d, dr, sk) -> renderStatus g m d dr sk)
+  runStatus "." >>= emitIntrospection "status" mode (\(g, m, d, dr, sk, ov) -> statusJson g m d dr sk ov) (\(g, m, d, dr, sk, ov) -> renderStatus g m d dr sk ov)
 dispatch mode Graph =
   runGraph "." >>= emitIntrospection "graph" mode graphJson renderGraph
 dispatch mode (Explain pkg) =

@@ -93,6 +93,7 @@ import Zinc.Build (GhcInvocation (..), LibBuild (..), MemberBuild (..), PackageC
 import Zinc.Cache (BuildKey (..), buildCacheKey, buildCacheKeyFor, cacheHit, cacheKeyPayload, confCodegenEpoch, storeConfPath, storePkgPath, writeCachedConf)
 import Zinc.Cabal (bootConflicts, cabalBuildType, cabalJsSources, cabalVersion, parseCabalComponents, parseCabalComponentsForGhc, parseCabalComponentsForPlatform)
 import Zinc.Configure (configureIncludeDirs)
+import Zinc.Override (parseOverrides)
 import Distribution.System (Arch (Wasm32), OS (Wasi), Platform (Platform), buildPlatform)
 import Zinc.Env (devEnvVars, envCacheKey, envCacheKeyFor, nixPrintDevEnv, provisionEnv, toolchainPath, toolchainVars)
 import Zinc.Macros (emitCabalMacros)
@@ -705,9 +706,9 @@ main = hspec $ do
       parseArgs ["explain", "aeson"] `shouldBe` Right (OutputFlags False False, Explain "aeson")
       parseArgs ["explain", "aeson", "--json"] `shouldBe` Right (OutputFlags True False, Explain "aeson")
 
-    it "renders status as JSON (incl. installed skills; lmm)" $
-      renderJson (statusJson "9.6.5" ["packages/app"] [DepStatus "colour" "abc1234" True] ["aeson"] ["brainstorming"])
-        `shouldBe` "{\"ghc\":\"9.6.5\",\"members\":[\"packages/app\"],\"dependencies\":[{\"name\":\"colour\",\"ref\":\"abc1234\",\"cached\":true}],\"drift\":[\"aeson\"],\"skills\":[\"brainstorming\"]}"
+    it "renders status as JSON (incl. installed skills; lmm + overrides g1b)" $
+      renderJson (statusJson "9.6.5" ["packages/app"] [DepStatus "colour" "abc1234" True] ["aeson"] ["brainstorming"] [("toml-parser", "/local/tp")])
+        `shouldBe` "{\"ghc\":\"9.6.5\",\"members\":[\"packages/app\"],\"dependencies\":[{\"name\":\"colour\",\"ref\":\"abc1234\",\"cached\":true}],\"drift\":[\"aeson\"],\"skills\":[\"brainstorming\"],\"overrides\":[{\"name\":\"toml-parser\",\"path\":\"/local/tp\"}]}"
 
     it "runStatus surfaces installed skill names from the lock (lmm)" $ do
       let d = "/tmp/zinc-status-skills"
@@ -717,7 +718,7 @@ main = hspec $ do
       writeFile (d </> "zinc.toml") "[workspace]\nmembers = [\".\"]\nghc = \"9.6.5\"\n"
       writeFile (d </> "zinc.lock") (renderSkillLock [LockedSkill "brainstorming" "r/b" "rev" "sha256:x"])
       r <- runStatus d
-      either (const []) (\(_, _, _, _, sk) -> sk) r `shouldBe` ["brainstorming"]
+      either (const []) (\(_, _, _, _, sk, _) -> sk) r `shouldBe` ["brainstorming"]
 
     it "renders the closure graph: nodes, edges, topo levels" $ do
       let locks = [LockedPackage "a" (GitSource "r/a" "ra") "sha256:x" ["b"] [] [], LockedPackage "b" (GitSource "r/b" "rb") "sha256:y" [] [] []]
@@ -1608,6 +1609,20 @@ main = hspec $ do
 
     it "newestTag is newestTagFor with no package scope, non-subdir" $
       newestTagFor Nothing False ["v1.2.0", "v1.10.0"] `shouldBe` Just "v1.10.0"
+
+  describe "parseOverrides — local dependency overrides (zinc-g1b)" $ do
+    it "reads the [overrides] table as name -> local path (incl. #subdir)" $
+      parseOverrides
+        (unlines
+          [ "[overrides]"
+          , "toml-parser = \"/home/dev/toml-parser\""
+          , "vector = \"/src/monorepo#vector\""
+          ])
+        `shouldBe` [("toml-parser", "/home/dev/toml-parser"), ("vector", "/src/monorepo#vector")]
+
+    it "is empty with no [overrides] table, and tolerates an unparseable file" $ do
+      parseOverrides "[workspace]\nmembers = []\n" `shouldBe` []
+      parseOverrides "this is not + valid = = toml" `shouldBe` []
 
   describe "chooseLatestRef — prefer a newer Hackage release over a stale tag (zinc-ngd)" $ do
     it "prefers the Hackage release (vendored) when it is NEWER than the newest git tag" $
