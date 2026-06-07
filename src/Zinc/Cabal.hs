@@ -211,6 +211,7 @@ mergeLib sub acc =
     , compCSources    = nub (compCSources acc ++ compCSources sub)
     , compSystemLibs  = nub (compSystemLibs acc ++ compSystemLibs sub)
     , compReexports   = nub (compReexports acc ++ compReexports sub)
+    , compWasmExports = nub (compWasmExports acc ++ compWasmExports sub)
     }
 
 executableComponents :: PackageDescription -> [Component]
@@ -272,6 +273,7 @@ fromBuildInfo kind name bi =
     , compCppOptions = cppOptions bi
     , compCSources = cSources bi
     , compReexports = [] -- set by 'fromLibrary' (only libraries reexport); exes/tests have none
+    , compWasmExports = [] -- wasm reactor exports are a zinc.toml exe setting, not a cabal field (zinc-9po.5)
     }
   where
     pkgconfigNames b = [unPkgconfigName n | PkgconfigDependency n _ <- pkgconfigDepends b]

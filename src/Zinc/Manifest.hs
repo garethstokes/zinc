@@ -106,6 +106,7 @@ data Component = Component
   , compCppOptions     :: [String]     -- ^ CPP @-D@ defines (cabal cpp-options), passed via @-optP@
   , compCSources       :: [String]     -- ^ C sources to compile + archive (cabal c-sources), relative to the package
   , compReexports      :: [(String, Maybe String, String)] -- ^ cabal reexported-modules as (newName, originalPackage?, originalName); origin pkg is Nothing for a bare reexport, resolved at conf time (zinc-jdf)
+  , compWasmExports    :: [String]     -- ^ exe wasm-exports: a non-empty list makes a wasm build a browser REACTOR module exporting these symbols (+ ghc_wasm_jsffi.js glue); empty = a WASI command module (zinc-9po.5)
   }
   deriving (Eq, Show)
 
@@ -159,6 +160,7 @@ mkComponent kind name t =
     , compCppOptions = strs "cpp-options"
     , compCSources = strs "c-sources"
     , compReexports = [] -- zinc-native components don't reexport (cabal-only, zinc-jdf)
+    , compWasmExports = strs "wasm-exports" -- presence → browser reactor flavor (zinc-9po.5)
     }
   where
     strs k = either (const []) id (optStringArray k t)

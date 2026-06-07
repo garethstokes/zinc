@@ -84,7 +84,7 @@ import Zinc.Manifest
 import Zinc.Fetch (gitFetchManifest, isHpackOnly, namedCabal, packageDirIn)
 import Zinc.GC (GCRoot (..), gcStore, runGc)
 import Zinc.Add (enrichWithRepos, freezeClosure, lockEntry, runAdd, runUpdate, runVendor, splitNameVersion)
-import Zinc.Build (GhcInvocation (..), MemberBuild (..), PackageConf (..), archiveArgs, buildMember, ghcMakeArgs, installedVersions, preprocessorFor, registerPackage, renderConf, replArgs, runPreprocessor, wasmSupported, writeFileIfChanged)
+import Zinc.Build (GhcInvocation (..), MemberBuild (..), PackageConf (..), archiveArgs, buildMember, ghcMakeArgs, installedVersions, preprocessorFor, reactorLinkFlags, registerPackage, renderConf, replArgs, runPreprocessor, wasmSupported, writeFileIfChanged)
 import Zinc.Cache (BuildKey (..), buildCacheKey, buildCacheKeyFor, cacheHit, storeConfPath, storePkgPath, writeCachedConf)
 import Zinc.Cabal (bootConflicts, cabalBuildType, cabalVersion, parseCabalComponents, parseCabalComponentsForGhc)
 import Zinc.Env (devEnvVars, envCacheKey, envCacheKeyFor, nixPrintDevEnv, provisionEnv, toolchainPath, toolchainVars)
@@ -1146,6 +1146,7 @@ main = hspec $ do
             , compCppOptions = []
             , compCSources = []
             , compReexports = []
+            , compWasmExports = []
             }
 
     it "parses a named executable component" $
@@ -1705,6 +1706,7 @@ main = hspec $ do
             , compCppOptions = []
             , compCSources = []
             , compReexports = []
+            , compWasmExports = []
             }
 
     it "derives an executable component" $
@@ -2383,6 +2385,7 @@ main = hspec $ do
               , compCppOptions = []
               , compCSources = []
               , compReexports = []
+              , compWasmExports = []
               }
       r <- buildMember (MemberBuild dir (dir ++ "/build") Nothing comp)
       case r of
@@ -2409,7 +2412,7 @@ main = hspec $ do
   describe "orderMembers" $
     it "orders a member after the siblings it depends on" $ do
       let comp deps =
-            Component Library "x" [] [] Nothing [] [] deps [] [] [] [] []
+            Component Library "x" [] [] Nothing [] [] deps [] [] [] [] [] []
           core = ("packages/core", MemberManifest "core" "1.0" [comp []])
           app = ("packages/app", MemberManifest "app" "1.0" [comp ["core"]])
       map (pkgName . snd) (orderMembers [app, core]) `shouldBe` ["core", "app"]
@@ -2529,7 +2532,7 @@ main = hspec $ do
 
   describe "replArgs" $ do
     let exeComp =
-          Component Executable "app" ["app"] [] (Just "Main.hs") [] [] [] [] [] [] [] []
+          Component Executable "app" ["app"] [] (Just "Main.hs") [] [] [] [] [] [] [] [] []
 
     it "builds ghci args loading the member's main" $
       replArgs (Just "/db") "/m" exeComp
@@ -2543,7 +2546,7 @@ main = hspec $ do
       materialize dir (scaffoldNew "demo")
       -- flat scaffold: the member is the repo root itself (member "."), source at app/
       let memberDir = dir
-          comp = Component Executable "demo" ["app"] [] (Just "Main.hs") [] [] [] [] [] [] [] []
+          comp = Component Executable "demo" ["app"] [] (Just "Main.hs") [] [] [] [] [] [] [] [] []
       out <- readProcess "ghci" (replArgs Nothing memberDir comp ++ ["-e", "main"]) ""
       out `shouldBe` "Hello from demo!\n"
 
@@ -3386,6 +3389,7 @@ main = hspec $ do
             , compCppOptions = []
             , compCSources = []
             , compReexports = []
+            , compWasmExports = []
             }
         code = either (Just . errorCode) (const Nothing)
     it "passes a pure-Haskell component for both native and wasm" $
@@ -3396,6 +3400,11 @@ main = hspec $ do
         `shouldBe` (Nothing, Just "ZINC_WASM_UNSUPPORTED")
     it "rejects system libraries for wasm only" $
       code (wasmSupported Wasm32Wasi (pureLib {compSystemLibs = ["zlib"]})) `shouldBe` Just "ZINC_WASM_UNSUPPORTED"
+
+  describe "Zinc.Build reactor link flags (9po.5)" $ do
+    it "emits no-hs-main, reactor exec-model, and one --export per symbol" $
+      reactorLinkFlags ["hs_start", "myFunc"]
+        `shouldBe` ["-no-hs-main", "-optl-mexec-model=reactor", "-optl-Wl,--export=hs_start", "-optl-Wl,--export=myFunc"]
 
   describe "Zinc.Cabal.bootConflicts (sib)" $ do
     let isBoot = (`elem` ["transformers", "base"])

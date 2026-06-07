@@ -15,6 +15,7 @@ module Zinc.Build
   , buildMember
   , buildMemberFor
   , wasmSupported
+  , reactorLinkFlags
   , replArgs
   , LibBuild (..)
   , buildLib
@@ -37,7 +38,7 @@ import System.Exit (ExitCode (..))
 import System.FilePath (dropExtension, makeRelative, takeDirectory, takeExtension, (-<.>), (<.>), (</>))
 import System.IO (readFile')
 import System.Process (readProcessWithExitCode)
-import Zinc.Diagnostic (ZincError (GhcCompile, WasmUnsupported))
+import Zinc.Diagnostic (ZincError (GhcCompile, OtherError, WasmUnsupported))
 import Zinc.Except (liftIO, orFail, orFailE, runResult)
 import Zinc.Macros (emitCabalMacros)
 import Zinc.Manifest (Component (..))
@@ -243,7 +244,12 @@ buildMemberFor target mb = runResult $ do
   let comp = mbComponent mb
   orFailE (pure (wasmSupported target comp))
   liftIO (createDirectoryIfMissing True (mbBuildDir mb))
-  let srcDirs = if null (compSourceDirs comp) then ["."] else compSourceDirs comp
+  -- A wasm exe with a non-empty wasm-exports is a browser REACTOR module
+  -- (zinc-9po.5): no hs-main, the reactor exec-model, and the listed symbols
+  -- exported (the linker dead-code-elims anything unexported). Otherwise it is a
+  -- plain WASI command module (9po.3) and native is unaffected.
+  let reactor = isWasm target && not (null (compWasmExports comp))
+      srcDirs = if null (compSourceDirs comp) then ["."] else compSourceDirs comp
       exe = mbBuildDir mb </> compName comp ++ (if isWasm target then ".wasm" else "")
       mainFile = mbMemberDir mb </> head srcDirs </> maybe "Main.hs" id (compMain comp)
       args =
@@ -254,9 +260,35 @@ buildMemberFor target mb = runResult $ do
           ++ map (\d -> "-i" ++ (mbMemberDir mb </> d)) srcDirs
           ++ map ("-X" ++) (compExtensions comp)
           ++ compGhcOptions comp
+          ++ (if reactor then reactorLinkFlags (compWasmExports comp) else [])
           ++ ["-outputdir", mbBuildDir mb, mainFile, "-o", exe]
   orFailE (runGhcFor target (compName comp) args)
+  -- A reactor needs the JS-FFI glue (ghc_wasm_jsffi.js) generated from the
+  -- linked module by the toolchain's post-link.mjs, so a browser can bind its
+  -- `foreign import javascript` calls (zinc-9po.5).
+  when reactor (orFailE (generateJsffiGlue target exe (mbBuildDir mb)))
   pure exe
+
+-- | The extra @ghc@ flags that turn a wasm executable into a browser reactor
+-- module exporting @exports@ (zinc-9po.5): no Haskell @main@, the @reactor@
+-- exec-model, and an explicit linker @--export@ per symbol so wasm-ld keeps them.
+reactorLinkFlags :: [String] -> [String]
+reactorLinkFlags exports =
+  ["-no-hs-main", "-optl-mexec-model=reactor"] ++ ["-optl-Wl,--export=" ++ e | e <- exports]
+
+-- | Generate the @ghc_wasm_jsffi.js@ glue beside a linked reactor module, via
+-- the toolchain's @post-link.mjs@ (run with the provisioned @node@). The glue
+-- binds the module's @foreign import javascript@ imports for a browser host.
+generateJsffiGlue :: Target -> FilePath -> FilePath -> IO (Either ZincError ())
+generateJsffiGlue target wasmPath outDir = do
+  (_, libdirOut, _) <- readProcessWithExitCode (ghcFor target) ["--print-libdir"] ""
+  let libdir = takeWhile (/= '\n') libdirOut
+      postLink = libdir </> "post-link.mjs"
+      glue = outDir </> "ghc_wasm_jsffi.js"
+  (code, _, err) <- readProcessWithExitCode "node" [postLink, "--input", wasmPath, "--output", glue] ""
+  pure $ case code of
+    ExitSuccess   -> Right ()
+    ExitFailure _ -> Left (OtherError ("post-link JS-FFI glue generation failed: " ++ err))
 
 -- | Reject a component that cannot build for a wasm target: the wasm32-wasi MVP
 -- is pure-Haskell only, so C sources (cabal @c-sources@) or system libraries

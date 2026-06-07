@@ -33,6 +33,13 @@ The first self-hosting, agent-first release.
   is pure-Haskell only).
 - `zinc run --target wasm32-wasi` builds for wasm and runs the `.wasm` through
   the Nix-provided `wasmtime`; native `zinc run` execs the binary directly.
+- Browser **reactor** flavor: an exe with `wasm-exports = [...]` in its
+  `[build.exe.*]` builds (for the wasm target) a reactor module
+  (`-no-hs-main -optl-mexec-model=reactor`, with each symbol linker-exported)
+  and generates the `ghc_wasm_jsffi.js` glue (via the toolchain's
+  `post-link.mjs`) so a browser can bind its `foreign import javascript` calls —
+  zero toolchain setup. An empty/absent `wasm-exports` stays a WASI command
+  module.
 
 ### Agent-native DevEx
 
