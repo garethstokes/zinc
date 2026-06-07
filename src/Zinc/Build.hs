@@ -37,11 +37,11 @@ module Zinc.Build
 import Data.Maybe (fromMaybe, isJust, listToMaybe, mapMaybe)
 import Control.Monad (unless, when)
 import Data.List (find, intercalate, isInfixOf, isPrefixOf, nub, sort)
-import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getModificationTime, listDirectory)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getModificationTime, listDirectory, makeAbsolute)
 import System.Exit (ExitCode (..))
 import System.FilePath (dropExtension, makeRelative, takeDirectory, takeExtension, (-<.>), (<.>), (</>))
 import System.IO (readFile')
-import System.Process (readProcessWithExitCode)
+import System.Process (CreateProcess (cwd), proc, readCreateProcessWithExitCode, readProcessWithExitCode)
 import Zinc.Diagnostic (ZincError (GhcCompile, OtherError, WasmUnsupported))
 import Zinc.Except (liftIO, orFail, orFailE, runResult)
 import Zinc.Macros (emitCabalMacros)
@@ -168,8 +168,17 @@ runGhc = runGhcFor Native
 -- | As 'runGhc', for an explicit 'Target': invokes the target's @ghc@
 -- (e.g. @wasm32-wasi-ghc@). Native is byte-identical (zinc-9po.3).
 runGhcFor :: Target -> String -> [String] -> IO (Either ZincError ())
-runGhcFor target pkg args = do
-  (code, _out, err) <- readProcessWithExitCode (ghcFor target) args ""
+runGhcFor = runGhcInFor Nothing
+
+-- | As 'runGhcFor', but run @ghc@ with an explicit working directory. A package
+-- built from its source root lets Template-Haskell file splices
+-- (@evalFile@/@embedFile@/@addDependentFile@) resolve PACKAGE-RELATIVE paths —
+-- e.g. miso's @$(evalFile "js/miso.js")@ — exactly as Cabal does (it runs the
+-- compiler in the package dir). All other compile paths zinc passes are
+-- absolute, so the cwd only affects this relative file access (zinc-90t).
+runGhcInFor :: Maybe FilePath -> Target -> String -> [String] -> IO (Either ZincError ())
+runGhcInFor mcwd target pkg args = do
+  (code, _out, err) <- readCreateProcessWithExitCode (proc (ghcFor target) args) {cwd = mcwd} ""
   pure $ case code of
     ExitSuccess   -> Right ()
     ExitFailure _ -> Left (GhcCompile pkg err)
@@ -418,9 +427,13 @@ buildLibArtifactsFor target lb = runResult $ do
       else pure (compModules comp)
   -- nub so a package that already lists Paths_<pkg> doesn't collide with the
   -- Paths_ module zinc synthesizes.
+  -- The compile runs with cwd=lbMemberDir (for package-relative TH file splices),
+  -- so the package-db — which zinc holds relative to the workspace — must be
+  -- absolute or ghc can't find it from the package dir (zinc-90t).
+  absDb <- liftIO (makeAbsolute (lbPackageDb lb))
   let modules = nub (discovered ++ [pathsMod])
       compileArgs =
-        ["--make", "-j", "-hide-all-packages", "-package-db", lbPackageDb lb]
+        ["--make", "-j", "-hide-all-packages", "-package-db", absDb]
           ++ packageFlags (map fst installed) (compDepends comp)
           ++ map (\d -> "-i" ++ (lbMemberDir lb </> d)) srcDirs
           ++ ["-i" ++ gen, "-i" ++ ppGen, "-optP-include", "-optP" ++ macrosHeader]
@@ -437,7 +450,8 @@ buildLibArtifactsFor target lb = runResult $ do
   -- alex/happy lexer+parser) so ghc --make finds the resulting .hs modules,
   -- then compile and archive. orFail short-circuits on the first failure.
   orFail (runPreprocessorsTo target ["-I" ++ (lbMemberDir lb </> d) | d <- compIncludeDirs comp] ppGen (map (lbMemberDir lb </>) srcDirs))
-  orFailE (runGhcFor target (lbName lb) compileArgs)
+  -- Run in the package source root so package-relative TH file splices resolve.
+  orFailE (runGhcInFor (Just (lbMemberDir lb)) target (lbName lb) compileArgs)
   -- C sources (cabal c-sources, e.g. primitive's cbits/primitive-memops.c) are
   -- compiled in a SEPARATE `ghc -c` step into the dist dir, NOT via `ghc --make`:
   -- --make writes a C object next to its (absolute) source — outside -outputdir
