@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>zinc -> wasm reactor demo</title>
+  <style>
+    body { font: 16px/1.5 system-ui, sans-serif; margin: 3rem; }
+    #app { font-size: 1.6rem; padding: 1rem; border: 2px solid #2a7; border-radius: 8px; background: #f3fbf6; }
+    #status { color: #666; margin-top: 1rem; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>zinc -> WebAssembly (browser reactor)</h1>
+  <p>A Haskell program built by <code>zinc build --target wasm32-wasi</code> (zero toolchain setup),
+     running in this browser and writing to the DOM below via JS-FFI:</p>
+  <div id="app">(waiting for the wasm reactor...)</div>
+  <div id="status"></div>
+
+  <script type="module">
+    // A WASI shim for the browser (the reactor still imports wasi_snapshot_preview1).
+    import { WASI, OpenFile, File, ConsoleStdout }
+      from "https://cdn.jsdelivr.net/npm/@bjorn3/browser_wasi_shim@0.3.0/dist/index.js";
+    // The glue zinc generated next to the .wasm (copy both here, or serve .zinc/build).
+    import ghc_wasm_jsffi from "./ghc_wasm_jsffi.js";
+
+    // The generated glue uses setImmediate (a Node-ism); polyfill it for the browser.
+    globalThis.setImmediate ||= (f, ...a) => setTimeout(f, 0, ...a);
+
+    const status = document.getElementById("status");
+    const note = (m) => { status.textContent += m + "\n"; };
+
+    try {
+      const wasi = new WASI([], [], [
+        new OpenFile(new File([])),                                 // fd 0 stdin
+        ConsoleStdout.lineBuffered((m) => note("[stdout] " + m)),   // fd 1
+        ConsoleStdout.lineBuffered((m) => note("[stderr] " + m)),   // fd 2
+      ]);
+
+      // ghc-wasm-meta two-phase wiring: the glue closes over an exports object we
+      // fill AFTER instantiation (its import fns are only invoked later).
+      const jsffiExports = {};
+      const mod = await WebAssembly.compile(await (await fetch("./reactorapp.wasm")).arrayBuffer());
+      const inst = await WebAssembly.instantiate(mod, {
+        wasi_snapshot_preview1: wasi.wasiImport,
+        ghc_wasm_jsffi: ghc_wasm_jsffi(jsffiExports),
+      });
+      Object.assign(jsffiExports, inst.exports);
+
+      wasi.initialize(inst);       // reactor -> initialize (not start)
+      inst.exports.hs_init(0, 0);  // start the Haskell RTS once, before any entry
+      inst.exports.hs_start();     // our exported entry point
+      note("[ok] hs_start() ran - the box above was written by Haskell->wasm.");
+    } catch (e) {
+      note("[error] " + (e && e.stack ? e.stack : e));
+    }
+  </script>
+</body>
+</html>

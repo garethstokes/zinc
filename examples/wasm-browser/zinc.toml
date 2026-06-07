@@ -1,0 +1,18 @@
+# A browser WebAssembly reactor built by zinc with zero toolchain setup:
+#   zinc build --target wasm32-wasi
+# produces .zinc/build/reactorapp.wasm + ghc_wasm_jsffi.js (the JS-FFI glue).
+# A non-empty wasm-exports makes the exe a reactor module (vs a WASI command
+# module); zinc also auto-exports hs_init so the page can start the RTS.
+[workspace]
+members = ["."]
+ghc = "9.6.5"
+
+[package]
+name = "reactorapp"
+version = "0.1.0.0"
+
+[build.exe.reactorapp]
+source-dirs = ["app"]
+main = "Main.hs"
+depends = ["base"]
+wasm-exports = ["hs_start"]
