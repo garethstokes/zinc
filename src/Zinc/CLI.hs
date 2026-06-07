@@ -11,7 +11,7 @@ import Zinc.Output (OutputFlags (..))
 -- (every subcommand accepts it; see 'parseArgs') and is not encoded here.
 data Command
   = New String Bool       -- ^ scaffold a new project; Bool = --workspace (multi-member layout)
-  | Add String            -- ^ resolve a dependency closure and freeze it
+  | Add String Bool       -- ^ resolve a dependency closure and freeze it; Bool = --dry-run (preview, no write)
   | Vendor [String]       -- ^ pin no-git deps from their Hackage tarballs
   | Build (Maybe String) (Maybe String) (Maybe String) -- ^ build the workspace/member; 2nd = --ghc override, 3rd = --target (native/wasm32-wasi, zinc-9po.3)
   | Run (Maybe String) [String] (Maybe String) -- ^ build then run an executable: TARGET, program ARGS, then --target (native/wasm32-wasi, zinc-9po.4)
@@ -71,7 +71,7 @@ commandParser =
   subparser $
     mconcat
       [ sub "new"    "Scaffold a new project (--workspace for a multi-member layout)" (New <$> strArgument (metavar "NAME") <*> switch (long "workspace" <> help "Scaffold a multi-member workspace (packages/<name>/) instead of a flat single-package project"))
-      , sub "add"    "Add a dependency"               (Add <$> (yesFlag *> strArgument (metavar "PKG")))
+      , sub "add"    "Add a dependency"               (Add <$> (yesFlag *> strArgument (metavar "PKG")) <*> switch (long "dry-run" <> help "Preview the closure + per-member repo resolvability without touching zinc.toml/zinc.lock"))
       , sub "vendor" "Pin a no-git dependency from its Hackage tarball" (Vendor <$> (yesFlag *> some (strArgument (metavar "PKG..."))))
       , sub "build"  "Build the workspace or a member" buildCmd
       , sub "warm"   "Build only the dependency closure (CI/Docker cache)" (Warm <$> ghcOption)

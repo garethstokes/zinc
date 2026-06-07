@@ -805,8 +805,9 @@ main = hspec $ do
 
   describe "non-interactive contract (rdy.7)" $ do
     it "accepts (and ignores) --yes on add: zinc never prompts" $ do
-      parseArgs ["add", "--yes", "aeson"] `shouldBe` Right (OutputFlags False False, Add "aeson")
-      parseArgs ["add", "-y", "aeson"] `shouldBe` Right (OutputFlags False False, Add "aeson")
+      parseArgs ["add", "--yes", "aeson"] `shouldBe` Right (OutputFlags False False, Add "aeson" False)
+      parseArgs ["add", "-y", "aeson"] `shouldBe` Right (OutputFlags False False, Add "aeson" False)
+      parseArgs ["add", "aeson", "--dry-run"] `shouldBe` Right (OutputFlags False False, Add "aeson" True)
 
     it "gitEnv sets the non-interactive guards so git can't block on a tty" $ do
       let e = gitEnv [("PATH", "/usr/bin"), ("GIT_TERMINAL_PROMPT", "1")]
@@ -850,7 +851,7 @@ main = hspec $ do
       parseArgs ["new", "--workspace", "myapp"] `shouldBe` Right (OutputFlags False False, New "myapp" True)
 
     it "parses `add <pkg>` with its argument" $
-      parseArgs ["add", "aeson"] `shouldBe` Right (OutputFlags False False, Add "aeson")
+      parseArgs ["add", "aeson"] `shouldBe` Right (OutputFlags False False, Add "aeson" False)
 
     it "parses `clean`" $
       parseArgs ["clean"] `shouldBe` Right (OutputFlags False False, Clean)

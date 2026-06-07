@@ -161,7 +161,12 @@ dispatch _ (New name workspace) = do
     if workspace
       then "Created workspace member at ./packages/" ++ name
       else "Created project " ++ name ++ " — `zinc run` to build and run it."
-dispatch mode (Add name) =
+dispatch mode (Add name True) =
+  -- --dry-run (zinc-91n.6): preview the non-boot closure + per-member repo
+  -- resolvability (what `add` would pull, and which deps need vendoring) without
+  -- mutating zinc.toml/zinc.lock. Same discovery as `zinc closure`.
+  runClosure name >>= emitIntrospection "add" mode closureReportJson renderClosure
+dispatch mode (Add name False) =
   addInWorkspace name >>= emitIntrospection "add" mode resolutionJson renderResolution
 dispatch mode (Vendor pkgs) =
   vendorInWorkspace pkgs >>= emitIntrospection "vendor" mode resolutionJson renderResolution
