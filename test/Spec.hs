@@ -84,7 +84,7 @@ import Zinc.Manifest
   )
 import Zinc.Fetch (gitFetchManifest, isHpackOnly, namedCabal, packageDirIn)
 import Zinc.GC (GCRoot (..), gcStore, runGc)
-import Zinc.Add (enrichWithRepos, freezeClosure, lockEntry, runAdd, runUpdate, runVendor, splitNameVersion)
+import Zinc.Add (enrichWithRepos, freezeClosure, lockEntry, runAdd, runUpdate, runVendor, splitNameVersion, vendoredSoftPins)
 import Zinc.Build (GhcInvocation (..), LibBuild (..), MemberBuild (..), PackageConf (..), archiveArgs, buildLib, buildMember, discoverModules, ghcMakeArgs, initPackageDb, installedVersions, memberBuildDir, packageFlags, ppCommand, preprocessorFor, reactorLinkFlags, registeredExposedMatches, registerPackage, renderConf, replArgs, runPreprocessor, wasmSupported, writeFileIfChanged, zincBuiltUnitIds)
 import Zinc.Cache (BuildKey (..), buildCacheKey, buildCacheKeyFor, cacheHit, storeConfPath, storePkgPath, writeCachedConf)
 import Zinc.Cabal (bootConflicts, cabalBuildType, cabalVersion, parseCabalComponents, parseCabalComponentsForGhc, parseCabalComponentsForPlatform)
@@ -1363,6 +1363,27 @@ main = hspec $ do
           r = runIdentity (resolve boot (fetchFrom fix) noDiscover [("gone", Rev "x")] [dep "a" Latest] [("a", "r/a")])
       (sort . map rdName <$> r) `shouldBe` Right ["a"]
 
+    it "resolves a TRANSITIVE edge to a vendored dep via a soft pin; fails without it (zinc-y24)" $ do
+      -- 'a' (git) transitively requires 'hpke', which has no repo anywhere (no
+      -- registry, no Hackage source-repository). A vendored soft pin makes the
+      -- resolver treat it as a tarball at any depth; without it the resolver
+      -- errors NoRepoInRegistry before the vendor pin is ever consulted.
+      let fix = [ ("a", DepManifest [dep "hpke" Latest] [])
+                , ("hpke", DepManifest [dep "base" Latest] [])
+                ]
+          without = runIdentity (resolve boot (fetchFrom fix) noDiscover [] [dep "a" Latest] [("a", "r/a")])
+          with    = runIdentity (resolve boot (fetchFrom fix) noDiscover [("hpke", Vendored "0.1")] [dep "a" Latest] [("a", "r/a")])
+      (isLeft without, rdRef <$> findRD "hpke" with) `shouldBe` (True, Just (Vendored "0.1"))
+
+    it "vendoredSoftPins yields a soft pin per vendored dep, ignoring git deps (zinc-y24)" $
+      vendoredSoftPins
+        (WorkspaceManifest [] "9.6.5"
+          [ Dependency "colour" (Vendored "2.3.6") Nothing [] []
+          , Dependency "aeson" (Tag "v2") (Just "r/aeson") [] []
+          , Dependency "hpke" (Vendored "0.1") Nothing [] []
+          ])
+        `shouldBe` [("colour", Vendored "2.3.6"), ("hpke", Vendored "0.1")]
+
   describe "topoSort" $ do
     let rd n ds = ResolvedDep n ("r/" ++ n) Latest ds
 
@@ -2571,6 +2592,12 @@ main = hspec $ do
       writeFile (base </> "d" </> "sibling.cabal") "name: sibling\n"
       writeFile (base </> "d" </> "pkg" </> "pkg.cabal") "name: pkg\n"
       packageDirIn (base </> "d") "repo" "pkg" >>= (`shouldBe` (base </> "d" </> "pkg"))
+      -- zinc-y24: an explicit #subdir that no longer exists (a stale
+      -- source-repository hint — e.g. crypton-x509-store renamed from x509-store)
+      -- must NOT hard-fail; fall back to <name>/ manifest detection.
+      createDirectoryIfMissing True (base </> "e" </> "crypton-x509-store")
+      writeFile (base </> "e" </> "crypton-x509-store" </> "crypton-x509-store.cabal") "name: crypton-x509-store\n"
+      packageDirIn (base </> "e") "repo#x509-store" "crypton-x509-store" >>= (`shouldBe` (base </> "e" </> "crypton-x509-store"))
 
     it "isHpackOnly detects a package.yaml with no committed .cabal (pzu)" $ do
       let base = "/tmp/zinc-hpack-test"

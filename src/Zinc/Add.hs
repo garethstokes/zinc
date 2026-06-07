@@ -3,6 +3,7 @@
 -- the exact commit and a content hash. (The CLI/confirm wiring sits on top.)
 module Zinc.Add
   ( lockEntry
+  , vendoredSoftPins
   , freezeClosure
   , runAdd
   , addInWorkspace
@@ -152,17 +153,20 @@ freezeWorkspace wsFile storeRoot ws = do
 -- resolve. Returns the resolved closure + its locks.
 resolveFreeze :: FilePath -> [(String, Ref)] -> WorkspaceManifest -> Result ([ResolvedDep], [LockedPackage])
 resolveFreeze storeRoot pins ws = do
-  -- A workspace-vendored dependency (pinned to a Hackage tarball in
-  -- [dependencies]) must satisfy TRANSITIVE requirements too. A deep dep like
-  -- tls's `hpke`, whose Hackage .cabal carries no source-repository, can't be
-  -- auto-discovered (zinc-49o), so without a soft pin the resolver errors
-  -- NoRepoInRegistry before ever consulting the vendor pin. Fold vendored root
-  -- deps into the soft pins so any transitive edge to them resolves to the
-  -- tarball (caller pins still win — they come first). (zinc-y24)
-  let vendoredPins = [(depName d, depRef d) | d <- wsDependencies ws, isVendored (depRef d)]
-  closure <- orFailE (resolve isBootLib (gitFetchManifest storeRoot (wsGhc ws) (depFlagsOf ws)) hackageDiscover (pins ++ vendoredPins) (wsDependencies ws) (depRepos ws))
+  -- Caller pins lead so they still win; vendored soft pins (zinc-y24) follow.
+  closure <- orFailE (resolve isBootLib (gitFetchManifest storeRoot (wsGhc ws) (depFlagsOf ws)) hackageDiscover (pins ++ vendoredSoftPins ws) (wsDependencies ws) (depRepos ws))
   locks <- orFailE (freezeClosure storeRoot (depFlagsOf ws) closure)
   pure (closure, locks)
+
+-- | A soft pin per workspace-vendored dependency, so a TRANSITIVE requirement on
+-- it resolves to its Hackage tarball instead of failing (zinc-y24). A vendored
+-- package (pinned to a tarball in @[dependencies]@) has no git
+-- @source-repository@ for the resolver to auto-discover (zinc-49o), so a deep
+-- dep that re-requires it — e.g. tls's @hpke@ — would error 'NoRepoInRegistry'
+-- before the vendor pin is ever consulted. Holding it as a soft pin lets the
+-- resolver see it's vendored at any depth, without forcing it into the closure.
+vendoredSoftPins :: WorkspaceManifest -> [(String, Ref)]
+vendoredSoftPins ws = [(depName d, depRef d) | d <- wsDependencies ws, isVendored (depRef d)]
 
 -- | Discover a transitive dependency's git repo from Hackage when no registry
 -- pins it (zinc-49o auto-fill via 5la), so 'resolve' can walk a real upstream's
