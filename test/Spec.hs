@@ -50,7 +50,7 @@ import Zinc.Deploy
   , resolveDeploy
   , sshArgs
   )
-import Zinc.Fmt (canonicalizeManifest, setManifestDependencies)
+import Zinc.Fmt (canonicalizeManifest, mergeManifestDependencies, setManifestDependencies)
 import Zinc.Doctor (doctorJson, doctorOk, flakesOffDiagnostic, lockDriftDiagnostic, renderDoctor, runDoctor)
 import Zinc.Introspect (DepStatus (..), explainJson, graphJson, runStatus, statusJson)
 import Zinc.Prime (onboardText, primeText)
@@ -281,6 +281,46 @@ main = hspec $ do
 
     it "escapes JSON strings" $
       renderJson (JString "a\"b\nc") `shouldBe` "\"a\\\"b\\nc\""
+
+  describe "mergeManifestDependencies (minimal-diff add, zinc-91n.2)" $ do
+    let manifest = unlines
+          [ "[workspace]"
+          , "members = [\".\"]"
+          , "ghc = \"9.6.5\""
+          , ""
+          , "[dependencies]"
+          , "# Each dependency vertically: rev pin + repo override."
+          , ""
+          , "[dependencies.zed]"
+          , "rev = \"z1\""
+          , "repo = \"https://example/zed.git\""
+          , ""
+          , "[dependencies.alpha]"
+          , "vendored = \"1.0\""
+          , "# -XSafe is applied automatically by the quirks table."
+          ]
+        zed   = Dependency "zed" (Rev "z1") (Just "https://example/zed.git") [] []
+        alpha = Dependency "alpha" (Vendored "1.0") Nothing [] []
+        mid   = Dependency "mid" (Rev "m1") (Just "https://example/mid.git") [] []
+
+    it "is idempotent: re-writing the same deps preserves comments and ordering byte-for-byte" $
+      -- The canonical writer would alphabetise (alpha before zed) and drop both
+      -- comments; the minimal-diff editor must leave the file untouched.
+      mergeManifestDependencies manifest [zed, alpha] `shouldBe` Right manifest
+
+    it "appends a new dependency, keeping existing blocks (and their comments) verbatim" $ do
+      let Right out = mergeManifestDependencies manifest [zed, alpha, mid]
+      out `shouldSatisfy` ("# -XSafe is applied automatically by the quirks table." `isInfixOf`)
+      out `shouldSatisfy` ("[dependencies.mid]" `isInfixOf`)
+      -- author's ordering preserved: zed before alpha, new dep last
+      let idx s = length (takeWhile (not . (s `isInfixOf`)) (lines out))
+      idx "[dependencies.zed]" < idx "[dependencies.alpha]" `shouldBe` True
+      idx "[dependencies.alpha]" < idx "[dependencies.mid]" `shouldBe` True
+
+    it "drops a dependency removed from the desired set" $ do
+      let Right out = mergeManifestDependencies manifest [alpha]
+      out `shouldSatisfy` (not . ("[dependencies.zed]" `isInfixOf`))
+      out `shouldSatisfy` ("[dependencies.alpha]" `isInfixOf`)
 
   describe "memberBuildDir (zinc-91n.8)" $ do
     it "collapses a flat (member \".\") workspace to a clean build path" $

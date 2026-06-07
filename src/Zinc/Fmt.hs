@@ -7,17 +7,18 @@
 module Zinc.Fmt
   ( canonicalizeManifest
   , setManifestDependencies
+  , mergeManifestDependencies
   , runFmt
   ) where
 
 import Control.Monad (when)
 import Data.Char (isSpace)
-import Data.List (isPrefixOf)
+import Data.List (isPrefixOf, sort)
 import System.Directory (doesFileExist)
 import System.FilePath ((</>))
 import Zinc.Diagnostic (ZincError (NoZincToml))
 import Zinc.Except (failWithError, liftEither, liftIO, runResult)
-import Zinc.Manifest (Dependency, parseWorkspace, renderDependencies, wsDependencies)
+import Zinc.Manifest (Dependency, depName, parseWorkspace, renderDep, renderDependencies, wsDependencies)
 
 -- | Rewrite a manifest's dependency sections to @deps@, preserving every other
 -- line — @[workspace]@, the member's @[package]@/@[build.*]@ (a flat
@@ -30,6 +31,89 @@ setManifestDependencies src deps = do
   _ <- parseWorkspace src -- validate it's a workspace manifest
   let kept = dropTrailingBlank (stripDepSections (lines src))
   pure (unlines (kept ++ [""] ++ renderDependencies deps))
+
+-- | The minimal-diff editor behind @zinc add@/@vendor@: rewrite a manifest to
+-- declare exactly @deps@ while disturbing the file as little as possible. Unlike
+-- the canonical 'setManifestDependencies' (which @zinc fmt@ uses to alphabetise
+-- and strip in-table comments), this keeps every existing @[dependencies.name]@
+-- block whose dependency is unchanged BYTE-FOR-BYTE — preserving the author's
+-- ordering and in-table comments — re-renders only a block whose fields changed,
+-- drops a dep no longer desired, and appends new deps (sorted) after the rest.
+-- Everything outside the dependency sections is untouched. Falls back to the
+-- canonical writer if the @[dependencies]@ table carries one-line shorthand deps
+-- (mixing them with appended sub-tables would reorder them under a sub-table),
+-- and (via 'setManifestDependencies') if the file isn't a parseable workspace.
+mergeManifestDependencies :: String -> [Dependency] -> Either String String
+mergeManifestDependencies src deps = do
+  orig <- parseWorkspace src
+  let ls = lines src
+      (before, region, after) = splitDepRegion ls
+      (tableHdr, subs) = parseDepRegion region
+  if any isKeyValue (drop 1 tableHdr)
+    then setManifestDependencies src deps -- shorthand deps present: canonicalise instead
+    else
+      let existingNames = map fst subs
+          desiredNames = map depName deps
+          retained = filter (`elem` desiredNames) existingNames
+          newNames = sort (filter (`notElem` existingNames) desiredNames)
+          findDep xs n = lookup n [(depName d, d) | d <- xs]
+          emit n = case (lookup n subs, findDep (wsDependencies orig) n, findDep deps n) of
+            (Just blk, Just o, Just d) | o == d -> stripTrailingBlank blk -- unchanged → verbatim
+            (_, _, Just d)                       -> dropWhile (all isSpace) (renderDep d)
+            _                                    -> []
+          blocks = map emit (retained ++ newNames)
+          regionOut = ensureHeader (stripTrailingBlank tableHdr) ++ concatMap ("" :) blocks
+       in pure (unlines (before ++ regionOut ++ after))
+
+-- | Split lines into (before the dependency region, the region, after it). The
+-- region runs from the first dependency header to just before the next
+-- non-dependency top-level header (or end of file).
+splitDepRegion :: [String] -> ([String], [String], [String])
+splitDepRegion ls = case break isDepHeaderLine ls of
+  (before, [])   -> (before, [], [])
+  (before, rest) ->
+    let region = takeWhile (\l -> not (isHeaderLine l) || isDepHeaderLine l) rest
+     in (before, region, drop (length region) rest)
+
+-- | Split a dependency region into its @[dependencies]@ header block (the header
+-- line plus following comments/blanks, up to the first @[dependencies.name]@)
+-- and the named sub-table blocks, each header-through-to-the-next-sub-table.
+parseDepRegion :: [String] -> ([String], [(String, [String])])
+parseDepRegion region = (hdr, groupSubs rest)
+  where
+    (hdr, rest) = break isSubDepHeader region
+    groupSubs [] = []
+    groupSubs (h : ls) = let (body, more) = break isSubDepHeader ls in (subName h, h : body) : groupSubs more
+
+-- | The package name in a @[dependencies.name]@ header.
+subName :: String -> String
+subName l = takeWhile (/= ']') (drop (length "[dependencies.") (dropWhile (/= '[') l))
+
+isHeaderLine :: String -> Bool
+isHeaderLine l = case dropWhile isSpace l of ('[' : _) -> True; _ -> False
+
+isDepHeaderLine :: String -> Bool
+isDepHeaderLine l =
+  let h = takeWhile (/= ']') (drop 1 (dropWhile (/= '[') l))
+   in isHeaderLine l && (h == "dependencies" || "dependencies." `isPrefixOf` h)
+
+isSubDepHeader :: String -> Bool
+isSubDepHeader l = isHeaderLine l && "dependencies." `isPrefixOf` takeWhile (/= ']') (drop 1 (dropWhile (/= '[') l))
+
+-- | A non-comment, non-header @key = value@ line (a one-line shorthand dep).
+isKeyValue :: String -> Bool
+isKeyValue l = case dropWhile isSpace l of
+  ('[' : _) -> False
+  ('#' : _) -> False
+  s         -> '=' `elem` s && not (all isSpace s)
+
+ensureHeader :: [String] -> [String]
+ensureHeader hdr = if any isHeaderLine hdr then hdr else "[dependencies]" : hdr
+
+stripTrailingBlank :: [String] -> [String]
+stripTrailingBlank = reverse . dropWhile (all isSpace) . reverse
+
+-- | Canonicalize a workspace manifest's text: drop the existing dependency
 
 -- | Canonicalize a workspace manifest's text: drop the existing dependency
 -- sections (@[dependencies]@, @[dependencies.<name>]@, legacy @[registry]@ /

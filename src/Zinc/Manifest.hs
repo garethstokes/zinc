@@ -16,6 +16,7 @@ module Zinc.Manifest
   , parseDeployTargets
   , renderWorkspace
   , renderDependencies
+  , renderDep
   , addDep
   , addVendored
   ) where
@@ -265,6 +266,30 @@ renderWorkspace w =
 -- repo, then ghc-options). Shared by 'renderWorkspace' and @zinc fmt@.
 renderDependencies :: [Dependency] -> [String]
 renderDependencies deps = "[dependencies]" : concatMap renderDep (sortOn depName deps)
+
+-- | Render a single dependency: a one-line shorthand (ref only) or a
+-- @[dependencies.name]@ sub-table (ref, then repo, then ghc-options). The
+-- sub-table form leads with a blank line so consecutive blocks are separated.
+-- Shared by the canonical writer ('renderDependencies' / @zinc fmt@) and the
+-- minimal-diff editor ('Zinc.Fmt.mergeManifestDependencies', @zinc add@), which
+-- renders only blocks it must add or change.
+renderDep :: Dependency -> [String]
+renderDep d
+  | Nothing <- depRepo d, null (depGhcOptions d), null (depFlags d), not (isVendored (depRef d)) =
+      [depName d ++ " = " ++ quote (snd (refStr (depRef d)))]
+  | otherwise =
+      let (k, v) = refStr (depRef d)
+       in [ ""
+          , "[dependencies." ++ depName d ++ "]"
+          , k ++ " = " ++ quote v
+          ]
+            ++ maybe [] (\r -> ["repo = " ++ quote r]) (depRepo d)
+            ++ [ "ghc-options = [" ++ intercalate ", " (map quote (depGhcOptions d)) ++ "]"
+               | not (null (depGhcOptions d))
+               ]
+            ++ [ "flags = { " ++ intercalate ", " [n ++ " = " ++ bool b | (n, b) <- depFlags d] ++ " }"
+               | not (null (depFlags d))
+               ]
   where
     quote s = "\"" ++ s ++ "\""
     refStr (Tag t)      = ("tag", t)
@@ -272,26 +297,6 @@ renderDependencies deps = "[dependencies]" : concatMap renderDep (sortOn depName
     refStr (Rev v)      = ("rev", v)
     refStr Latest       = ("tag", "*")
     refStr (Vendored v) = ("vendored", v)
-    -- A dep with no repo override and no ghc flags renders as one-line shorthand
-    -- (the bare ref string); otherwise a [dependencies.name] sub-table. A
-    -- vendored pin always uses the sub-table form: its bare value would parse
-    -- back as a git tag, losing the source kind.
-    renderDep d
-      | Nothing <- depRepo d, null (depGhcOptions d), null (depFlags d), not (isVendored (depRef d)) =
-          [depName d ++ " = " ++ quote (snd (refStr (depRef d)))]
-      | otherwise =
-          let (k, v) = refStr (depRef d)
-           in [ ""
-              , "[dependencies." ++ depName d ++ "]"
-              , k ++ " = " ++ quote v
-              ]
-                ++ maybe [] (\r -> ["repo = " ++ quote r]) (depRepo d)
-                ++ [ "ghc-options = [" ++ intercalate ", " (map quote (depGhcOptions d)) ++ "]"
-                   | not (null (depGhcOptions d))
-                   ]
-                ++ [ "flags = { " ++ intercalate ", " [n ++ " = " ++ bool b | (n, b) <- depFlags d] ++ " }"
-                   | not (null (depFlags d))
-                   ]
     bool True  = "true"
     bool False = "false"
 
