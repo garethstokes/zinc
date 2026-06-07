@@ -1,0 +1,18 @@
+# A miso (Haskell front-end framework) app compiled to a browser WebAssembly
+# reactor by zinc, with zero toolchain setup:
+#   zinc build --target wasm32-wasi
+# produces .zinc/build/misoapp.wasm + ghc_wasm_jsffi.js. wasm-exports = ["hs_start"]
+# makes the exe a reactor; the page calls hs_init then hs_start to mount the app.
+[workspace]
+members = ["."]
+ghc = "9.6.5"
+
+[package]
+name = "misoapp"
+version = "0.1.0.0"
+
+[build.exe.misoapp]
+source-dirs = ["app"]
+main = "Main.hs"
+depends = ["base", "miso"]
+wasm-exports = ["hs_start"]

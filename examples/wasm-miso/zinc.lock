@@ -1,0 +1,6 @@
+[[locked]]
+name = "miso"
+repo = "https://github.com/haskell-miso/miso.git"
+rev = "eb9fa231c448e49bd69e8a9573de28a7c76e0226"
+sha256 = "sha256:6eb3e600787453e7b5034052d3ad3091a79b3922f4c7bfe206c73e4eae3d364d"
+depends = []

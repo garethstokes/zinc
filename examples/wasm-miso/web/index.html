@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>miso → wasm, built by zinc</title>
+  <style>
+    body { font: 16px/1.5 system-ui, sans-serif; margin: 3rem; }
+    button { font-size: 1.2rem; padding: 0.2rem 0.8rem; }
+    #status { color: #666; margin-top: 2rem; white-space: pre-wrap; font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+  <!-- miso mounts its virtual DOM into the page when hs_start runs. -->
+  <div id="status"></div>
+
+  <script type="module">
+    // A WASI shim for the browser (the reactor imports wasi_snapshot_preview1).
+    import { WASI, OpenFile, File, ConsoleStdout }
+      from "https://cdn.jsdelivr.net/npm/@bjorn3/browser_wasi_shim@0.3.0/dist/index.js";
+    // The JS-FFI glue zinc generated next to the .wasm (copy both here, or serve .zinc/build).
+    import ghc_wasm_jsffi from "./ghc_wasm_jsffi.js";
+
+    // The generated glue uses setImmediate (a Node-ism); polyfill it for the browser.
+    globalThis.setImmediate ||= (f, ...a) => setTimeout(f, 0, ...a);
+
+    const status = document.getElementById("status");
+    const note = (m) => { status.textContent += m + "\n"; };
+
+    try {
+      const wasi = new WASI([], [], [
+        new OpenFile(new File([])),                                 // fd 0 stdin
+        ConsoleStdout.lineBuffered((m) => note("[stdout] " + m)),   // fd 1
+        ConsoleStdout.lineBuffered((m) => note("[stderr] " + m)),   // fd 2
+      ]);
+
+      // ghc-wasm-meta two-phase wiring: the glue closes over an exports object we
+      // fill AFTER instantiation (its import fns are only invoked later).
+      const jsffiExports = {};
+      const mod = await WebAssembly.compile(await (await fetch("./misoapp.wasm")).arrayBuffer());
+      const inst = await WebAssembly.instantiate(mod, {
+        wasi_snapshot_preview1: wasi.wasiImport,
+        ghc_wasm_jsffi: ghc_wasm_jsffi(jsffiExports),
+      });
+      Object.assign(jsffiExports, inst.exports);
+
+      wasi.initialize(inst);       // reactor → initialize (not start)
+      inst.exports.hs_init(0, 0);  // start the Haskell RTS once, before any entry
+      inst.exports.hs_start();     // miso's exported entry — mounts the app
+      note("[ok] hs_start() ran — the counter above is a miso app running in wasm.");
+    } catch (e) {
+      note("[error] " + (e && e.stack ? e.stack : e));
+    }
+  </script>
+</body>
+</html>
