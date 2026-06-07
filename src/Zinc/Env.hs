@@ -180,9 +180,14 @@ provisionToolchainFor target cacheRoot workDir ghcVersion systemLibs = do
   -- Skip only when the ghc ALREADY on PATH is the requested version (so dev/CI/
   -- self-host stay no-ops, but a `--ghc <other>` override forces a switch — ey4).
   -- A cross target can never be satisfied by the ambient host ghc.
+  -- Skip only when the ambient ghc is right AND no extra C system libraries are
+  -- needed. A project whose closure pulls in system libs (e.g. postgresql for
+  -- postgresql-libpq, zinc-389) must still provision them — the ambient dev/CI
+  -- shell has the compiler but not those per-project libs — so their
+  -- NIX_CFLAGS/NIX_LDFLAGS (-I/-L) reach the build's compile + link.
   haveRight <- case target of
-    Native -> ambientGhcIs ghcVersion
-    _      -> pure False
+    Native | null systemLibs -> ambientGhcIs ghcVersion
+    _                        -> pure False
   unless haveRight $ do
     nixPresent <- isJust <$> findExecutable "nix"
     when nixPresent $ do
