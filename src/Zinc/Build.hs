@@ -9,6 +9,8 @@ module Zinc.Build
   , registerPackage
   , registerPackageFor
   , isRegistered
+  , registeredExposedMatches
+  , registeredExposedMatchesFor
   , preprocessorFor
   , runPreprocessor
   , MemberBuild (..)
@@ -32,7 +34,7 @@ module Zinc.Build
 
 import Data.Maybe (fromMaybe, isJust, listToMaybe)
 import Control.Monad (unless, when)
-import Data.List (find, intercalate, isInfixOf, isPrefixOf, nub)
+import Data.List (find, intercalate, isInfixOf, isPrefixOf, nub, sort)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getModificationTime, listDirectory)
 import System.Exit (ExitCode (..))
 import System.FilePath (dropExtension, makeRelative, takeDirectory, takeExtension, (-<.>), (<.>), (</>))
@@ -620,6 +622,31 @@ exposedModulesOf target db pkg = do
   (_, out, _) <- readProcessWithExitCode (ghcPkgFor target) ["--package-db", db, "field", pkg, "exposed-modules"] ""
   let body = drop 1 (dropWhile (/= ':') out) -- after the "exposed-modules:" label
   pure (words (map (\ch -> if ch == ',' then ' ' else ch) body))
+
+-- | Whether @unitId@'s currently-registered @exposed-modules@ (own modules plus
+-- the inline @New from unit:Orig@ reexports) match those declared in @confText@.
+-- 'isRegistered' only checks that the pkg dir is registered, so it cannot see a
+-- conf whose /content/ drifted at the same rev/pkg-dir — e.g. a zinc upgrade that
+-- taught the builder to emit Cabal reexports (zinc-jdf) into a package that was
+-- already registered in a persisted workspace db. Without re-registering, that
+-- db keeps the pre-upgrade conf and the reexported modules stay invisible to a
+-- consumer, so @import \<reexported\>@ fails (zinc-0k7). Comparing exposed-modules
+-- catches exactly that drift; library-dirs drift is already caught by the pkg-dir
+-- check, and the other conf fields are pinned by the build key.
+registeredExposedMatches :: FilePath -> String -> String -> IO Bool
+registeredExposedMatches = registeredExposedMatchesFor Native
+
+-- | As 'registeredExposedMatches', querying the target's @ghc-pkg@.
+registeredExposedMatchesFor :: Target -> FilePath -> String -> String -> IO Bool
+registeredExposedMatchesFor target db unitId confText = do
+  (_, out, _) <- readProcessWithExitCode (ghcPkgFor target) ["--package-db", db, "field", unitId, "exposed-modules"] ""
+  let declaredLine = fromMaybe "" (find ("exposed-modules:" `isPrefixOf`) (lines confText))
+  pure (toks out == toks declaredLine)
+  where
+    -- The set of tokens after the "exposed-modules:" label, whitespace/comma
+    -- and order insensitive (ghc-pkg comma-separates + line-wraps; the conf
+    -- space-separates on one line — both yield the same word multiset).
+    toks raw = sort (words (map (\ch -> if ch == ',' then ' ' else ch) (drop 1 (dropWhile (/= ':') raw))))
 
 installedVersions :: IO [(String, [Int])]
 installedVersions = installedVersionsFor Native

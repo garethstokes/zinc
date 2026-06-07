@@ -44,7 +44,7 @@ import System.Directory (canonicalizePath, copyFile, createDirectoryIfMissing, d
 import System.Exit (ExitCode (..))
 import System.FilePath (takeExtension, takeFileName, (</>))
 import System.Process (callProcess, readProcess, readProcessWithExitCode)
-import Zinc.Build (LibBuild (..), MemberBuild (..), buildLibArtifactsFor, buildLibFor, buildMemberFor, initPackageDb, initPackageDbFor, installedVersionsFor, isRegistered, registerPackage, replArgs)
+import Zinc.Build (LibBuild (..), MemberBuild (..), buildLibArtifactsFor, buildLibFor, buildMemberFor, initPackageDb, initPackageDbFor, installedVersionsFor, isRegistered, registeredExposedMatches, registerPackage, replArgs)
 import Zinc.Cabal (bootConflicts, cabalBuildType, cabalVersion, parseCabalComponentsForGhc)
 import Zinc.Cache (BuildKey (..), buildCacheKey, buildCacheKeyFor, storeConfPath, storePkgPath)
 import Zinc.Target (Target (Native))
@@ -354,7 +354,12 @@ buildClosure sink target wsDir storeRoot wsDb ghcVersion buildOpts mAcc = runRes
 
     registerNeeded (unitId, pkgOut, conf) = do
       done <- liftIO (isRegistered wsDb unitId pkgOut)
-      when (not done) (orFail (accuminto mAcc "register" (registerPackage wsDb conf)) >> liftIO (emit sink (RegisterDone unitId)))
+      -- Re-register even when the pkg dir is unchanged if the registered conf has
+      -- drifted from the one we hold — a persisted wsDb can carry a stale conf
+      -- after a zinc upgrade adds content (e.g. jdf's reexports), which would
+      -- otherwise stay invisible to consumers (zinc-0k7).
+      fresh <- liftIO (if done then registeredExposedMatches wsDb unitId conf else pure False)
+      when (not done || not fresh) (orFail (accuminto mAcc "register" (registerPackage wsDb conf)) >> liftIO (emit sink (RegisterDone unitId)))
 
     -- Content-addressed cache key from data available without the source, so a
     -- cached build is reused without even fetching. Includes the dep's

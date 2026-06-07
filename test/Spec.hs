@@ -84,7 +84,7 @@ import Zinc.Manifest
 import Zinc.Fetch (gitFetchManifest, isHpackOnly, namedCabal, packageDirIn)
 import Zinc.GC (GCRoot (..), gcStore, runGc)
 import Zinc.Add (enrichWithRepos, freezeClosure, lockEntry, runAdd, runUpdate, runVendor, splitNameVersion)
-import Zinc.Build (GhcInvocation (..), MemberBuild (..), PackageConf (..), archiveArgs, buildMember, ghcMakeArgs, installedVersions, preprocessorFor, reactorLinkFlags, registerPackage, renderConf, replArgs, runPreprocessor, wasmSupported, writeFileIfChanged)
+import Zinc.Build (GhcInvocation (..), LibBuild (..), MemberBuild (..), PackageConf (..), archiveArgs, buildLib, buildMember, ghcMakeArgs, initPackageDb, installedVersions, preprocessorFor, reactorLinkFlags, registeredExposedMatches, registerPackage, renderConf, replArgs, runPreprocessor, wasmSupported, writeFileIfChanged)
 import Zinc.Cache (BuildKey (..), buildCacheKey, buildCacheKeyFor, cacheHit, storeConfPath, storePkgPath, writeCachedConf)
 import Zinc.Cabal (bootConflicts, cabalBuildType, cabalVersion, parseCabalComponents, parseCabalComponentsForGhc)
 import Zinc.Env (devEnvVars, envCacheKey, envCacheKeyFor, nixPrintDevEnv, provisionEnv, toolchainPath, toolchainVars)
@@ -2028,6 +2028,42 @@ main = hspec $ do
       r <- registerPackage db conf
       r `shouldBe` Right ()
 
+    -- zinc-0k7: a persisted workspace db can carry a STALE conf after a zinc
+    -- upgrade adds content (jdf taught the builder to emit Cabal reexports into
+    -- exposed-modules). isRegistered only checks the pkg dir, so the closure
+    -- builder must additionally re-register when the registered exposed-modules
+    -- drift from the conf it holds — otherwise the reexports stay invisible and
+    -- a consumer's `import <reexported>` fails. This guards that drift detection.
+    it "registeredExposedMatches detects a conf whose reexports drifted (0k7)" $ do
+      let base = "/tmp/zinc-stale-conf-test"
+          db = base ++ "/db"
+          mk own reexs =
+            renderConf
+              PackageConf
+                { confName = "umbrella"
+                , confVersion = "1.0"
+                , confId = "umbrella"
+                , confExposedModules = own
+                , confImportDirs = [base ++ "/d"]
+                , confLibraryDirs = [base ++ "/d"]
+                , confHsLibraries = []
+                , confDepends = ["origin"]
+                , confReexports = reexs
+                }
+          oldConf = mk ["Own"] [] -- pre-jdf: no reexports
+          newConf = mk ["Own"] [("Effectful", "origin", "Effectful")] -- post-jdf
+      stale <- doesDirectoryExist base
+      when stale $ removeDirectoryRecursive base
+      -- origin must exist so ghc-pkg accepts the reexport's `from origin:...`.
+      _ <- registerPackage db (renderConf (PackageConf "origin" "1.0" "origin" ["Effectful"] [base ++ "/d"] [base ++ "/d"] [] [] []))
+      _ <- registerPackage db oldConf
+      -- The registered (old) conf does NOT match the new conf → must re-register.
+      drifted <- registeredExposedMatches db "umbrella" newConf
+      -- After re-registering the new conf, it matches itself → skip is safe.
+      _ <- registerPackage db newConf
+      current <- registeredExposedMatches db "umbrella" newConf
+      (drifted, current) `shouldBe` (False, True)
+
   describe "preprocessors" $ do
     it "maps source extensions to their preprocessor command" $ do
       preprocessorFor "Lexer.x" `shouldBe` Just ("alex", ["Lexer.x", "-o", "Lexer.hs"])
@@ -2433,6 +2469,57 @@ main = hspec $ do
           out <- readProcess exe [] ""
           out `shouldBe` "hi from core\n"
         Right [] -> expectationFailure "no executable built"
+        Left err -> expectationFailure (renderError err)
+
+  -- zinc-jdf regression fixture (no committed e2e existed): a consumer that
+  -- declares ONLY an umbrella whose conf re-exports a module from an origin
+  -- package (`Origin from origin:Origin`) must build + run. GHC follows the
+  -- reexport into the registered-but-hidden origin, so the consumer needs neither
+  -- to declare nor to expose the origin. Built directly (not via a manifest)
+  -- since zinc-native zinc.toml can't express reexported-modules — only cabal can.
+  -- Guards that reexport rendering + resolution stay wired end-to-end.
+  describe "umbrella-only reexport consumer (real compile, jdf)" $
+    it "builds + runs a consumer that declares only the umbrella, importing a re-exported symbol" $ do
+      let base = "/tmp/zinc-umbrella-consumer"
+          db = base ++ "/db/pkg.db"
+          lib nm = Component Library nm ["src"] [] Nothing [] [] ["base"] [] [] [] [] [] []
+      stale <- doesDirectoryExist base
+      when stale $ removeDirectoryRecursive base
+      _ <- initPackageDb db
+      -- origin package: exposes a module with a real symbol the consumer uses.
+      createDirectoryIfMissing True (base ++ "/origin/src")
+      writeFile (base ++ "/origin/src/Origin.hs") "module Origin (secret) where\nsecret :: Int\nsecret = 42\n"
+      origR <- buildLib (LibBuild (base ++ "/origin") (base ++ "/origin/dist") db "origin" "1.0" (lib "origin"))
+      -- umbrella: no own modules, re-exports Origin from the origin package. Built
+      -- as a hand-registered conf (the reexport form a cabal umbrella produces).
+      -- Its import/library dirs are its OWN (empty) dir, NOT the origin's — so the
+      -- ONLY way the consumer can resolve `Origin` is by following the reexport
+      -- into the origin package (which the fix makes visible).
+      createDirectoryIfMissing True (base ++ "/umbrella/dist")
+      let umbrella =
+            renderConf
+              PackageConf
+                { confName = "umbrella"
+                , confVersion = "1.0"
+                , confId = "umbrella"
+                , confExposedModules = []
+                , confImportDirs = [base ++ "/umbrella/dist"]
+                , confLibraryDirs = [base ++ "/umbrella/dist"]
+                , confHsLibraries = []
+                , confDepends = ["origin"]
+                , confReexports = [("Origin", "origin", "Origin")]
+                }
+      umbR <- registerPackage db umbrella
+      -- consumer executable declaring ONLY the umbrella (not origin).
+      createDirectoryIfMissing True (base ++ "/app/app")
+      writeFile (base ++ "/app/app/Main.hs") "module Main where\nimport Origin (secret)\nmain :: IO ()\nmain = print secret\n"
+      let consumer = (lib "app") {compKind = Executable, compName = "app", compSourceDirs = ["app"], compMain = Just "Main.hs", compDepends = ["umbrella"]}
+      r <- buildMember (MemberBuild (base ++ "/app") (base ++ "/app/build") (Just db) consumer)
+      (origR, umbR) `shouldBe` (Right (), Right ())
+      case r of
+        Right exe -> do
+          out <- readProcess exe [] ""
+          out `shouldBe` "42\n"
         Left err -> expectationFailure (renderError err)
 
   describe "buildAndRun (zinc run)" $
