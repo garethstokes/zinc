@@ -95,7 +95,7 @@ import Zinc.Nix (generateFlake, generateFlakeFor)
 import Zinc.Target (Target (..), ghcFor, ghcPkgFor, hsc2hsFor, isWasm, parseTarget, targetTriple, toolPrefix)
 import Zinc.Orchestrate (buildAndRun, lockDrift, orderMembers, parMapBounded, resolveTarget, runBuild, runBuildMember, runClean, runTests, runWarm)
 import Zinc.Paths (pathsModuleName, synthesizePaths)
-import Zinc.Report (BuildOutcome (..), CacheStats (..), PackageReport (..), PackageStatus (..), Timing (..), buildBreakdownLine, buildDataJson, buildSummaryLine, cacheStatsOf, fmtMs, packageReportJson, renderResolution, statusText, timingJson)
+import Zinc.Report (BuildOutcome (..), CacheStats (..), PackageReport (..), PackageStatus (..), Timing (..), buildBreakdownLine, buildDataJson, buildSummaryLine, cacheStatsOf, fmtMs, packageReportJson, renderResolution, resolutionJson, statusText, timingJson)
 import Zinc.SysLibs (toNixpkgs)
 import Zinc.Resolve (DepManifest (..), ResolvedDep (..), isBootLib, resolve, topoLevels, topoSort)
 import Zinc.Version (newestTag, newestTagFor)
@@ -2034,6 +2034,26 @@ main = hspec $ do
     it "reports an empty closure" $
       renderResolution [] `shouldBe` "(no dependencies)\n"
 
+  describe "resolutionJson (zinc-91n.3: add/vendor --json data)" $ do
+    let rds =
+          [ ResolvedDep "aeson" "https://github.com/haskell/aeson" (Tag "v2.2.3.0") ["scientific"]
+          , ResolvedDep "scientific" "https://github.com/basvandijk/scientific" Latest []
+          ]
+
+    it "emits one {name, ref, repo} object per resolved dep" $
+      resolutionJson rds
+        `shouldBe` JArray
+          [ JObject [("name", JString "aeson"), ("ref", JString "v2.2.3.0"), ("repo", JString "https://github.com/haskell/aeson")]
+          , JObject [("name", JString "scientific"), ("ref", JString "*"), ("repo", JString "https://github.com/basvandijk/scientific")]
+          ]
+
+    it "is an empty array for an empty closure (so --json add is never a no-op)" $
+      resolutionJson [] `shouldBe` JArray []
+
+    it "rides inside the standard result envelope" $
+      renderJson (envelope "add" True (Just (resolutionJson rds)) Nothing [])
+        `shouldSatisfy` (\s -> all (`isInfixOf` s) ["\"command\":\"add\"", "\"ok\":true", "\"aeson\"", "v2.2.3.0"])
+
   describe "toNixpkgs" $ do
     it "maps known C lib names to nixpkgs attrs" $ do
       toNixpkgs "z" `shouldBe` Just "zlib"
@@ -2537,8 +2557,8 @@ main = hspec $ do
       r <- runAdd wsFile store "leaf" (Tag "v1") leafRepo
       lockText <- readFile (takeDirectory wsFile </> "zinc.lock")
       case r of
-        Right summary ->
-          (("leaf" `isInfixOf` summary), ("leaf" `isInfixOf` lockText)) `shouldBe` (True, True)
+        Right closure ->
+          (any ((== "leaf") . rdName) closure, "leaf" `isInfixOf` lockText) `shouldBe` (True, True)
         Left err -> expectationFailure (renderError err)
 
   describe "Hackage repo discovery" $ do

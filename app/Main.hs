@@ -35,7 +35,7 @@ import Zinc.Outdated (outdatedJson, renderOutdated, runOutdated)
 import Zinc.Output (OutputEvent (..), OutputMode (..), emit, resolveMode, withRenderer)
 import Zinc.Perf (perfSummaryJson, renderPerf, runPerf)
 import Zinc.Prime (runOnboard, runPrime)
-import Zinc.Report (PackageReport, PackageStatus (Built, Cached), boExes, boPackages, buildBreakdownLine, buildDataJson, buildSummaryLine, packageReportJson, prName, prStatus, prTimeMs, timingJson)
+import Zinc.Report (PackageReport, PackageStatus (Built, Cached), boExes, boPackages, buildBreakdownLine, buildDataJson, buildSummaryLine, packageReportJson, prName, prStatus, prTimeMs, renderResolution, resolutionJson, timingJson)
 import Zinc.Scaffold (materialize, scaffoldNew, scaffoldWorkspace)
 
 -- | Thin executable shim: parse argv into the output flags + a 'Command',
@@ -162,9 +162,9 @@ dispatch _ (New name workspace) = do
       then "Created workspace member at ./packages/" ++ name
       else "Created project " ++ name ++ " — `zinc run` to build and run it."
 dispatch mode (Add name) =
-  addInWorkspace name >>= either (failCmd mode) putStr
+  addInWorkspace name >>= emitIntrospection "add" mode resolutionJson renderResolution
 dispatch mode (Vendor pkgs) =
-  vendorInWorkspace pkgs >>= either (failCmd mode) putStr
+  vendorInWorkspace pkgs >>= emitIntrospection "vendor" mode resolutionJson renderResolution
 dispatch mode (Build member ghcOverride targetStr) =
   -- Resolve the compile target (zinc-9po.3); an unknown --target is a usage
   -- error (exit 2), like an unknown package format.

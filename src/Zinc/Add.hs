@@ -47,7 +47,6 @@ import Zinc.Manifest
   , parseWorkspace
   , renderWorkspace
   )
-import Zinc.Report (renderResolution)
 import Zinc.Resolve (ResolvedDep (..), isBootLib, resolve)
 import Zinc.Store (contentHash, resolveStoreRoot)
 
@@ -144,13 +143,13 @@ freezeClosure storeRoot flagsMap closure = do
               pure (lockEntry flagsMap slibs dep rev sha)
 
 -- | Resolve a workspace's dependency closure (real git fetch), freeze it, and
--- write @zinc.lock@; returns the resolution table for display. Shared by
--- 'runAdd' and 'runUpdate'.
-freezeWorkspace :: FilePath -> FilePath -> WorkspaceManifest -> Result String
+-- write @zinc.lock@; returns the resolved closure (the caller renders it for
+-- humans or the @--json@ envelope, zinc-91n.3). Shared by 'runAdd'/'runVendor'.
+freezeWorkspace :: FilePath -> FilePath -> WorkspaceManifest -> Result [ResolvedDep]
 freezeWorkspace wsFile storeRoot ws = do
   (closure, locks) <- resolveFreeze storeRoot [] ws
   liftIO $ writeFile (takeDirectory wsFile </> "zinc.lock") (renderLock locks)
-  pure (renderResolution closure)
+  pure closure
 
 -- | Resolve the workspace's dependency closure and freeze it to lock entries,
 -- WITHOUT writing — so @update@ can diff the result against the existing lock
@@ -185,7 +184,7 @@ hackageDiscover n = either (const Nothing) id <$> hackageSourceRepo n
 -- | Add (or refresh) a dependency: update the workspace model, freeze the
 -- closure, and write @zinc.lock@ + @zinc.toml@. Returns the resolution table.
 -- (Interactive y/N confirmation is layered on by the CLI.)
-runAdd :: FilePath -> FilePath -> String -> Ref -> String -> IO (Either ZincError String)
+runAdd :: FilePath -> FilePath -> String -> Ref -> String -> IO (Either ZincError [ResolvedDep])
 runAdd wsFile storeRoot name ref repo = runResult $ do
   src <- liftIO (readFile wsFile)
   ws <- liftEitherE (first (ManifestParse wsFile) (parseWorkspace src))
@@ -199,7 +198,7 @@ runAdd wsFile storeRoot name ref repo = runResult $ do
 -- deterministically discovers its non-boot closure + repos (ghc-pkg + Hackage,
 -- via 'runClosure'), refuses if any member needs vendoring, then pre-populates
 -- the manifest and freezes (spec §9 / zinc-49o).
-addInWorkspace :: String -> IO (Either ZincError String)
+addInWorkspace :: String -> IO (Either ZincError [ResolvedDep])
 addInWorkspace name = runResult $ do
   let wsFile = "zinc.toml"
   present <- liftIO (doesFileExist wsFile)
@@ -287,7 +286,7 @@ updateInWorkspace mtarget dryRun = runResult $ do
 -- store. Hackage is touched only here; @zinc build@ reads the pinned source from
 -- the lock + store. The manifest is rewritten only after a successful freeze, so
 -- a failed fetch leaves it untouched.
-vendorInWorkspace :: [String] -> IO (Either ZincError String)
+vendorInWorkspace :: [String] -> IO (Either ZincError [ResolvedDep])
 vendorInWorkspace pkgs = runResult $ do
   let wsFile = "zinc.toml"
   present <- liftIO (doesFileExist wsFile)
@@ -298,7 +297,7 @@ vendorInWorkspace pkgs = runResult $ do
 -- | Record the named packages as vendored pins and re-freeze the workspace
 -- (explicit paths, the testable core of 'vendorInWorkspace'). The manifest is
 -- rewritten only after a successful freeze.
-runVendor :: FilePath -> FilePath -> [String] -> IO (Either ZincError String)
+runVendor :: FilePath -> FilePath -> [String] -> IO (Either ZincError [ResolvedDep])
 runVendor wsFile storeRoot pkgs = runResult $ do
   src <- liftIO (readFile wsFile)
   ws <- liftEitherE (first (ManifestParse wsFile) (parseWorkspace src))

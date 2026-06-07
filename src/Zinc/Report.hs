@@ -4,6 +4,7 @@
 -- emitted on @zinc build --json@.
 module Zinc.Report
   ( renderResolution
+  , resolutionJson
   , PackageStatus (..)
   , PackageReport (..)
   , BuildOutcome (..)
@@ -183,6 +184,16 @@ renderResolution rds = unlines (header : map row rds)
     pad w s = s ++ replicate (w - length s) ' '
     header = pad nameW "package" ++ "  " ++ pad refW "ref" ++ "  repo"
     row d = pad nameW (rdName d) ++ "  " ++ pad refW (renderRef (rdRef d)) ++ "  " ++ rdRepo d
+
+-- | The resolved closure as JSON for the @--json@ envelope of @add@/@vendor@
+-- (zinc-91n.3): one @{name, ref, repo}@ per dependency, mirroring
+-- 'renderResolution' so agents can drive add without scraping the human table.
+resolutionJson :: [ResolvedDep] -> Json
+resolutionJson rds =
+  JArray
+    [ JObject [("name", JString (rdName d)), ("ref", JString (renderRef (rdRef d))), ("repo", JString (rdRepo d))]
+    | d <- rds
+    ]
 
 -- | Compact display form of a ref.
 renderRef :: Ref -> String
