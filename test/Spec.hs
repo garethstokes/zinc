@@ -562,7 +562,12 @@ main = hspec $ do
           out1 = either error id (canonicalizeManifest src)
           out2 = either error id (canonicalizeManifest out1)
       out1 `shouldBe` out2
-      all (`isInfixOf` out1) ["alpha = \"*\"", "zebra = \"v2\""] `shouldBe` True
+      -- zebra keeps the tag shorthand; alpha (Latest) renders as a ref-less
+      -- sub-table, never the `*` sentinel (zinc-91n.7); both round-trip.
+      all (`isInfixOf` out1) ["[dependencies.alpha]", "zebra = \"v2\""] `shouldBe` True
+      "*" `isInfixOf` out1 `shouldBe` False
+      (wsDependencies <$> parseWorkspace out1)
+        `shouldBe` Right [Dependency "alpha" Latest Nothing [] [], Dependency "zebra" (Tag "v2") Nothing [] []]
 
     it "preserves [package]/[build.*] while rewriting deps" $ do
       let src = unlines ["[workspace]", "members = [\".\"]", "ghc = \"9.6.5\"", "[package]", "name = \"z\"", "[build.lib]", "source-dirs = [\"src\"]", "[dependencies]", "x = \"v1\""]
@@ -974,6 +979,17 @@ main = hspec $ do
       -- a vendored pin must NOT collapse to the bare-string shorthand: that
       -- would parse back as a git tag, silently losing the source kind.
       let ws = WorkspaceManifest [] "9.6.5" [Dependency "colour" (Vendored "2.3.6") Nothing [] []]
+      (wsDependencies <$> parseWorkspace (renderWorkspace ws)) `shouldBe` Right (wsDependencies ws)
+
+    it "never serializes a Latest ref as the `*` sentinel (zinc-91n.7)" $ do
+      -- A Latest pin (with or without a repo) must not leak `tag = "*"` / `= "*"`
+      -- into the hand-edited manifest; an absent ref already means latest.
+      let withRepo = renderWorkspace (WorkspaceManifest [] "9.6.5" [Dependency "http-client-tls" Latest (Just "r/hct") [] []])
+          bare     = renderWorkspace (WorkspaceManifest [] "9.6.5" [Dependency "aeson" Latest Nothing [] []])
+      ("*" `isInfixOf` withRepo, "*" `isInfixOf` bare) `shouldBe` (False, False)
+
+    it "round-trips a Latest dependency (with and without a repo) through render . parse (zinc-91n.7)" $ do
+      let ws = WorkspaceManifest [] "9.6.5" [Dependency "aeson" Latest Nothing [] [], Dependency "http-client-tls" Latest (Just "r/hct") [] []]
       (wsDependencies <$> parseWorkspace (renderWorkspace ws)) `shouldBe` Right (wsDependencies ws)
 
     it "addVendored preserves a dep's existing ghc-options when re-pinning (mvj)" $ do

@@ -21,7 +21,7 @@ module Zinc.Manifest
   , addVendored
   ) where
 
-import Data.List (find, intercalate, sortOn)
+import Data.List (find, intercalate, partition, sortOn)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import qualified Toml
@@ -266,8 +266,18 @@ renderWorkspace w =
 -- | Render the canonical @[dependencies]@ block: deps sorted by name, each as a
 -- one-line shorthand (ref only) or a @[dependencies.name]@ sub-table (ref, then
 -- repo, then ghc-options). Shared by 'renderWorkspace' and @zinc fmt@.
+--
+-- Shorthand deps (bare @name = "v1"@ keys of @[dependencies]@) are emitted
+-- BEFORE any sub-table, because a @name = ...@ line after a @[dependencies.x]@
+-- header would be parsed as a key of @x@, not of @[dependencies]@ — so a plain
+-- sorted concat could fold a shorthand dep into the preceding sub-table. This
+-- matters more since 'Latest' renders as a (sub-table) header with no ref line
+-- (zinc-91n.7).
 renderDependencies :: [Dependency] -> [String]
-renderDependencies deps = "[dependencies]" : concatMap renderDep (sortOn depName deps)
+renderDependencies deps =
+  "[dependencies]" : (concatMap renderDep shorthands ++ concatMap renderDep subtables)
+  where
+    (shorthands, subtables) = partition isShorthandDep (sortOn depName deps)
 
 -- | Render a single dependency: a one-line shorthand (ref only) or a
 -- @[dependencies.name]@ sub-table (ref, then repo, then ghc-options). The
@@ -275,30 +285,42 @@ renderDependencies deps = "[dependencies]" : concatMap renderDep (sortOn depName
 -- Shared by the canonical writer ('renderDependencies' / @zinc fmt@) and the
 -- minimal-diff editor ('Zinc.Fmt.mergeManifestDependencies', @zinc add@), which
 -- renders only blocks it must add or change.
+-- | Can this dep use the one-line @name = "v1.2.3"@ shorthand? Only a plain tag
+-- pin with no repo/ghc-options/flags overrides. 'Latest' is NOT shorthand: it
+-- has no concrete ref, and the old @name = "*"@ leaked an internal sentinel —
+-- which reads as a glob — into the hand-edited manifest (zinc-91n.7).
+isShorthandDep :: Dependency -> Bool
+isShorthandDep d =
+  case depRef d of
+    Tag _ -> depRepo d == Nothing && null (depGhcOptions d) && null (depFlags d)
+    _     -> False
+
 renderDep :: Dependency -> [String]
 renderDep d
-  | Nothing <- depRepo d, null (depGhcOptions d), null (depFlags d), not (isVendored (depRef d)) =
-      [depName d ++ " = " ++ quote (snd (refStr (depRef d)))]
+  | isShorthandDep d, Tag t <- depRef d =
+      [depName d ++ " = " ++ quote t]
   | otherwise =
-      let (k, v) = refStr (depRef d)
-       in [ ""
-          , "[dependencies." ++ depName d ++ "]"
-          , k ++ " = " ++ quote v
-          ]
-            ++ maybe [] (\r -> ["repo = " ++ quote r]) (depRepo d)
-            ++ [ "ghc-options = [" ++ intercalate ", " (map quote (depGhcOptions d)) ++ "]"
-               | not (null (depGhcOptions d))
-               ]
-            ++ [ "flags = { " ++ intercalate ", " [n ++ " = " ++ bool b | (n, b) <- depFlags d] ++ " }"
-               | not (null (depFlags d))
-               ]
+      [ ""
+      , "[dependencies." ++ depName d ++ "]"
+      ]
+        ++ refLines (depRef d)
+        ++ maybe [] (\r -> ["repo = " ++ quote r]) (depRepo d)
+        ++ [ "ghc-options = [" ++ intercalate ", " (map quote (depGhcOptions d)) ++ "]"
+           | not (null (depGhcOptions d))
+           ]
+        ++ [ "flags = { " ++ intercalate ", " [n ++ " = " ++ bool b | (n, b) <- depFlags d] ++ " }"
+           | not (null (depFlags d))
+           ]
   where
     quote s = "\"" ++ s ++ "\""
-    refStr (Tag t)      = ("tag", t)
-    refStr (Branch b)   = ("branch", b)
-    refStr (Rev v)      = ("rev", v)
-    refStr Latest       = ("tag", "*")
-    refStr (Vendored v) = ("vendored", v)
+    -- 'Latest' writes no ref line at all: an absent tag/branch/rev IS latest
+    -- (see 'parseDeps' @otherwise = Latest@), so it round-trips without the
+    -- @tag = "*"@ sentinel (zinc-91n.7).
+    refLines (Tag t)      = ["tag = " ++ quote t]
+    refLines (Branch b)   = ["branch = " ++ quote b]
+    refLines (Rev v)      = ["rev = " ++ quote v]
+    refLines (Vendored v) = ["vendored = " ++ quote v]
+    refLines Latest       = []
     bool True  = "true"
     bool False = "false"
 
