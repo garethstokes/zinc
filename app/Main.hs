@@ -166,10 +166,14 @@ dispatch mode (Add name True) =
   -- resolvability (what `add` would pull, and which deps need vendoring) without
   -- mutating zinc.toml/zinc.lock. Same discovery as `zinc closure`.
   runClosure name >>= emitIntrospection "add" mode closureReportJson renderClosure
-dispatch mode (Add name False) =
-  addInWorkspace name >>= emitIntrospection "add" mode resolutionJson renderResolution
-dispatch mode (Vendor pkgs) =
-  vendorInWorkspace pkgs >>= emitIntrospection "vendor" mode resolutionJson renderResolution
+dispatch mode (Add name False) = do
+  -- Stream resolve/fetch progress during the multi-second closure walk + freeze
+  -- (zinc-91n.5); the renderer drains before the final table/envelope is emitted.
+  r <- withRenderer mode (\sink -> addInWorkspace sink name)
+  emitIntrospection "add" mode resolutionJson renderResolution r
+dispatch mode (Vendor pkgs) = do
+  r <- withRenderer mode (\sink -> vendorInWorkspace sink pkgs)
+  emitIntrospection "vendor" mode resolutionJson renderResolution r
 dispatch mode (Build member ghcOverride targetStr) =
   -- Resolve the compile target (zinc-9po.3); an unknown --target is a usage
   -- error (exit 2), like an unknown package format.

@@ -2130,13 +2130,23 @@ main = hspec $ do
 
     it "freezeClosure clones each dep and records its commit + content hash" $ do
       let rd = ResolvedDep "dep" repo (Tag "v1") ["aeson"]
-      r <- freezeClosure "/tmp/zinc-freeze-store" [] [rd]
+      r <- freezeClosure nullSink "/tmp/zinc-freeze-store" [] [rd]
       case r of
         Right [lp] -> do
           (lockName lp, lockRepo lp, lockDepends lp) `shouldBe` ("dep", repo, ["aeson"])
           length (lockRev lp) `shouldBe` 40 -- git sha1 hex
           take 7 (lockSha256 lp) `shouldBe` "sha256:"
         other -> expectationFailure ("unexpected freeze result: " ++ show other)
+
+    it "freezeClosure streams a FetchStart/FetchDone per dep (zinc-91n.5)" $ do
+      -- the freeze phase used to be silent; it now emits a fetch event around
+      -- each dep's clone so the renderer can show progress / the dep in flight.
+      ref <- newTVarIO []
+      let rec = Sink (\e -> modifyTVar' ref (e :))
+          rd  = ResolvedDep "dep" repo (Tag "v1") ["aeson"]
+      _ <- freezeClosure rec "/tmp/zinc-freeze-store" [] [rd]
+      evs <- reverse <$> readTVarIO ref
+      evs `shouldBe` [FetchStart "dep", FetchDone "dep"]
 
   describe "nixPrintDevEnv" $
     it "evaluates a generated flake and exposes the pinned ghc" $ do
@@ -2571,7 +2581,7 @@ main = hspec $ do
     (wsFile, store, leafRepo) <- runIO setupAddFixture
 
     it "resolves, freezes, and writes the lock + manifest" $ do
-      r <- runAdd wsFile store "leaf" (Tag "v1") leafRepo
+      r <- runAdd nullSink wsFile store "leaf" (Tag "v1") leafRepo
       lockText <- readFile (takeDirectory wsFile </> "zinc.lock")
       case r of
         Right closure ->
@@ -3284,7 +3294,7 @@ main = hspec $ do
           createDirectoryIfMissing True base
           -- a workspace with no git deps; we vendor colour into it by version
           writeFileIn (ws ++ "/zinc.toml") (renderWorkspace (WorkspaceManifest ["packages/app"] "9.6.5" []))
-          r <- runVendor (ws ++ "/zinc.toml") store ["colour-2.3.6"]
+          r <- runVendor nullSink (ws ++ "/zinc.toml") store ["colour-2.3.6"]
           r `shouldSatisfy` isRight
           lockSrc <- readFile (ws ++ "/zinc.lock")
           locks <- either (fail . ("lock parse: " ++)) pure (parseLock lockSrc)

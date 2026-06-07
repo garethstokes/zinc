@@ -32,6 +32,7 @@ import Zinc.Fmt (mergeManifestDependencies)
 import Zinc.Git (cloneAt)
 import Zinc.Hackage (fetchHackageTarball, hackageLatestVersion, hackageSourceRepo)
 import Zinc.Lock (LockedPackage (..), Source (..), parseLock, renderLock)
+import Zinc.Output (OutputEvent (..), Sink, emit, nullSink)
 import Zinc.Manifest
   ( Component (compSystemLibs)
   , Dependency (depName, depRef)
@@ -103,13 +104,20 @@ systemLibsOf pkgDir = do
 -- Each dep freezes independently; ALL failures (e.g. no release tags, clone
 -- errors) are accumulated and reported together (zinc-91n.1), so a closure with
 -- several unfreezable deps is fixed in one pass rather than one re-run per dep.
-freezeClosure :: FilePath -> [(String, [(String, Bool)])] -> [ResolvedDep] -> IO (Either ZincError [LockedPackage])
-freezeClosure storeRoot flagsMap closure = do
-  results <- mapM (runResult . freezeOne) closure
+freezeClosure :: Sink -> FilePath -> [(String, [(String, Bool)])] -> [ResolvedDep] -> IO (Either ZincError [LockedPackage])
+freezeClosure sink storeRoot flagsMap closure = do
+  results <- mapM step closure
   pure $ case [e | Left e <- results] of
     []       -> Right [lp | Right lp <- results]
     blockers -> Left (manyErrors blockers)
   where
+    -- Stream a fetch event around each dep's clone so the multi-second freeze
+    -- phase isn't silent and the dep in flight is visible (zinc-91n.5).
+    step dep = do
+      emit sink (FetchStart (rdName dep))
+      r <- runResult (freezeOne dep)
+      emit sink (FetchDone (rdName dep))
+      pure r
     freezeOne :: ResolvedDep -> Result LockedPackage
     freezeOne dep = do
       let dest = storeRoot </> "checkout" </> rdName dep
@@ -145,9 +153,9 @@ freezeClosure storeRoot flagsMap closure = do
 -- | Resolve a workspace's dependency closure (real git fetch), freeze it, and
 -- write @zinc.lock@; returns the resolved closure (the caller renders it for
 -- humans or the @--json@ envelope, zinc-91n.3). Shared by 'runAdd'/'runVendor'.
-freezeWorkspace :: FilePath -> FilePath -> WorkspaceManifest -> Result [ResolvedDep]
-freezeWorkspace wsFile storeRoot ws = do
-  (closure, locks) <- resolveFreeze storeRoot [] ws
+freezeWorkspace :: Sink -> FilePath -> FilePath -> WorkspaceManifest -> Result [ResolvedDep]
+freezeWorkspace sink wsFile storeRoot ws = do
+  (closure, locks) <- resolveFreeze sink storeRoot [] ws
   liftIO $ writeFile (takeDirectory wsFile </> "zinc.lock") (renderLock locks)
   pure closure
 
@@ -156,12 +164,23 @@ freezeWorkspace wsFile storeRoot ws = do
 -- before committing it (zinc-90j.2). @pins@ holds named deps at a ref without
 -- forcing inclusion, for per-package @update \<pkg\>@ (90j.3); empty = full
 -- resolve. Returns the resolved closure + its locks.
-resolveFreeze :: FilePath -> [(String, Ref)] -> WorkspaceManifest -> Result ([ResolvedDep], [LockedPackage])
-resolveFreeze storeRoot pins ws = do
+resolveFreeze :: Sink -> FilePath -> [(String, Ref)] -> WorkspaceManifest -> Result ([ResolvedDep], [LockedPackage])
+resolveFreeze sink storeRoot pins ws = do
+  liftIO (emit sink ResolveStart)
   -- Caller pins lead so they still win; vendored soft pins (zinc-y24) follow.
-  closure <- orFailE (resolve isBootLib (gitFetchManifest storeRoot (wsGhc ws) (depFlagsOf ws)) hackageDiscover (pins ++ vendoredSoftPins ws) (wsDependencies ws) (depRepos ws))
-  locks <- orFailE (freezeClosure storeRoot (depFlagsOf ws) closure)
+  closure <- orFailE (resolve isBootLib fetch hackageDiscover (pins ++ vendoredSoftPins ws) (wsDependencies ws) (depRepos ws))
+  locks <- orFailE (freezeClosure sink storeRoot (depFlagsOf ws) closure)
   pure (closure, locks)
+  where
+    -- Stream a fetch event around each manifest fetch during the closure walk, so
+    -- the multi-second discovery phase isn't silent and the failing dep is
+    -- visible (zinc-91n.5). The walk's size is unknown up front (it IS the
+    -- discovery), hence per-dep events rather than a Plan total.
+    fetch n repo ref = do
+      emit sink (FetchStart n)
+      r <- gitFetchManifest storeRoot (wsGhc ws) (depFlagsOf ws) n repo ref
+      emit sink (FetchDone n)
+      pure r
 
 -- | A soft pin per workspace-vendored dependency, so a TRANSITIVE requirement on
 -- it resolves to its Hackage tarball instead of failing (zinc-y24). A vendored
@@ -184,12 +203,12 @@ hackageDiscover n = either (const Nothing) id <$> hackageSourceRepo n
 -- | Add (or refresh) a dependency: update the workspace model, freeze the
 -- closure, and write @zinc.lock@ + @zinc.toml@. Returns the resolution table.
 -- (Interactive y/N confirmation is layered on by the CLI.)
-runAdd :: FilePath -> FilePath -> String -> Ref -> String -> IO (Either ZincError [ResolvedDep])
-runAdd wsFile storeRoot name ref repo = runResult $ do
+runAdd :: Sink -> FilePath -> FilePath -> String -> Ref -> String -> IO (Either ZincError [ResolvedDep])
+runAdd sink wsFile storeRoot name ref repo = runResult $ do
   src <- liftIO (readFile wsFile)
   ws <- liftEitherE (first (ManifestParse wsFile) (parseWorkspace src))
   let ws' = addDep ws name ref repo
-  res <- freezeWorkspace wsFile storeRoot ws'
+  res <- freezeWorkspace sink wsFile storeRoot ws'
   liftIO $ writeManifestPreserving wsFile src ws'
   pure res
 
@@ -198,8 +217,8 @@ runAdd wsFile storeRoot name ref repo = runResult $ do
 -- deterministically discovers its non-boot closure + repos (ghc-pkg + Hackage,
 -- via 'runClosure'), refuses if any member needs vendoring, then pre-populates
 -- the manifest and freezes (spec §9 / zinc-49o).
-addInWorkspace :: String -> IO (Either ZincError [ResolvedDep])
-addInWorkspace name = runResult $ do
+addInWorkspace :: Sink -> String -> IO (Either ZincError [ResolvedDep])
+addInWorkspace sink name = runResult $ do
   let wsFile = "zinc.toml"
   present <- liftIO (doesFileExist wsFile)
   when (not present) $ failWithError (NoZincToml ".")
@@ -210,7 +229,7 @@ addInWorkspace name = runResult $ do
     -- Repo already pinned in the manifest: freeze it directly (offline).
     Just repo -> do
       let ref = maybe Latest depRef (find ((== name) . depName) (wsDependencies ws))
-      orFailE (runAdd wsFile storeRoot name ref repo)
+      orFailE (runAdd sink wsFile storeRoot name ref repo)
     -- Unknown repo: deterministically discover the package's non-boot closure
     -- (ghc-pkg) + each member's repo (Hackage), refuse if any needs vendoring,
     -- then pre-populate the manifest and freeze (zinc-49o part 4).
@@ -223,7 +242,7 @@ addInWorkspace name = runResult $ do
       -- Transactional: freeze (which writes zinc.lock) BEFORE touching zinc.toml,
       -- so a failed freeze leaves the manifest untouched rather than pinning a dep
       -- with no lock (zinc-91n.2). Mirrors 'runAdd''s freeze-then-write order.
-      res <- freezeWorkspace wsFile storeRoot enriched
+      res <- freezeWorkspace sink wsFile storeRoot enriched
       liftIO (writeManifestPreserving wsFile src enriched)
       pure res
 
@@ -252,7 +271,9 @@ runUpdate mtarget dryRun wsFile storeRoot = runResult $ do
   let pins = case mtarget of
         Nothing  -> []
         Just pkg -> [(lockName l, pinRef l) | l <- old, lockName l /= pkg]
-  (_, locks) <- resolveFreeze storeRoot pins ws
+  -- update renders a delta, not a live stream (its dispatch uses
+  -- emitIntrospection, not withRenderer), so it drops progress events (91n.5).
+  (_, locks) <- resolveFreeze nullSink storeRoot pins ws
   liftIO $ when (not dryRun) (writeFile lockFile (renderLock locks))
   pure (closureDelta old locks)
   where
@@ -286,24 +307,24 @@ updateInWorkspace mtarget dryRun = runResult $ do
 -- store. Hackage is touched only here; @zinc build@ reads the pinned source from
 -- the lock + store. The manifest is rewritten only after a successful freeze, so
 -- a failed fetch leaves it untouched.
-vendorInWorkspace :: [String] -> IO (Either ZincError [ResolvedDep])
-vendorInWorkspace pkgs = runResult $ do
+vendorInWorkspace :: Sink -> [String] -> IO (Either ZincError [ResolvedDep])
+vendorInWorkspace sink pkgs = runResult $ do
   let wsFile = "zinc.toml"
   present <- liftIO (doesFileExist wsFile)
   when (not present) $ failWithError (NoZincToml ".")
   storeRoot <- liftIO resolveStoreRoot
-  orFailE (runVendor wsFile storeRoot pkgs)
+  orFailE (runVendor sink wsFile storeRoot pkgs)
 
 -- | Record the named packages as vendored pins and re-freeze the workspace
 -- (explicit paths, the testable core of 'vendorInWorkspace'). The manifest is
 -- rewritten only after a successful freeze.
-runVendor :: FilePath -> FilePath -> [String] -> IO (Either ZincError [ResolvedDep])
-runVendor wsFile storeRoot pkgs = runResult $ do
+runVendor :: Sink -> FilePath -> FilePath -> [String] -> IO (Either ZincError [ResolvedDep])
+runVendor sink wsFile storeRoot pkgs = runResult $ do
   src <- liftIO (readFile wsFile)
   ws <- liftEitherE (first (ManifestParse wsFile) (parseWorkspace src))
   resolved <- traverse resolveVendorVersion pkgs
   let ws' = foldl (\w (n, v) -> addVendored w n v) ws resolved
-  res <- freezeWorkspace wsFile storeRoot ws'
+  res <- freezeWorkspace sink wsFile storeRoot ws'
   liftIO (writeManifestPreserving wsFile src ws')
   pure res
 
