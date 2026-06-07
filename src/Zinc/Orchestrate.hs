@@ -23,6 +23,7 @@ module Zinc.Orchestrate
   , runClean
   , runCachePush
   , runPackage
+  , buildDeployClosure
   , parMapBounded
   ) where
 
@@ -666,8 +667,14 @@ runCachePush wsDir = runResult $ do
 -- store derivation), and emit the artifact. The @nix@ format is available now
 -- (the foundational closure); @docker@/@static@/@bundle@ extend the flake in
 -- 7m6.2/.3/.4. Nix is auto-provisioned (y03); a clear diagnostic when absent.
-runPackage :: PackageFormat -> Maybe String -> Maybe String -> Maybe String -> FilePath -> IO (Either ZincError String)
-runPackage fmt tag out to wsDir = runResult $ do
+-- | Prepare the throwaway flake-package dir for the workspace's executable: build
+-- + resolve the app, copy the binary in, pin its runtime store-path closure into
+-- a generated @flake.nix@, and stage both into a git repo (flakes only see
+-- tracked files). Returns @(exe name, pkgDir, imageName, imageTag)@. Shared by
+-- 'runPackage' and 'buildDeployClosure' (zinc-nbk.2). @tag@ only affects the
+-- docker image ref (irrelevant to the nix closure / deploy).
+prepNixPackageDir :: Maybe String -> FilePath -> Result (String, FilePath, String, String)
+prepNixPackageDir tag wsDir = do
   haveNix <- liftIO (findExecutable "nix")
   when (isNothing haveNix) (failWithError NixAbsent)
   exe <- orFailE (resolveRunTarget wsDir Nothing) -- builds the app + resolves its executable
@@ -689,6 +696,35 @@ runPackage fmt tag out to wsDir = runResult $ do
     _ <- readProcessWithExitCode "git" ["-C", pkgDir, "init", "-q"] ""
     _ <- readProcessWithExitCode "git" ["-C", pkgDir, "add", "."] ""
     pure ()
+  pure (name, pkgDir, imageName, imageTag)
+
+-- | Build the workspace app's Nix closure and return @(exe name, store path)@ —
+-- the deployable artifact for @zinc deploy@ (zinc-nbk.2). Same realized closure
+-- as @zinc package nix@, but returns the raw store path (not a human string) so
+-- the deploy sequence can @nix copy@ + @nix profile install@ it.
+buildDeployClosure :: FilePath -> IO (Either ZincError (String, FilePath))
+buildDeployClosure wsDir = runResult $ do
+  (name, pkgDir, _, _) <- prepNixPackageDir Nothing wsDir
+  path <- orFail (nixBuildAttr pkgDir "default")
+  pure (name, path)
+
+-- | @nix build \<dir\>#\<attr\>@ → the realized store path (or an error string).
+-- @--impure@: the packaging flake pins runtime deps via @builtins.storePath@,
+-- which pure flake eval forbids.
+nixBuildAttr :: FilePath -> String -> IO (Either String FilePath)
+nixBuildAttr dir attr = do
+  (code, o, e) <-
+    readProcessWithExitCode
+      "nix"
+      ["--extra-experimental-features", "nix-command flakes", "build", "--impure", dir ++ "#" ++ attr, "--no-link", "--print-out-paths"]
+      ""
+  pure $ case code of
+    ExitSuccess   -> Right (reverse (dropWhile (`elem` ("\n\r \t" :: String)) (reverse o)))
+    ExitFailure _ -> Left (if null e then "nix build failed" else e)
+
+runPackage :: PackageFormat -> Maybe String -> Maybe String -> Maybe String -> FilePath -> IO (Either ZincError String)
+runPackage fmt tag out to wsDir = runResult $ do
+  (name, pkgDir, imageName, imageTag) <- prepNixPackageDir tag wsDir
   case fmt of
     NixClosure -> do
       path <- orFail (nixBuildAttr pkgDir "default")
@@ -732,17 +768,6 @@ runPackage fmt tag out to wsDir = runResult $ do
     -- alternatives (docker/bundle) rather than a cryptic linker error (zinc-7m6.3).
     Static -> failWithError (StaticUnsupported name)
   where
-    -- --impure: the flake pins the binary's runtime deps via builtins.storePath
-    -- (see Zinc.Package.packagingFlake), which pure flake eval forbids.
-    nixBuildAttr dir attr = do
-      (code, o, e) <-
-        readProcessWithExitCode
-          "nix"
-          ["--extra-experimental-features", "nix-command flakes", "build", "--impure", dir ++ "#" ++ attr, "--no-link", "--print-out-paths"]
-          ""
-      pure $ case code of
-        ExitSuccess   -> Right (reverse (dropWhile (`elem` ("\n\r \t" :: String)) (reverse o)))
-        ExitFailure _ -> Left (if null e then "nix build failed" else e)
     -- `nix bundle` must target the package (which carries pname), not apps.default
     -- (whose drvToBundle has no pname); resolve the current system for the attr.
     nixBundle dir link = do

@@ -44,6 +44,10 @@ import Zinc.Deploy
   , nixCopyStoreUri
   , profileInstallScript
   , profileName
+  , unitFile
+  , systemdUnit
+  , activateScript
+  , rollbackScript
   , parseDeployHost
   , parseProbeOutput
   , probeScript
@@ -3802,9 +3806,9 @@ main = hspec $ do
       nixCopyStoreUri (DeployHost (Just "gareth") "box" Nothing) `shouldBe` "ssh-ng://gareth@box"
       nixCopyStoreUri (DeployHost Nothing "box" (Just 2222)) `shouldBe` "ssh-ng://box"
 
-    it "builds the nix copy argv with experimental features enabled" $
+    it "builds the nix copy argv with experimental features + --no-check-sigs (nbk.2)" $
       nixCopyArgs (DeployHost (Just "gareth") "box" Nothing) "/nix/store/abc-app"
-        `shouldBe` ["--extra-experimental-features", "nix-command flakes", "copy", "--to", "ssh-ng://gareth@box", "/nix/store/abc-app"]
+        `shouldBe` ["--extra-experimental-features", "nix-command flakes", "copy", "--no-check-sigs", "--to", "ssh-ng://gareth@box", "/nix/store/abc-app"]
 
     it "passes a non-default port to nix's ssh via NIX_SSHOPTS" $ do
       nixCopyEnv (DeployHost Nothing "box" (Just 2222)) `shouldBe` [("NIX_SSHOPTS", "-p 2222")]
@@ -3816,10 +3820,49 @@ main = hspec $ do
       all
         (`isInfixOf` s)
         [ ".local/state/nix/profiles/zinc-myapp"
-        , "profile install --profile"
-        , "/nix/store/abc-app"
+        , "nix-env --profile"
+        , "--set /nix/store/abc-app"
         ]
         `shouldBe` True
+
+  describe "Zinc.Deploy unit + activate + rollback (nbk.3/.4)" $ do
+    it "names the user-systemd unit zinc-<service>.service" $
+      unitFile "myapp" `shouldBe` "zinc-myapp.service"
+
+    it "generates a boring unit whose ExecStart points at the profile bin (rollback swaps it)" $ do
+      let u = systemdUnit "myapp" ["--port", "8080"] [("RUST_LOG", "info")]
+      all (`isInfixOf` u)
+        [ "Description=zinc service myapp"
+        , "ExecStart=%h/.local/state/nix/profiles/zinc-myapp/bin/myapp --port 8080"
+        , "Restart=on-failure"
+        , "Environment=RUST_LOG=info"
+        , "WantedBy=default.target"
+        ]
+        `shouldBe` True
+
+    it "the activate script writes the unit, restarts, condition-waits, and auto-rolls-back on failure" $ do
+      let s = activateScript "myapp" (systemdUnit "myapp" [] [])
+      all (`isInfixOf` s)
+        [ ".config/systemd/user"
+        , "unit=zinc-myapp.service"
+        , "systemctl --user daemon-reload"
+        , "systemctl --user restart zinc-myapp.service"
+        , "is-active"
+        , "NRestarts" -- crash-loop guard: require it stayed up after settling
+        , "--rollback"
+        , "exit 1"
+        ]
+        `shouldBe` True
+
+    it "the rollback script reverts the profile generation and restarts (no copy)" $ do
+      let s = rollbackScript "myapp"
+      all (`isInfixOf` s)
+        [ ".local/state/nix/profiles/zinc-myapp"
+        , "--rollback"
+        , "systemctl --user restart zinc-myapp.service"
+        ]
+        `shouldBe` True
+      ("copy" `isInfixOf` s) `shouldBe` False
 
   describe "Zinc.Cabal reexported-modules (jdf)" $ do
     it "reads bare and renamed reexports from a library .cabal" $ do

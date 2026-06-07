@@ -1,10 +1,10 @@
 module Main (main) where
 
-import Control.Monad (unless, when)
+import Control.Monad (mplus, unless, when)
 import System.IO.Error (catchIOError)
 import Data.List (intercalate, nub)
 import Zinc.Lock (lockSystemLibs, parseLock)
-import Data.Maybe (maybeToList)
+import Data.Maybe (fromMaybe, maybeToList)
 import System.Environment (getArgs, lookupEnv)
 import System.Exit (ExitCode (ExitFailure), exitWith)
 import System.IO (hPutStrLn, stderr)
@@ -12,14 +12,14 @@ import System.Process (CreateProcess (std_err, std_in, std_out), StdStream (Inhe
 import Zinc.Add (addInWorkspace, updateInWorkspace, vendorInWorkspace)
 import Zinc.CLI (Command (..), helpOverview, parseArgs)
 import Zinc.Closure (closureReportJson, renderClosure, runClosure)
-import Zinc.Diagnostic (ZincError, envelope, exitCodeFor, humanError, rawToolOutput, toDiagnostic, toDiagnostics, zincVersion, zincVersionLine)
+import Zinc.Diagnostic (ZincError (OtherError), envelope, exitCodeFor, humanError, rawToolOutput, toDiagnostic, toDiagnostics, zincVersion, zincVersionLine)
 import Zinc.Delta (deltaJson, renderDelta)
-import Zinc.Deploy (ProbeChecks (..), ResolvedDeploy (..), deployReadyJson, dhHost, resolveDeploy, runDeploy, runInit)
+import Zinc.Deploy (ProbeChecks (..), ResolvedDeploy (..), deployReadyJson, dhHost, profileName, resolveDeploy, runActivate, runDeploy, runInit, runNixCopy, runProfileInstall, runRollback)
 import Zinc.Docker (runDockerfile)
 import Zinc.Env (provisionToolchainFor)
 import Zinc.Target (Target (Native), isWasm, parseTarget, targetTriple)
 import Zinc.Git (gitInitIfNeeded)
-import Zinc.Manifest (parseDeployTargets, parseWorkspace, wsGhc)
+import Zinc.Manifest (parseDeployTargets, parseMember, parseWorkspace, pkgName, wsGhc)
 import Zinc.Store (resolveStoreRoot)
 import Zinc.Doctor (doctorJson, doctorOk, renderDoctor, runDoctor)
 import Zinc.Fmt (runFmt)
@@ -27,7 +27,7 @@ import Zinc.GC (runGc)
 import Zinc.Introspect (explainJson, graphJson, renderExplain, renderGraph, renderStatus, runExplain, runGraph, runStatus, statusJson)
 import Zinc.Json (Json (..), renderJson)
 import Zinc.Metrics (recordBuild)
-import Zinc.Orchestrate (checkLockDrift, resolveRunTargetFor, runBuildReport, runCachePush, runClean, runPackage, runRepl, runTests, runWarm)
+import Zinc.Orchestrate (buildDeployClosure, checkLockDrift, resolveRunTargetFor, runBuildReport, runCachePush, runClean, runPackage, runRepl, runTests, runWarm)
 import Zinc.Package (parsePackageFormat)
 import Zinc.Skill (LockedSkill (..))
 import Zinc.SkillCmd (renderSkillList, runSkillAdd, runSkillList, runSkillRemove, runSkillSync)
@@ -296,32 +296,68 @@ dispatch mode (Package fmtStr tag out to) =
   case parsePackageFormat fmtStr of
     Left err  -> hPutStrLn stderr err >> exitWith (ExitFailure 2)
     Right fmt -> runPackage fmt tag out to "." >>= either (failCmd mode) putStrLn
-dispatch mode (Deploy arg service initFlag _rollback _dryRun) = do
+dispatch mode (Deploy arg service initFlag rollback _dryRun) = do
   -- nbk.6: resolve <arg> against the manifest's [deploy.*] targets (an ad-hoc
   -- user@host still works); a broken/absent manifest just means no named
-  -- targets. nbk.5: --init prints the NixOS trusted-users + linger snippet for
-  -- the deploy user. Otherwise nbk.1: probe the host's NixOS preconditions over
-  -- SSH and report readiness (each gap → a typed ZINC_DEPLOY_* diagnostic). The
-  -- closure copy + activate (nbk.2/.3) and --rollback (nbk.4) layer on top.
+  -- targets. nbk.5: --init prints the NixOS trusted-users + linger snippet.
+  -- nbk.4: --rollback reverts the service to its previous generation. Otherwise
+  -- the full deploy sequence (nbk.1/.2/.3): probe → build the nix closure → nix
+  -- copy → profile install → user-systemd unit + health-check (auto-rollback).
   src <- readFile "zinc.toml" `catchIOError` const (pure "")
   let targets = either (const []) id (parseDeployTargets src)
-      h = rdHost (resolveDeploy targets arg service)
+      resolved = resolveDeploy targets arg service
+      h = rdHost resolved
+      -- The systemd service name: --service / [deploy.*].service, else the
+      -- manifest's package name (the deployed exe's name).
+      manifestSvc = either (const Nothing) (Just . pkgName) (parseMember src)
   if initFlag
     then runInit h >>= \r -> case r of
       Left e -> failDeploy e
       Right snippet
         | machine mode -> putStrLn (renderJson (envelope "deploy" True (Just (JObject [("init", JString snippet)])) Nothing []))
         | otherwise    -> putStrLn "Add this to the host's NixOS configuration, then rebuild:" >> putStr snippet
-    else runDeploy h >>= \r -> case r of
-      Left e -> failDeploy e
-      Right (rh, c)
-        | machine mode -> putStrLn (renderJson (envelope "deploy" True (Just (deployReadyJson rh c)) Nothing []))
-        | otherwise    -> putStrLn ("Host " ++ dhHost rh ++ " is ready to receive a deploy (nix " ++ tick (pcNix c) ++ ", trusted " ++ tick (pcTrusted c) ++ ", linger " ++ tick (pcLinger c) ++ ").")
+    else if rollback
+      then case rdService resolved `mplus` manifestSvc of
+        Nothing  -> failDeploy (OtherError "deploy --rollback needs a service: pass --service <name> or run in a workspace with a [package].name")
+        Just svc -> runRollback h svc >>= \r -> case r of
+          Left e   -> failDeploy e
+          Right () -> deployOk (JObject [("host", JString (dhHost h)), ("service", JString svc), ("rolledBack", JBool True)])
+                        ("Rolled " ++ svc ++ " back to its previous generation on " ++ dhHost h ++ " and restarted.")
+      else fullDeploy resolved manifestSvc
   where
     tick b = if b then "\10003" else "\10007"
     failDeploy e
       | machine mode = putStrLn (renderJson (envelope "deploy" False Nothing Nothing [toDiagnostic e])) >> exitWith (exitCodeFor e)
       | otherwise    = failCmd mode e
+    deployOk j human
+      | machine mode = putStrLn (renderJson (envelope "deploy" True (Just j) Nothing []))
+      | otherwise    = putStrLn human
+    -- The full sequence: probe (typed gaps), build the closure, copy + install +
+    -- activate. Any step's Left short-circuits to the typed diagnostic.
+    fullDeploy resolved manifestSvc = do
+      probe <- runDeploy h
+      case probe of
+        Left e -> failDeploy e
+        Right _ -> buildDeployClosure "." >>= \b -> case b of
+          Left e -> failDeploy e
+          Right (name, path) -> do
+            let svc = fromMaybe name (rdService resolved `mplus` manifestSvc)
+            steps <-
+              chainE
+                [ runNixCopy h path
+                , runProfileInstall h svc path
+                , runActivate h svc (rdArgs resolved) (rdEnv resolved)
+                ]
+            case steps of
+              Left e   -> failDeploy e
+              Right () ->
+                deployOk
+                  (JObject [("host", JString (dhHost h)), ("service", JString svc), ("storePath", JString path), ("activated", JBool True)])
+                  ("Deployed " ++ svc ++ " to " ++ dhHost h ++ " — " ++ path ++ "\n  systemd unit " ++ profileName svc ++ " is active.")
+      where h = rdHost resolved
+    -- Run Either-returning IO steps in order, stopping at the first Left.
+    chainE [] = pure (Right ())
+    chainE (a : as) = a >>= either (pure . Left) (const (chainE as))
 dispatch mode (SkillAdd repo ref) =
   runSkillAdd repo ref "." >>= either (failCmd mode) putStrLn
 dispatch mode SkillList =

@@ -78,6 +78,7 @@ data ZincError
   | DeployNotTrusted String           -- ^ user (not in the host's trusted-users)
   | DeployNoLinger String             -- ^ user (lingering disabled on the host)
   | DeployCopy String String          -- ^ host, detail (nix copy / profile install failed, zinc-nbk.2)
+  | DeployActivate String String      -- ^ host, detail (unit failed its health-check; rolled back, zinc-nbk.3)
   | ManyErrors [ZincError]            -- ^ several independent blockers reported together (zinc-91n.1); expanded to one diagnostic each at the boundary
   | OtherError String                 -- ^ escape hatch for not-yet-migrated messages
   deriving (Eq, Show)
@@ -192,6 +193,7 @@ errorCode e = case e of
   DeployNotTrusted {}    -> "ZINC_DEPLOY_NOT_TRUSTED"
   DeployNoLinger {}      -> "ZINC_DEPLOY_NO_LINGER"
   DeployCopy {}          -> "ZINC_DEPLOY_COPY"
+  DeployActivate {}      -> "ZINC_DEPLOY_ACTIVATE"
   ManyErrors {}          -> "ZINC_MANY_BLOCKERS"
   OtherError {}          -> "ZINC_ERROR"
 
@@ -284,6 +286,9 @@ toDiagnostic e =
       DeployCopy host d ->
         ( "could not copy the build to the host", Just (host ++ ": " ++ d), Nothing, Nothing
         , Just "check the host is in trusted-users (`zinc deploy --init`) and reachable; nix copy uses ssh-ng" )
+      DeployActivate host d ->
+        ( "the service failed its health-check and was rolled back", Just (host ++ ": " ++ d), Nothing, Nothing
+        , Just ("inspect the unit on the host: `journalctl --user -u zinc-<service>` (or `systemctl --user status zinc-<service>`)") )
       DeployNoLinger user ->
         ( "user lingering is disabled on the host", Just ("services for " ++ user ++ " will not run without an active login"), Nothing, Nothing
         , Just ("set `users.users." ++ user ++ ".linger = true` (`zinc deploy --init` prints the snippet)") )
@@ -407,6 +412,7 @@ exitCodeFor e = ExitFailure $ case e of
   DeployNotTrusted {}    -> 5
   DeployNoLinger {}      -> 5
   DeployCopy {}          -> 5
+  DeployActivate {}      -> 5
   ContentHashMismatch {} -> 6
   OtherError {}          -> 1
 

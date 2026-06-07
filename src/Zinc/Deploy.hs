@@ -36,6 +36,12 @@ module Zinc.Deploy
   , profileInstallScript
   , runNixCopy
   , runProfileInstall
+  , unitFile
+  , systemdUnit
+  , activateScript
+  , rollbackScript
+  , runActivate
+  , runRollback
   ) where
 
 import Data.Char (isDigit)
@@ -44,7 +50,7 @@ import System.Environment (getEnvironment)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 import System.Process (CreateProcess (env), proc, readCreateProcessWithExitCode, readProcessWithExitCode)
 import Zinc.Diagnostic
-  ( ZincError (DeployCopy, DeployNoLinger, DeployNoNix, DeployNotTrusted, DeploySsh)
+  ( ZincError (DeployActivate, DeployCopy, DeployNoLinger, DeployNoNix, DeployNotTrusted, DeploySsh)
   )
 import Zinc.Json (Json (..), object)
 import Zinc.Manifest (DeployTarget (..))
@@ -242,9 +248,13 @@ nixCopyStoreUri h = "ssh-ng://" ++ maybe "" (++ "@") (dhUser h) ++ dhHost h
 
 -- | The @nix copy@ argv that pushes a store path's closure to the host. Only
 -- store paths the host is missing transfer (content-addressed dedup, spec §5).
+-- @--no-check-sigs@: the closure was just built locally (trusted by
+-- construction) but is unsigned, and @ssh-ng@ otherwise rejects unsigned paths
+-- even for a trusted remote user ("lacks a signature by a trusted key");
+-- verified against a real host (zinc-nbk.2).
 nixCopyArgs :: DeployHost -> FilePath -> [String]
 nixCopyArgs h path =
-  ["--extra-experimental-features", "nix-command flakes", "copy", "--to", nixCopyStoreUri h, path]
+  ["--extra-experimental-features", "nix-command flakes", "copy", "--no-check-sigs", "--to", nixCopyStoreUri h, path]
 
 -- | Extra env for the @nix copy@ process: a non-default port reaches Nix's
 -- underlying @ssh@ via @NIX_SSHOPTS@ (the URI carries no port).
@@ -257,16 +267,21 @@ nixCopyEnv h = maybe [] (\p -> [("NIX_SSHOPTS", "-p " ++ show p)]) (dhPort h)
 profileName :: String -> String
 profileName service = "zinc-" ++ service
 
--- | The remote shell script that installs a (already-copied) store path into the
--- service's user profile — the GC-root + generation step. Runs on the host via
--- SSH, so @$HOME@ expands there.
+-- | The remote shell script that points the service's user profile at a
+-- (already-copied) store path — the GC-root + generation step. Uses
+-- @nix-env --set@, not @nix profile install@: @--set@ makes the profile contain
+-- EXACTLY this closure as one new generation, so a redeploy cleanly REPLACES the
+-- prior app (whereas @nix profile install@ errors on the conflicting @bin/@ of
+-- the previous version) and rollback (nbk.4) reverts to the prior generation.
+-- Verified against a real host (zinc-nbk.2). Runs on the host via SSH, so
+-- @$HOME@ expands there.
 profileInstallScript :: String -> FilePath -> String
 profileInstallScript service path =
   unlines
     [ "set -e"
     , "prof=\"$HOME/.local/state/nix/profiles/" ++ profileName service ++ "\""
     , "mkdir -p \"$(dirname \"$prof\")\""
-    , "nix --extra-experimental-features 'nix-command flakes' profile install --profile \"$prof\" " ++ path
+    , "nix-env --profile \"$prof\" --set " ++ path
     ]
 
 -- | Push a built store closure to the host with @nix copy@ (deploy sequence
@@ -293,6 +308,116 @@ runProfileInstall h service path = do
   pure $ case code of
     ExitSuccess   -> Right ()
     ExitFailure _ -> Left (DeployCopy (dhHost h) (firstLine err))
+
+-- | The user-systemd unit file name for a service: @zinc-\<service\>.service@
+-- (spec §5 step 5).
+unitFile :: String -> String
+unitFile service = profileName service ++ ".service"
+
+-- | The generated user-systemd unit (deploy-host spec §5; zinc-nbk.3). The
+-- @ExecStart@ points at the dedicated PROFILE @bin/@, not a concrete store path,
+-- so @nix profile rollback@ swaps the running closure under a fixed path without
+-- rewriting the unit. Deliberately boring: @Restart=on-failure@, an optional
+-- @Environment=@ per configured var, started under the default target. @args@
+-- are appended to @ExecStart@ (v1: simple flags; no shell quoting).
+systemdUnit :: String -> [String] -> [(String, String)] -> String
+systemdUnit service args env =
+  unlines $
+    [ "[Unit]"
+    , "Description=zinc service " ++ service
+    , ""
+    , "[Service]"
+    , "ExecStart=%h/.local/state/nix/profiles/" ++ profileName service ++ "/bin/" ++ service ++ concatMap (' ' :) args
+    , "Restart=on-failure"
+    ]
+      ++ ["Environment=" ++ k ++ "=" ++ v | (k, v) <- env]
+      ++ [ ""
+         , "[Install]"
+         , "WantedBy=default.target"
+         ]
+
+-- | The remote activation script (deploy-host spec §5 steps 5–6; zinc-nbk.3):
+-- write the unit, @daemon-reload@, @restart@, then wait — condition-based, not a
+-- fixed sleep — for the unit to report @active@ (capped at ~10s). On failure (or
+-- @failed@) it AUTO-ROLLS-BACK: @nix profile rollback@ to the previous
+-- generation, restart the (unchanged-path) unit, and @exit 1@ so the caller
+-- reports 'DeployActivate'. Runs on the host via SSH, so @$HOME@ expands there.
+activateScript :: String -> String -> String
+activateScript service unit =
+  unlines
+    [ "set -e"
+    , "unitdir=\"$HOME/.config/systemd/user\""
+    , "mkdir -p \"$unitdir\""
+    , "cat > \"$unitdir/" ++ unitFile service ++ "\" <<'ZINC_UNIT_EOF'"
+    , dropTrailingNewline unit
+    , "ZINC_UNIT_EOF"
+    , "systemctl --user daemon-reload"
+    , "systemctl --user enable " ++ unitFile service ++ " >/dev/null 2>&1 || true"
+    , "systemctl --user restart " ++ unitFile service
+    , "prof=\"$HOME/.local/state/nix/profiles/" ++ profileName service ++ "\""
+    , "unit=" ++ unitFile service
+    , "# Wait (condition-based) for the unit to first reach active or fail."
+    , "up=no"
+    , "for _ in $(seq 1 50); do"
+    , "  state=$(systemctl --user is-active \"$unit\" 2>/dev/null || true)"
+    , "  if [ \"$state\" = active ]; then up=yes; break; fi"
+    , "  if [ \"$state\" = failed ]; then break; fi"
+    , "  sleep 0.2"
+    , "done"
+    , "# Settle, then confirm it STAYED up without restarting — a crash-looping"
+    , "# service (Restart=on-failure) flashes 'active' between crashes, so a single"
+    , "# is-active poll isn't enough; require active + NRestarts=0 after a window."
+    , "if [ \"$up\" = yes ]; then"
+    , "  sleep 1.5"
+    , "  state=$(systemctl --user is-active \"$unit\" 2>/dev/null || true)"
+    , "  nr=$(systemctl --user show -p NRestarts --value \"$unit\" 2>/dev/null || echo 0)"
+    , "  if [ \"$state\" = active ] && [ \"${nr:-0}\" = 0 ]; then echo ZINC_ACTIVE; exit 0; fi"
+    , "fi"
+    , "# health-check failed: roll back to the previous generation and restart."
+    , "# reset-failed first: a crash-loop trips systemd's start-limit, which would"
+    , "# otherwise reject the restart ('start request repeated too quickly')."
+    , "nix-env --profile \"$prof\" --rollback || true"
+    , "systemctl --user reset-failed \"$unit\" 2>/dev/null || true"
+    , "systemctl --user restart \"$unit\" || true"
+    , "echo ZINC_ROLLED_BACK >&2"
+    , "exit 1"
+    ]
+  where
+    dropTrailingNewline s = case reverse s of '\n' : r -> reverse r; _ -> s
+
+-- | The remote rollback script (deploy-host spec §6; zinc-nbk.4): revert the
+-- service's profile to the previous generation and restart the unit. Instant —
+-- the prior closure is still on the host, so no copy is needed.
+rollbackScript :: String -> String
+rollbackScript service =
+  unlines
+    [ "set -e"
+    , "prof=\"$HOME/.local/state/nix/profiles/" ++ profileName service ++ "\""
+    , "nix-env --profile \"$prof\" --rollback"
+    , "systemctl --user reset-failed " ++ unitFile service ++ " 2>/dev/null || true"
+    , "systemctl --user restart " ++ unitFile service
+    ]
+
+-- | Install/refresh the user-systemd unit and health-check it over SSH
+-- (deploy-host spec §5 steps 5–6; zinc-nbk.3). A failed activation has already
+-- been rolled back on the host by 'activateScript'; the error reports that.
+runActivate :: DeployHost -> String -> [String] -> [(String, String)] -> IO (Either ZincError ())
+runActivate h service args env = do
+  (code, _out, err) <-
+    readProcessWithExitCode "ssh" (sshArgs h ["sh", "-s"]) (activateScript service (systemdUnit service args env))
+  pure $ case code of
+    ExitSuccess   -> Right ()
+    ExitFailure _ -> Left (DeployActivate (dhHost h) (firstLine err))
+
+-- | @zinc deploy --rollback \<host\>@ (deploy-host spec §6; zinc-nbk.4): revert
+-- the service to its previous generation and restart, over SSH.
+runRollback :: DeployHost -> String -> IO (Either ZincError ())
+runRollback h service = do
+  (code, _out, err) <-
+    readProcessWithExitCode "ssh" (sshArgs h ["sh", "-s"]) (rollbackScript service)
+  pure $ case code of
+    ExitSuccess   -> Right ()
+    ExitFailure _ -> Left (DeployActivate (dhHost h) (firstLine err))
 
 -- | The @--json@ data block for a ready host.
 deployReadyJson :: DeployHost -> ProbeChecks -> Json
