@@ -84,7 +84,7 @@ import Zinc.Manifest
 import Zinc.Fetch (gitFetchManifest, isHpackOnly, namedCabal, packageDirIn)
 import Zinc.GC (GCRoot (..), gcStore, runGc)
 import Zinc.Add (enrichWithRepos, freezeClosure, lockEntry, runAdd, runUpdate, runVendor, splitNameVersion)
-import Zinc.Build (GhcInvocation (..), LibBuild (..), MemberBuild (..), PackageConf (..), archiveArgs, buildLib, buildMember, ghcMakeArgs, initPackageDb, installedVersions, ppCommand, preprocessorFor, reactorLinkFlags, registeredExposedMatches, registerPackage, renderConf, replArgs, runPreprocessor, wasmSupported, writeFileIfChanged)
+import Zinc.Build (GhcInvocation (..), LibBuild (..), MemberBuild (..), PackageConf (..), archiveArgs, buildLib, buildMember, ghcMakeArgs, initPackageDb, installedVersions, memberBuildDir, ppCommand, preprocessorFor, reactorLinkFlags, registeredExposedMatches, registerPackage, renderConf, replArgs, runPreprocessor, wasmSupported, writeFileIfChanged)
 import Zinc.Cache (BuildKey (..), buildCacheKey, buildCacheKeyFor, cacheHit, storeConfPath, storePkgPath, writeCachedConf)
 import Zinc.Cabal (bootConflicts, cabalBuildType, cabalVersion, parseCabalComponents, parseCabalComponentsForGhc, parseCabalComponentsForPlatform)
 import Distribution.System (Arch (Wasm32), OS (Wasi), Platform (Platform), buildPlatform)
@@ -280,6 +280,15 @@ main = hspec $ do
 
     it "escapes JSON strings" $
       renderJson (JString "a\"b\nc") `shouldBe` "\"a\\\"b\\nc\""
+
+  describe "memberBuildDir (zinc-91n.8)" $ do
+    it "collapses a flat (member \".\") workspace to a clean build path" $
+      -- wsDir </> member == "." </> "." == "./." (System.FilePath keeps the dots),
+      -- which un-normalised joins to "././.zinc/build". Must read as ".zinc/build".
+      memberBuildDir ("." </> ".") `shouldBe` ".zinc/build"
+
+    it "leaves a nested member path untouched" $
+      memberBuildDir ("packages" </> "foo") `shouldBe` "packages/foo/.zinc/build"
 
   describe "build report (rdy.2)" $ do
     it "maps each status to its stable wire string" $

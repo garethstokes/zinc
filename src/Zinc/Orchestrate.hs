@@ -44,7 +44,7 @@ import System.Directory (canonicalizePath, copyFile, createDirectoryIfMissing, d
 import System.Exit (ExitCode (..))
 import System.FilePath (takeExtension, takeFileName, (</>))
 import System.Process (callProcess, readProcess, readProcessWithExitCode)
-import Zinc.Build (LibBuild (..), MemberBuild (..), buildLibArtifactsFor, buildLibFor, buildMemberFor, initPackageDb, initPackageDbFor, installedVersionsFor, isRegistered, registeredExposedMatches, registerPackage, replArgs)
+import Zinc.Build (LibBuild (..), MemberBuild (..), buildLibArtifactsFor, buildLibFor, buildMemberFor, initPackageDb, initPackageDbFor, installedVersionsFor, isRegistered, memberBuildDir, registeredExposedMatches, registerPackage, replArgs)
 import Zinc.Cabal (bootConflicts, cabalBuildType, cabalVersion, parseCabalComponentsForPlatform)
 import Zinc.Cache (BuildKey (..), buildCacheKey, buildCacheKeyFor, storeConfPath, storePkgPath)
 import Zinc.Configure (configureComponent)
@@ -150,7 +150,7 @@ buildWorkspaceReport sink target wsDir member ghcOverride keep = runResult $ do
           -- entry can't be cleanly re-registered across builds.
           libDir <- liftIO (makeAbsolute (dir </> ".zinc" </> "lib"))
           orFailE (accuminto acc "compile" (buildLibFor target (LibBuild dir libDir wsDb (pkgName mem) (pkgVersion mem) lib)))
-      exes <- traverse (\comp -> orFailE (accuminto acc "link" (buildMemberFor target (MemberBuild dir (dir </> ".zinc" </> "build") (Just wsDb) comp)))) (wanted mem)
+      exes <- traverse (\comp -> orFailE (accuminto acc "link" (buildMemberFor target (MemberBuild dir (memberBuildDir dir) (Just wsDb) comp)))) (wanted mem)
       t1 <- liftIO getMonotonicTime
       liftIO (emit sink (CompileDone (pkgName mem) (round ((t1 - t0) * 1000) :: Int) False))
       pure exes

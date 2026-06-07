@@ -15,6 +15,7 @@ module Zinc.Build
   , ppCommand
   , runPreprocessor
   , MemberBuild (..)
+  , memberBuildDir
   , buildMember
   , buildMemberFor
   , wasmSupported
@@ -39,7 +40,7 @@ import Control.Monad (unless, when)
 import Data.List (find, intercalate, isInfixOf, isPrefixOf, nub, sort)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getModificationTime, listDirectory, makeAbsolute)
 import System.Exit (ExitCode (..))
-import System.FilePath (dropExtension, makeRelative, splitDirectories, takeDirectory, takeExtension, (-<.>), (<.>), (</>))
+import System.FilePath (dropExtension, makeRelative, normalise, splitDirectories, takeDirectory, takeExtension, (-<.>), (<.>), (</>))
 import System.IO (readFile')
 import System.Process (CreateProcess (cwd), proc, readCreateProcessWithExitCode, readProcessWithExitCode)
 import Zinc.Diagnostic (ZincError (GhcCompile, OtherError, WasmUnsupported))
@@ -235,6 +236,13 @@ data MemberBuild = MemberBuild
   , mbPackageDb :: Maybe FilePath
   , mbComponent :: Component
   }
+
+-- | A member's build-output directory: @\<memberDir\>\/.zinc\/build@. The path
+-- is normalised so a flat single-member workspace (member @"."@, the self-host
+-- layout) doesn't surface a redundant @.\/.\/@ prefix in the printed artifact
+-- path — e.g. @"./."@ would otherwise join to @"././.zinc/build/zinc"@ (zinc-91n.8).
+memberBuildDir :: FilePath -> FilePath
+memberBuildDir dir = normalise (dir </> ".zinc" </> "build")
 
 -- | @-package@ flags for a component's dependencies (plus the always-present
 -- base). zinc-built deps are pinned by their exact unit-id via @-package-id@
