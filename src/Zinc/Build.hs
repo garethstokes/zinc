@@ -3,6 +3,8 @@
 module Zinc.Build
   ( GhcInvocation (..)
   , ghcMakeArgs
+  , packageFlags
+  , zincBuiltUnitIds
   , PackageConf (..)
   , renderConf
   , archiveArgs
@@ -245,20 +247,23 @@ memberBuildDir :: FilePath -> FilePath
 memberBuildDir dir = normalise (dir </> ".zinc" </> "build")
 
 -- | @-package@ flags for a component's dependencies (plus the always-present
--- base). zinc-built deps are pinned by their exact unit-id via @-package-id@
--- (their unit-id is the bare package name), so a same-named package in GHC's
--- global db — e.g. a Nix-provided @ansi-terminal-types@ — cannot shadow the
--- version zinc actually built. A dep the toolchain itself provides resolves from
--- the global db by name (@-package@): boot libs, and any other bundled library
--- the cross toolchain ships whose unit-id is HASHED — e.g. the wasm GHC's
--- @ghc-experimental@, where @-package-id ghc-experimental@ (bare) cannot match
--- @ghc-experimental-<ver>-<hash>@ (zinc-xum). @toolchain@ is the toolchain's
--- package names (from 'installedVersionsFor'); empty falls back to boot-list-only
--- detection (the native repl, where bare ids hold).
-packageFlags :: [String] -> [String] -> [String]
-packageFlags toolchain deps = concatMap flag (nub ("base" : deps))
+-- base). A dep zinc itself built (registered in the workspace db, @zincBuilt@) is
+-- pinned by its exact unit-id via @-package-id@ — its unit-id is the bare package
+-- name — so a same-named package in GHC's global db cannot shadow the version
+-- zinc built. This is checked FIRST: a package can be BOTH zinc-built and present
+-- in the toolchain's global db (e.g. @ansi-terminal-types@, which the flake's
+-- @hspec@ drags in transitively), and zinc's own build must win (zinc-iaj merge).
+-- Otherwise, a dep the toolchain provides resolves from the global db by name
+-- (@-package@): boot libs, and any bundled library whose unit-id is HASHED — e.g.
+-- the wasm GHC's @ghc-experimental@, where @-package-id ghc-experimental@ (bare)
+-- cannot match @ghc-experimental-<ver>-<hash>@ (zinc-xum). @toolchain@ is the
+-- toolchain's package names (from 'installedVersionsFor'); both lists empty falls
+-- back to boot-list-only detection (the native repl, where bare ids hold).
+packageFlags :: [String] -> [String] -> [String] -> [String]
+packageFlags zincBuilt toolchain deps = concatMap flag (nub ("base" : deps))
   where
     flag d
+      | d `elem` zincBuilt = ["-package-id", d]
       | isBootLib d || d `elem` toolchain = ["-package", d]
       | otherwise = ["-package-id", d]
 
@@ -278,8 +283,11 @@ buildMemberFor target mb = runResult $ do
   orFailE (pure (wasmSupported target comp))
   liftIO (createDirectoryIfMissing True (mbBuildDir mb))
   -- Toolchain-provided packages (boot + bundled, e.g. the wasm GHC's
-  -- ghc-experimental) resolve by name; only zinc-built deps take -package-id.
+  -- ghc-experimental) resolve by name; a dep zinc itself built (registered in the
+  -- member's package db) takes -package-id, even if the same name also lives in
+  -- the toolchain's global db (zinc-iaj merge).
   installed <- liftIO (installedVersionsFor target)
+  zincBuilt <- liftIO (maybe (pure []) zincBuiltUnitIds (mbPackageDb mb))
   -- A wasm exe with a non-empty wasm-exports is a browser REACTOR module
   -- (zinc-9po.5): no hs-main, the reactor exec-model, and the listed symbols
   -- exported (the linker dead-code-elims anything unexported). Otherwise it is a
@@ -292,7 +300,7 @@ buildMemberFor target mb = runResult $ do
         ["--make", "-j"]
           ++ maybe [] (\db -> ["-package-db", db]) (mbPackageDb mb)
           ++ ["-hide-all-packages"]
-          ++ packageFlags (map fst installed) (compDepends comp)
+          ++ packageFlags zincBuilt (map fst installed) (compDepends comp)
           ++ map (\d -> "-i" ++ (mbMemberDir mb </> d)) srcDirs
           ++ map ("-X" ++) (compExtensions comp)
           ++ compGhcOptions comp
@@ -402,20 +410,22 @@ buildLibArtifactsFor target lb = runResult $ do
   _ <- liftIO $ writeFileIfChanged (gen </> pathsMod <.> "hs") (synthesizePaths (lbName lb) (versionInts (lbVersion lb)))
   installed <- liftIO (installedVersionsFor target)
   bootUnitIds <- liftIO (installedUnitIdsFor target)
+  zincBuilt <- liftIO (zincBuiltUnitIds (lbPackageDb lb))
   let depVersion d = fromMaybe [0] (lookup d installed)
-      toolchainNames = map fst installed
       -- A direct dep's id for the conf's @depends@ (drives a dependent's
-      -- linking): zinc-built deps by bare name (their unit-id); a TOOLCHAIN-
-      -- provided dep (boot or bundled, i.e. present in the target's global db) by
-      -- its real installed unit-id. A stock GHC hashes those unit-ids (the wasm
-      -- cross GHC's @bytestring@ is @bytestring-0.12.2.0-2834@, @ghc-experimental@
-      -- likewise), so a synthesized @name-version@ won't match and a dependent
-      -- reports the package "unusable due to missing dependencies" (zinc-90t).
-      -- Fall back to @name-version@ when the lookup misses. base is omitted — it
-      -- is always linked via -package base.
+      -- linking). A dep zinc itself built is recorded by its bare unit-id (its
+      -- name) — checked FIRST, so a dep that is BOTH zinc-built AND in the
+      -- toolchain's global db (e.g. @ansi-terminal-types@ via the flake's
+      -- @hspec@) is recorded as zinc's own, matching what 'resolveReexports'
+      -- resolves the reexport origin to (also queried against this db). Otherwise
+      -- a TOOLCHAIN-provided dep takes its real installed unit-id: a stock GHC
+      -- hashes those (the wasm cross GHC's @bytestring@ is
+      -- @bytestring-0.12.2.0-2834@), so a synthesized @name-version@ won't match
+      -- (zinc-90t/zinc-xum). Fall back to @name-version@ when the lookup misses.
+      -- base is omitted — it is always linked via -package base.
       depConfId d
-        | d `elem` toolchainNames = fromMaybe (d ++ "-" ++ intercalate "." (map show (depVersion d))) (lookup d bootUnitIds)
-        | otherwise = d
+        | d `elem` zincBuilt = d
+        | otherwise = fromMaybe (d ++ "-" ++ intercalate "." (map show (depVersion d))) (lookup d bootUnitIds)
   -- Emit cabal_macros.h for the package's OWN version only. GHC 8.0+
   -- auto-generates VERSION_<dep>/MIN_VERSION_<dep> for every -package dep, so
   -- emitting our own (from the GLOBAL ghc-pkg, which can lag a closure-built
@@ -446,7 +456,7 @@ buildLibArtifactsFor target lb = runResult $ do
   let modules = nub (discovered ++ [pathsMod])
       compileArgs =
         ["--make", "-j", "-hide-all-packages", "-package-db", absDb]
-          ++ packageFlags (map fst installed) (compDepends comp)
+          ++ packageFlags zincBuilt (map fst installed) (compDepends comp)
           ++ map (\d -> "-i" ++ (lbMemberDir lb </> d)) srcDirs
           ++ ["-i" ++ gen, "-i" ++ ppGen, "-optP-include", "-optP" ++ macrosHeader]
           -- C-header search dirs (cabal include-dirs) so CPP #include of the
@@ -651,7 +661,7 @@ replArgs :: Maybe FilePath -> FilePath -> Component -> [String]
 replArgs packageDb memberDir comp =
   maybe [] (\db -> ["-package-db", db]) packageDb
     ++ ["-hide-all-packages"]
-    ++ packageFlags [] (compDepends comp)
+    ++ packageFlags [] [] (compDepends comp)
     ++ map (\d -> "-i" ++ (memberDir </> d)) srcDirs
     ++ map ("-X" ++) (compExtensions comp)
     ++ compGhcOptions comp
@@ -686,6 +696,25 @@ resolveReexports target db deps reexs = do
   exposedByDep <- mapM (\d -> (,) d <$> exposedModulesOf target db d) deps
   let originOf orig = listToMaybe [d | (d, mods) <- exposedByDep, orig `elem` mods]
   pure [(new, unit, orig) | (new, mPkg, orig) <- reexs, Just unit <- [maybe (originOf orig) Just mPkg]]
+
+-- | The bare unit-ids zinc itself has registered into a workspace package db:
+-- the basenames of the @\<id\>.conf@ files ghc-pkg writes there. zinc registers
+-- everything it builds with @id == package name@, and a workspace db holds ONLY
+-- zinc-built packages (the global db is separate, stacked at use time), so this
+-- is exactly the set of zinc-built deps. Used to pin a dep by its zinc-built bare
+-- id even when the SAME name also lives in the toolchain's global db with a
+-- hashed id (e.g. @ansi-terminal-types@, pulled in transitively by the flake's
+-- @hspec@) — there, zinc's own build must win, both on the @-package-id@ flag and
+-- in the conf @depends@, or the conf's reexport origin won't match its depends
+-- and ghc-pkg marks the package broken (zinc-iaj merge regression).
+zincBuiltUnitIds :: FilePath -> IO [String]
+zincBuiltUnitIds db = do
+  exists <- doesDirectoryExist db
+  if not exists
+    then pure []
+    else do
+      fs <- listDirectory db
+      pure [dropExtension f | f <- fs, takeExtension f == ".conf"]
 
 -- | The module names a registered package exposes (own + its own reexports),
 -- via @ghc-pkg field <pkg> exposed-modules@. Reexport @from@ annotations are

@@ -85,7 +85,7 @@ import Zinc.Manifest
 import Zinc.Fetch (gitFetchManifest, isHpackOnly, namedCabal, packageDirIn)
 import Zinc.GC (GCRoot (..), gcStore, runGc)
 import Zinc.Add (enrichWithRepos, freezeClosure, lockEntry, runAdd, runUpdate, runVendor, splitNameVersion)
-import Zinc.Build (GhcInvocation (..), LibBuild (..), MemberBuild (..), PackageConf (..), archiveArgs, buildLib, buildMember, discoverModules, ghcMakeArgs, initPackageDb, installedVersions, memberBuildDir, ppCommand, preprocessorFor, reactorLinkFlags, registeredExposedMatches, registerPackage, renderConf, replArgs, runPreprocessor, wasmSupported, writeFileIfChanged)
+import Zinc.Build (GhcInvocation (..), LibBuild (..), MemberBuild (..), PackageConf (..), archiveArgs, buildLib, buildMember, discoverModules, ghcMakeArgs, initPackageDb, installedVersions, memberBuildDir, packageFlags, ppCommand, preprocessorFor, reactorLinkFlags, registeredExposedMatches, registerPackage, renderConf, replArgs, runPreprocessor, wasmSupported, writeFileIfChanged, zincBuiltUnitIds)
 import Zinc.Cache (BuildKey (..), buildCacheKey, buildCacheKeyFor, cacheHit, storeConfPath, storePkgPath, writeCachedConf)
 import Zinc.Cabal (bootConflicts, cabalBuildType, cabalVersion, parseCabalComponents, parseCabalComponentsForGhc, parseCabalComponentsForPlatform)
 import Distribution.System (Arch (Wasm32), OS (Wasi), Platform (Platform), buildPlatform)
@@ -3634,6 +3634,29 @@ main = hspec $ do
           deps plat = either (const []) (concatMap compDepends . filter ((== Library) . compKind)) (parseCabalComponentsForPlatform plat [] "9.6.5" cabal)
       ("ghc-experimental" `elem` deps buildPlatform, "ghc-experimental" `elem` deps (Platform Wasm32 Wasi))
         `shouldBe` (False, True)
+
+  describe "Zinc.Build packageFlags zinc-built vs toolchain (iaj merge regression)" $ do
+    -- A dep can be BOTH zinc-built (in the workspace db, bare unit-id) AND present
+    -- in the toolchain's global db with a hashed id (e.g. ansi-terminal-types,
+    -- which the flake's hspec drags in). zinc's own build must win: -package-id by
+    -- bare name, checked before the toolchain -package branch — else GHC may link
+    -- the wrong instance and the conf's reexport origin won't match its depends.
+    it "pins a zinc-built dep with -package-id even when it is also toolchain-provided" $
+      packageFlags ["ansi-terminal-types"] ["ansi-terminal-types", "base"] ["ansi-terminal-types"]
+        `shouldBe` ["-package", "base", "-package-id", "ansi-terminal-types"]
+    it "exposes a toolchain-only dep by name (-package), not -package-id" $
+      packageFlags [] ["optparse-applicative", "base"] ["optparse-applicative"]
+        `shouldBe` ["-package", "base", "-package", "optparse-applicative"]
+    it "zincBuiltUnitIds lists the bare ids zinc registered into a db" $ do
+      let dir = "/tmp/zinc-builtids-test"
+      stale <- doesDirectoryExist dir
+      when stale $ removeDirectoryRecursive dir
+      createDirectoryIfMissing True dir
+      writeFile (dir ++ "/ansi-terminal-types.conf") "name: ansi-terminal-types\n"
+      writeFile (dir ++ "/colour.conf") "name: colour\n"
+      writeFile (dir ++ "/package.cache") "" -- not a .conf; must be ignored
+      ids <- zincBuiltUnitIds dir
+      sort ids `shouldBe` ["ansi-terminal-types", "colour"]
 
   describe "Zinc.Cabal manual flag assignments → finalizePD (zinc-iaj.2)" $ do
     -- A manual flag (use-pkg-config) gates which build-depends the library gets.
