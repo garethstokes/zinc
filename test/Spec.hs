@@ -84,7 +84,7 @@ import Zinc.Manifest
 import Zinc.Fetch (gitFetchManifest, isHpackOnly, namedCabal, packageDirIn)
 import Zinc.GC (GCRoot (..), gcStore, runGc)
 import Zinc.Add (enrichWithRepos, freezeClosure, lockEntry, runAdd, runUpdate, runVendor, splitNameVersion)
-import Zinc.Build (GhcInvocation (..), LibBuild (..), MemberBuild (..), PackageConf (..), archiveArgs, buildLib, buildMember, ghcMakeArgs, initPackageDb, installedVersions, preprocessorFor, reactorLinkFlags, registeredExposedMatches, registerPackage, renderConf, replArgs, runPreprocessor, wasmSupported, writeFileIfChanged)
+import Zinc.Build (GhcInvocation (..), LibBuild (..), MemberBuild (..), PackageConf (..), archiveArgs, buildLib, buildMember, ghcMakeArgs, initPackageDb, installedVersions, ppCommand, preprocessorFor, reactorLinkFlags, registeredExposedMatches, registerPackage, renderConf, replArgs, runPreprocessor, wasmSupported, writeFileIfChanged)
 import Zinc.Cache (BuildKey (..), buildCacheKey, buildCacheKeyFor, cacheHit, storeConfPath, storePkgPath, writeCachedConf)
 import Zinc.Cabal (bootConflicts, cabalBuildType, cabalVersion, parseCabalComponents, parseCabalComponentsForGhc)
 import Zinc.Env (devEnvVars, envCacheKey, envCacheKeyFor, nixPrintDevEnv, provisionEnv, toolchainPath, toolchainVars)
@@ -2072,6 +2072,16 @@ main = hspec $ do
 
     it "leaves plain .hs files alone" $
       preprocessorFor "Plain.hs" `shouldBe` Nothing
+
+    -- zinc-bxw.1: hsc2hs compiles a generated _hsc_make.c with cc, so it must see
+    -- the package's bundled headers (e.g. network's HsNet.h). The include-dirs
+    -- ride in as --cflag=-I...; alex/happy emit pure Haskell and ignore them.
+    it "passes include-dir cflags to hsc2hs (and not to alex/happy)" $ do
+      let cflags = ["-I/pkg/include", "-I/pkg/other"]
+      ppCommand cflags "Net.hsc" "Net.hs"
+        `shouldBe` Just ("hsc2hs", ["Net.hsc", "-o", "Net.hs", "--cflag=-I/pkg/include", "--cflag=-I/pkg/other"])
+      ppCommand cflags "Lexer.x" "Lexer.hs" `shouldBe` Just ("alex", ["Lexer.x", "-o", "Lexer.hs"])
+      ppCommand cflags "Parser.y" "Parser.hs" `shouldBe` Just ("happy", ["Parser.y", "-o", "Parser.hs"])
 
     it "runPreprocessor runs hsc2hs and produces the .hs" $ do
       let dir = "/tmp/zinc-pp-test"

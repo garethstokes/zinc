@@ -12,6 +12,7 @@ module Zinc.Build
   , registeredExposedMatches
   , registeredExposedMatchesFor
   , preprocessorFor
+  , ppCommand
   , runPreprocessor
   , MemberBuild (..)
   , buildMember
@@ -189,18 +190,24 @@ compileCSources target lb comp = runResult (mapM_ one (compCSources comp))
       orFailE (runGhcFor target (lbName lb) (["-c", src, "-o", obj] ++ incs))
 
 -- | The preprocessor command for a source @file@ writing its generated @.hs@ to
--- @out@ (alex/happy/hsc2hs), or 'Nothing' for a plain @.hs@.
-ppCommand :: FilePath -> FilePath -> Maybe (String, [String])
-ppCommand file out = case takeExtension file of
+-- @out@ (alex/happy/hsc2hs), or 'Nothing' for a plain @.hs@. @cflags@ are extra
+-- C-compiler flags (the package's @-I<include-dir>@) handed to hsc2hs via
+-- @--cflag@: hsc2hs generates and compiles a @_hsc_make.c@ with cc, so it must
+-- see the package's own bundled headers (e.g. network's @HsNet.h@), exactly as
+-- the later real compile already gets them (zinc-bxw.1). alex/happy emit pure
+-- Haskell and ignore @cflags@.
+ppCommand :: [String] -> FilePath -> FilePath -> Maybe (String, [String])
+ppCommand cflags file out = case takeExtension file of
   ".x"   -> Just ("alex", [file, "-o", out])
   ".y"   -> Just ("happy", [file, "-o", out])
-  ".hsc" -> Just ("hsc2hs", [file, "-o", out])
+  ".hsc" -> Just ("hsc2hs", [file, "-o", out] ++ ["--cflag=" ++ c | c <- cflags])
   _      -> Nothing
 
--- | The preprocessor command for a source file, or 'Nothing' for plain .hs.
--- Each turns @file.<ext>@ into the sibling @file.hs@.
+-- | The preprocessor command for a source file (no extra cflags), or 'Nothing'
+-- for a plain .hs. Each turns @file.<ext>@ into the sibling @file.hs@. Used for
+-- detection and the simple (header-free) member path.
 preprocessorFor :: FilePath -> Maybe (String, [String])
-preprocessorFor file = ppCommand file (file -<.> "hs")
+preprocessorFor file = ppCommand [] file (file -<.> "hs")
 
 -- | Run the preprocessor for a source file (no-op for plain .hs). The tools
 -- (alex/happy/hsc2hs) come from the Nix-provided toolchain.
@@ -418,7 +425,7 @@ buildLibArtifactsFor target lb = runResult $ do
   -- Generate sources from any .x/.y/.hsc the dep ships (e.g. toml-parser's
   -- alex/happy lexer+parser) so ghc --make finds the resulting .hs modules,
   -- then compile and archive. orFail short-circuits on the first failure.
-  orFail (runPreprocessorsTo target ppGen (map (lbMemberDir lb </>) srcDirs))
+  orFail (runPreprocessorsTo target ["-I" ++ (lbMemberDir lb </> d) | d <- compIncludeDirs comp] ppGen (map (lbMemberDir lb </>) srcDirs))
   orFailE (runGhcFor target (lbName lb) compileArgs)
   -- C sources (cabal c-sources, e.g. primitive's cbits/primitive-memops.c) are
   -- compiled in a SEPARATE `ghc -c` step into the dist dir, NOT via `ghc --make`:
@@ -563,15 +570,15 @@ preprocessableUnder root = do
 -- would change its hash and fail the lock's sha256 check on the next build
 -- (zinc-c3g). @genRoot@ must be on ghc's @-i@ search path so the generated
 -- modules are found. First failure wins.
-runPreprocessorsTo :: Target -> FilePath -> [FilePath] -> IO (Either String ())
-runPreprocessorsTo target genRoot dirs = do
+runPreprocessorsTo :: Target -> [String] -> FilePath -> [FilePath] -> IO (Either String ())
+runPreprocessorsTo target cflags genRoot dirs = do
   pairs <- concat <$> mapM (\d -> map ((,) d) <$> preprocessableUnder d) dirs
   go pairs
   where
     go [] = pure (Right ())
     go ((dir, f) : rest) =
       let out = genRoot </> (makeRelative dir f -<.> "hs")
-       in case ppCommand f out of
+       in case ppCommand cflags f out of
             Nothing -> go rest
             Just (prog, args) -> do
               createDirectoryIfMissing True (takeDirectory out)
