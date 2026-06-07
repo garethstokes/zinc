@@ -1964,6 +1964,15 @@ main = hspec $ do
     it "encodes the version via makeVersion" $
       ("makeVersion [0,1,0]" `isInfixOf` src) `shouldBe` True
 
+    it "leads with pragmas overriding a package's NoImplicitPrelude/RebindableSyntax defaults (zinc-2lv)" $ do
+      -- basement/foundation declare these as default-extensions, which would
+      -- otherwise apply to the synthesized stub and break it (GHC-76037).
+      all (`isInfixOf` src) ["{-# LANGUAGE NoRebindableSyntax #-}", "{-# LANGUAGE ImplicitPrelude #-}"]
+        `shouldBe` True
+      -- the pragmas must precede the module header to take effect
+      let ix s = length (takeWhile (not . (s `isInfixOf`)) (lines src))
+      (ix "{-# LANGUAGE ImplicitPrelude #-}" < ix "module Paths_my_pkg") `shouldBe` True
+
   describe "emitCabalMacros" $ do
     let h = emitCabalMacros [("base", [4, 18, 2, 1]), ("my-dep", [1, 2])]
 

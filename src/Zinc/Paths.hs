@@ -20,7 +20,16 @@ pathsModuleName pkg = "Paths_" ++ map dashToUnderscore pkg
 synthesizePaths :: String -> [Int] -> String
 synthesizePaths pkg version =
   unlines
-    [ "module " ++ moduleName
+    -- Neutralize package-wide default-extensions that would break this vanilla
+    -- stub. A package can declare e.g. NoImplicitPrelude + RebindableSyntax
+    -- (basement, foundation), which then apply to the synthesized Paths module
+    -- too — desugaring its literals / `return` / lists through out-of-scope
+    -- rebound names (GHC-76037). A module-level LANGUAGE pragma overrides
+    -- default-extensions, so force the Prelude back on and rebindable syntax off
+    -- here; the stub then compiles regardless of the package's defaults (zinc-2lv).
+    [ "{-# LANGUAGE NoRebindableSyntax #-}"
+    , "{-# LANGUAGE ImplicitPrelude #-}"
+    , "module " ++ moduleName
         ++ " (version, getDataFileName, getDataDir, getBinDir, getLibDir, getSysconfDir) where"
     , ""
     , "import Data.Version (Version, makeVersion)"
