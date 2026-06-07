@@ -14,7 +14,12 @@ import Data.List (intercalate)
 import qualified Data.Map as Map
 import qualified Toml
 import Toml.Value (Value (..))
-import Zinc.TOML (optStringArray, stringField)
+import Zinc.TOML (flagsField, optStringArray, stringField)
+
+-- | Parse a @flags = { name = true, ... }@ inline table into manual flag
+-- assignments, defaulting to @[]@ when absent. Non-bool entries are ignored.
+optFlags :: Map.Map String Value -> [(String, Bool)]
+optFlags = flagsField
 
 -- | Where a locked package's source comes from (b1z, design s2): a git repo at
 -- an exact commit, or a Hackage sdist tarball pinned by version. Both are
@@ -32,6 +37,7 @@ data LockedPackage = LockedPackage
   , lockSource  :: Source   -- ^ git repo+rev OR vendored tarball version
   , lockSha256  :: String   -- ^ content hash; validates the fetch
   , lockDepends :: [String] -- ^ flattened dep names, for fast graph load
+  , lockFlags   :: [(String, Bool)] -- ^ manual cabal flag assignments chosen for this package (from the manifest's @[dependencies.<name>].flags@), recorded so a locked build reproduces the same finalize (zinc-iaj.2)
   }
   deriving (Eq, Show)
 
@@ -77,6 +83,7 @@ parseLock src = do
         <*> sourceOf t
         <*> stringField "sha256" t
         <*> optStringArray "depends" t
+        <*> pure (optFlags t)
     toLocked _ = Left "expected a table in the [[locked]] array"
     -- A @vendored@ key marks a Hackage tarball (no repo/rev); otherwise the
     -- entry is a git source with @repo@ + @rev@.
@@ -98,6 +105,11 @@ renderLock = intercalate "\n" . map renderOne
           ++ [ "sha256 = " ++ str (lockSha256 p)
              , "depends = [" ++ intercalate ", " (map str (lockDepends p)) ++ "]"
              ]
+          ++ [ "flags = { " ++ intercalate ", " [n ++ " = " ++ bool b | (n, b) <- lockFlags p] ++ " }"
+             | not (null (lockFlags p))
+             ]
     sourceLines (GitSource repo rev) = ["repo = " ++ str repo, "rev = " ++ str rev]
     sourceLines (TarballSource ver)  = ["vendored = " ++ str ver]
     str s = "\"" ++ s ++ "\""
+    bool True  = "true"
+    bool False = "false"

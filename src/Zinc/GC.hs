@@ -32,11 +32,12 @@ data GCRoot = GCRoot
   deriving (Eq, Show)
 
 -- | The @pkg\/@ entry names (build cache keys) kept alive by the roots. Mirrors
--- the key the build driver computes: rev + ghc + dep unit-ids, no extra opts.
+-- the key the build driver computes: rev + ghc + dep unit-ids + the lock's
+-- manual cabal flags (zinc-iaj.2), no extra ghc-options.
 liveKeys :: [GCRoot] -> Set.Set String
 liveKeys = Set.fromList . concatMap (\r -> map (keyFor (grGhc r)) (grLocks r))
   where
-    keyFor ghc l = buildCacheKey (BuildKey (lockName l) (lockRev l) ghc (lockDepends l) [])
+    keyFor ghc l = buildCacheKey (BuildKey (lockName l) (lockRev l) ghc (lockDepends l) [] (lockFlags l))
 
 -- | The @src\/@ entry names (@\<slug>-\<rev>@) kept alive by the roots. Uses the
 -- same 'srcDirName' keying as the builder (by 'srcKey', so a monorepo's shared

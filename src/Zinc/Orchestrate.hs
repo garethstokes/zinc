@@ -66,6 +66,7 @@ import Zinc.Manifest
   , parseMember
   , parseWorkspace
   , depGhcOptionsOf
+  , depFlagsOf
   )
 import Zinc.Diagnostic (ZincError (AmbiguousTarget, ContentHashMismatch, DepBootConflict, ManifestParse, NixAbsent, NoZincToml, OtherError, StaticUnsupported, ToolchainMissing))
 import Zinc.Package (PackageFormat (..), dockerImageRef, packagingFlake, storePathRefs)
@@ -120,7 +121,7 @@ buildWorkspaceReport sink target wsDir member ghcOverride keep = runResult $ do
   -- Shared accumulator for the finer cumulative per-phase breakdown (nti.3),
   -- written from the parallel closure builds and the member builds alike.
   acc <- liftIO (newIORef Map.empty)
-  (pkgs, closureMs) <- timed (orFailE (buildClosure sink target wsDir storeRoot wsDb effectiveGhc (depGhcOptionsOf ws) (Just acc)))
+  (pkgs, closureMs) <- timed (orFailE (buildClosure sink target wsDir storeRoot wsDb effectiveGhc (depGhcOptionsOf ws) (depFlagsOf ws) (Just acc)))
   (exes, memberMs) <- timed (concat <$> traverse (buildMemberAll (Just acc) wsDb) (orderMembers members))
   breakdownMap <- liftIO (readIORef acc)
   -- Present in build order, only the phases that actually ran.
@@ -183,7 +184,7 @@ runWarm sink wsDir ghcOverride = runResult $ do
   let wsDb = wsDir </> ".zinc" </> "pkgdb"
   orFail (initPackageDb wsDb)
   storeRoot <- liftIO resolveStoreRoot
-  orFailE (buildClosure sink Native wsDir storeRoot wsDb (fromMaybe (wsGhc ws) ghcOverride) (depGhcOptionsOf ws) Nothing)
+  orFailE (buildClosure sink Native wsDir storeRoot wsDb (fromMaybe (wsGhc ws) ghcOverride) (depGhcOptionsOf ws) (depFlagsOf ws) Nothing)
 
 -- | @zinc build [member] --json@: build, returning the structured outcome
 -- (executables + per-package closure report) and the 'Timing' block (total
@@ -322,8 +323,8 @@ parMapBounded n f xs = do
 -- its library compiled + registered. (Compiling arbitrary upstream packages
 -- with Setup.hs / Template Haskell / deep closures is a further follow-up;
 -- this handles zinc-native git library deps.)
-buildClosure :: Sink -> Target -> FilePath -> FilePath -> FilePath -> String -> [(String, [String])] -> Maybe (IORef (Map.Map String Int)) -> IO (Either ZincError [PackageReport])
-buildClosure sink target wsDir storeRoot wsDb ghcVersion buildOpts mAcc = runResult $ do
+buildClosure :: Sink -> Target -> FilePath -> FilePath -> FilePath -> String -> [(String, [String])] -> [(String, [(String, Bool)])] -> Maybe (IORef (Map.Map String Int)) -> IO (Either ZincError [PackageReport])
+buildClosure sink target wsDir storeRoot wsDb ghcVersion buildOpts depFlagsMap mAcc = runResult $ do
   let lockFile = wsDir </> "zinc.lock"
   present <- liftIO (doesFileExist lockFile)
   if not present
@@ -366,7 +367,7 @@ buildClosure sink target wsDir storeRoot wsDb ghcVersion buildOpts mAcc = runRes
     -- Content-addressed cache key from data available without the source, so a
     -- cached build is reused without even fetching. Includes the dep's
     -- [build-options] override so changing an override invalidates the cache.
-    cacheKeyOf l = buildCacheKeyFor target (BuildKey (lockName l) (lockRev l) ghcVersion (lockDepends l) (overrideFor l))
+    cacheKeyOf l = buildCacheKeyFor target (BuildKey (lockName l) (lockRev l) ghcVersion (lockDepends l) (overrideFor l) (flagsFor l))
 
     -- A dep's effective ghc-option override: the built-in quirk for the package
     -- (zinc-8uh) PLUS any workspace [build-options]. The quirk leads so a known
@@ -462,7 +463,7 @@ buildClosure sink target wsDir storeRoot wsDb ghcVersion buildOpts mAcc = runRes
       -- explicit #subdir, or a <name>/ dir auto-detected for metadata-poor
       -- monorepos. Resolve it the same way the resolver did.
       pkgDir <- liftIO (packageDirIn dest (lockRepo l) (lockName l))
-      comps <- liftIO (loadDepComponents pkgDir)
+      comps <- liftIO (loadDepComponents (flagsFor l) pkgDir)
       (version, components) <- liftEither (first ((lockName l ++ ": ") ++) comps)
       case filter ((== Library) . compKind) components of
         []        -> pure (report Skipped, Nothing) -- no library to build
@@ -552,9 +553,14 @@ buildClosure sink target wsDir storeRoot wsDb ghcVersion buildOpts mAcc = runRes
       Just h  -> length h == 64 && all isHexDigit h
       _       -> False
 
+    -- Per-dependency manual cabal flags (zinc-iaj.2): the workspace's
+    -- [dependencies.<name>].flags, keyed by package name, so finalizePD can
+    -- select a non-default flavor (e.g. postgresql-libpq's pkg-config provider).
+    flagsFor l = fromMaybe [] (lookup (lockName l) depFlagsMap)
+
     -- A dependency's components come from its zinc.toml ([build] block) if it
     -- is zinc-native, else from its .cabal via the Opt-2 reader.
-    loadDepComponents dest = do
+    loadDepComponents flags dest = do
       hasZinc <- doesFileExist (dest </> "zinc.toml")
       if hasZinc
         then do
@@ -572,7 +578,7 @@ buildClosure sink target wsDir storeRoot wsDb ghcVersion buildOpts mAcc = runRes
                 -- Finalize against the build TARGET's platform so arch(wasm32)
                 -- conditionals resolve for a wasm build (zinc-xum) — a host-only
                 -- finalize would pick a dep's vanilla (non-wasm) variant.
-                _ -> case parseCabalComponentsForPlatform (if isWasm target then Platform Wasm32 Wasi else buildPlatform) ghcVersion src of
+                _ -> case parseCabalComponentsForPlatform (if isWasm target then Platform Wasm32 Wasi else buildPlatform) flags ghcVersion src of
                   Left err -> Left err
                   Right cs -> Right (either (const "0") id (cabalVersion src), cs)
             [] -> pure (Left "no zinc.toml or .cabal")
@@ -597,8 +603,10 @@ runCachePush wsDir = runResult $ do
   let ghc = wsGhc ws
       opts = depGhcOptionsOf ws
       optsFor l = fromMaybe [] (lookup (lockName l) opts)
+      flags = depFlagsOf ws
+      flagsFor l = fromMaybe [] (lookup (lockName l) flags)
   fmap catMaybes $ forM locks $ \l -> do
-    let key = buildCacheKey (BuildKey (lockName l) (lockRev l) ghc (lockDepends l) (optsFor l))
+    let key = buildCacheKey (BuildKey (lockName l) (lockRev l) ghc (lockDepends l) (optsFor l) (flagsFor l))
         pkgDir = storePkgPath storeRoot key
     there <- liftIO (doesDirectoryExist pkgDir)
     if not there

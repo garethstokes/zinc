@@ -17,6 +17,7 @@ module Zinc.Add
 import Control.Monad (when)
 import Data.Bifunctor (first)
 import Data.List (find, intercalate)
+import Data.Maybe (fromMaybe)
 import System.IO (readFile')
 import System.Directory (doesDirectoryExist, doesFileExist, removeDirectoryRecursive)
 import System.FilePath (takeDirectory, (</>))
@@ -34,6 +35,7 @@ import Zinc.Manifest
   , Ref (Latest, Rev, Vendored)
   , WorkspaceManifest (wsDependencies, wsGhc)
   , depRepos
+  , depFlagsOf
   , addDep
   , addVendored
   , parseWorkspace
@@ -54,9 +56,12 @@ writeManifestPreserving wsFile src ws =
 
 -- | Build a lock entry from a resolved dep and its resolved commit + hash. A
 -- vendored pin records a tarball source (version from the ref); everything else
--- a git source (repo + resolved commit).
-lockEntry :: ResolvedDep -> String -> String -> LockedPackage
-lockEntry dep rev sha =
+-- a git source (repo + resolved commit). The manual cabal flags come from the
+-- workspace's @[dependencies.<name>].flags@ for a direct dep (or @[]@ for a
+-- transitive one) and are recorded in the lock so a frozen build reproduces the
+-- same finalize.
+lockEntry :: [(String, [(String, Bool)])] -> ResolvedDep -> String -> String -> LockedPackage
+lockEntry flagsMap dep rev sha =
   LockedPackage
     { lockName = rdName dep
     , lockSource = case rdRef dep of
@@ -64,14 +69,15 @@ lockEntry dep rev sha =
         _            -> GitSource (rdRepo dep) rev
     , lockSha256 = sha
     , lockDepends = rdDepends dep
+    , lockFlags = fromMaybe [] (lookup (rdName dep) flagsMap)
     }
 
 -- | Bring every dep in the closure into the store at its ref — git clone, or a
 -- Hackage tarball fetch for a vendored pin (b1z) — capture its exact
 -- commit/version + content hash, and produce the lockfile entries.
 -- Short-circuits on the first failure.
-freezeClosure :: FilePath -> [ResolvedDep] -> IO (Either ZincError [LockedPackage])
-freezeClosure storeRoot = runResult . traverse freezeOne
+freezeClosure :: FilePath -> [(String, [(String, Bool)])] -> [ResolvedDep] -> IO (Either ZincError [LockedPackage])
+freezeClosure storeRoot flagsMap = runResult . traverse freezeOne
   where
     freezeOne :: ResolvedDep -> Result LockedPackage
     freezeOne dep = do
@@ -80,7 +86,7 @@ freezeClosure storeRoot = runResult . traverse freezeOne
         Vendored ver -> do
           _ <- orFail (first (("freeze " ++ rdName dep ++ ": ") ++) <$> fetchHackageTarball (rdName dep) ver dest)
           sha <- liftIO (contentHash dest)
-          pure (lockEntry dep ver sha)
+          pure (lockEntry flagsMap dep ver sha)
         _ -> do
           refStr <- orFail (first ((rdName dep ++ ": ") ++) <$> resolveRef (rdName dep) (rdRepo dep) (rdRef dep))
           liftIO $ do
@@ -98,10 +104,10 @@ freezeClosure storeRoot = runResult . traverse freezeOne
               ver <- orFail (maybe (Left (rdName dep ++ ": hpack package has no .cabal and no Hackage release to vendor")) Right <$> hackageLatestVersion (rdName dep))
               _ <- orFail (first (("vendor " ++ rdName dep ++ ": ") ++) <$> fetchHackageTarball (rdName dep) ver dest)
               sha <- liftIO (contentHash dest)
-              pure (LockedPackage (rdName dep) (TarballSource ver) sha (rdDepends dep))
+              pure (LockedPackage (rdName dep) (TarballSource ver) sha (rdDepends dep) (fromMaybe [] (lookup (rdName dep) flagsMap)))
             else do
               sha <- liftIO (contentHash dest)
-              pure (lockEntry dep rev sha)
+              pure (lockEntry flagsMap dep rev sha)
 
 -- | Resolve a workspace's dependency closure (real git fetch), freeze it, and
 -- write @zinc.lock@; returns the resolution table for display. Shared by
@@ -119,8 +125,8 @@ freezeWorkspace wsFile storeRoot ws = do
 -- resolve. Returns the resolved closure + its locks.
 resolveFreeze :: FilePath -> [(String, Ref)] -> WorkspaceManifest -> Result ([ResolvedDep], [LockedPackage])
 resolveFreeze storeRoot pins ws = do
-  closure <- orFailE (resolve isBootLib (gitFetchManifest storeRoot (wsGhc ws)) hackageDiscover pins (wsDependencies ws) (depRepos ws))
-  locks <- orFailE (freezeClosure storeRoot closure)
+  closure <- orFailE (resolve isBootLib (gitFetchManifest storeRoot (wsGhc ws) (depFlagsOf ws)) hackageDiscover pins (wsDependencies ws) (depRepos ws))
+  locks <- orFailE (freezeClosure storeRoot (depFlagsOf ws) closure)
   pure (closure, locks)
 
 -- | Discover a transitive dependency's git repo from Hackage when no registry

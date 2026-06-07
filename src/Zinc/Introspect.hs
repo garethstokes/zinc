@@ -31,7 +31,7 @@ import Zinc.Except (Result, failWithError, liftEitherE, liftIO, runResult)
 import Zinc.Json (Json (..))
 import Zinc.Lock (LockedPackage (..), lockRepo, lockRev, parseLock)
 import Zinc.Skill (LockedSkill (..), parseSkillLock)
-import Zinc.Manifest (Ref (Latest), WorkspaceManifest (wsDependencies, wsGhc, wsMembers), depName, depGhcOptionsOf, parseWorkspace)
+import Zinc.Manifest (Ref (Latest), WorkspaceManifest (wsDependencies, wsGhc, wsMembers), depName, depGhcOptionsOf, depFlagsOf, parseWorkspace)
 import Zinc.Resolve (ResolvedDep (..), topoLevels)
 import Zinc.Store (resolveStoreRoot)
 
@@ -92,12 +92,13 @@ runStatus wsDir = runResult $ do
   locks <- liftIO (loadLocks wsDir)
   storeRoot <- liftIO resolveStoreRoot
   let opts = depGhcOptionsOf ws
-  deps <- liftIO (mapM (depStatus storeRoot (wsGhc ws) opts) locks)
+      flags = depFlagsOf ws
+  deps <- liftIO (mapM (depStatus storeRoot (wsGhc ws) opts flags) locks)
   skills <- liftIO (loadSkillNames wsDir)
   pure (wsGhc ws, wsMembers ws, deps, driftOf ws locks, skills)
   where
-    depStatus storeRoot ghc opts l = do
-      let key = buildCacheKey (BuildKey (lockName l) (lockRev l) ghc (lockDepends l) (fromMaybe [] (lookup (lockName l) opts)))
+    depStatus storeRoot ghc opts flags l = do
+      let key = buildCacheKey (BuildKey (lockName l) (lockRev l) ghc (lockDepends l) (fromMaybe [] (lookup (lockName l) opts)) (fromMaybe [] (lookup (lockName l) flags)))
       cached <- doesFileExist (storeConfPath storeRoot key)
       pure (DepStatus (lockName l) (lockRev l) cached)
 

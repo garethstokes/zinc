@@ -9,6 +9,7 @@ module Zinc.Manifest
   , isVendored
   , depRepos
   , depGhcOptionsOf
+  , depFlagsOf
   , parseWorkspace
   , parseMember
   , parseDependencies
@@ -24,7 +25,7 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 import qualified Toml
 import Toml.Value (Value (..))
-import Zinc.TOML (optStringArray, stringArrayField, stringField, subTable, tableField)
+import Zinc.TOML (flagsField, optStringArray, stringArrayField, stringField, subTable, tableField)
 
 -- | How a dependency is pinned. There is exactly one ref per package name
 -- across a workspace, and bounds are ignored (spec §2).
@@ -51,6 +52,7 @@ data Dependency = Dependency
   , depRef        :: Ref
   , depRepo       :: Maybe String -- ^ optional repo override/pin (was @[registry]@)
   , depGhcOptions :: [String]     -- ^ optional extra ghc flags (was @[build-options]@)
+  , depFlags      :: [(String, Bool)] -- ^ manual cabal flag assignments (e.g. @use-pkg-config = true@), parsed from the dependency's @flags@ table; threaded into 'Distribution.PackageDescription.Configuration.finalizePD' so zinc can pick a non-default flavor (zinc-iaj.2)
   }
   deriving (Eq, Show)
 
@@ -86,6 +88,12 @@ depRepos ws = [(depName d, r) | d <- wsDependencies ws, Just r <- [depRepo d]]
 -- dependency's @ghc-options@; replaces the old @[build-options]@ table).
 depGhcOptionsOf :: WorkspaceManifest -> [(String, [String])]
 depGhcOptionsOf ws = [(depName d, depGhcOptions d) | d <- wsDependencies ws, not (null (depGhcOptions d))]
+
+-- | Per-dependency manual cabal flag assignments, keyed by name (derived from
+-- each dependency's @flags@ table). Mirrors 'depGhcOptionsOf'; threaded into the
+-- closure build so 'finalizePD' honors the pins (zinc-iaj.2).
+depFlagsOf :: WorkspaceManifest -> [(String, [(String, Bool)])]
+depFlagsOf ws = [(depName d, depFlags d) | d <- wsDependencies ws, not (null (depFlags d))]
 
 -- | A buildable component within a member package (spec §4).
 data ComponentKind = Library | Executable | TestSuite
@@ -215,10 +223,15 @@ parseDeployTargets src = do
 parseDeps :: Map String Value -> [Dependency]
 parseDeps = map dep . Map.toList
   where
-    dep (name, Table t) = Dependency name (refOf t) (strOf "repo" t) (arrOf "ghc-options" t)
-    dep (name, String "*") = Dependency name Latest Nothing []
-    dep (name, String s) = Dependency name (Tag s) Nothing []
-    dep (name, _) = Dependency name Latest Nothing []
+    dep (name, Table t) = Dependency name (refOf t) (strOf "repo" t) (arrOf "ghc-options" t) (flagsOf t)
+    dep (name, String "*") = Dependency name Latest Nothing [] []
+    dep (name, String s) = Dependency name (Tag s) Nothing [] []
+    dep (name, _) = Dependency name Latest Nothing [] []
+
+    -- A @flags = { use-pkg-config = true, foo = false }@ inline table → the
+    -- manual flag assignments. Non-bool entries are ignored. (Shared with
+    -- 'Zinc.Lock.optFlags' via 'flagsField'.)
+    flagsOf = flagsField
 
     refOf t
       | Just (String s) <- Map.lookup "vendored" t = Vendored s -- a pinned Hackage tarball
@@ -264,7 +277,7 @@ renderDependencies deps = "[dependencies]" : concatMap renderDep (sortOn depName
     -- vendored pin always uses the sub-table form: its bare value would parse
     -- back as a git tag, losing the source kind.
     renderDep d
-      | Nothing <- depRepo d, null (depGhcOptions d), not (isVendored (depRef d)) =
+      | Nothing <- depRepo d, null (depGhcOptions d), null (depFlags d), not (isVendored (depRef d)) =
           [depName d ++ " = " ++ quote (snd (refStr (depRef d)))]
       | otherwise =
           let (k, v) = refStr (depRef d)
@@ -276,6 +289,11 @@ renderDependencies deps = "[dependencies]" : concatMap renderDep (sortOn depName
                 ++ [ "ghc-options = [" ++ intercalate ", " (map quote (depGhcOptions d)) ++ "]"
                    | not (null (depGhcOptions d))
                    ]
+                ++ [ "flags = { " ++ intercalate ", " [n ++ " = " ++ bool b | (n, b) <- depFlags d] ++ " }"
+                   | not (null (depFlags d))
+                   ]
+    bool True  = "true"
+    bool False = "false"
 
 -- | Add (or replace) a direct dependency with its repo override, keeping the
 -- list sorted by name (the canonical writer re-sorts anyway).
@@ -283,8 +301,13 @@ addDep :: WorkspaceManifest -> String -> Ref -> String -> WorkspaceManifest
 addDep w name ref repo =
   w
     { wsDependencies =
-        sortOn depName (Dependency name ref (Just repo) [] : filter ((/= name) . depName) (wsDependencies w))
+        sortOn depName (Dependency name ref (Just repo) keptOpts keptFlags : others)
     }
+  where
+    prior = find ((== name) . depName) (wsDependencies w)
+    keptOpts = maybe [] depGhcOptions prior
+    keptFlags = maybe [] depFlags prior
+    others = filter ((/= name) . depName) (wsDependencies w)
 
 -- | Add (or replace) a vendored dependency: a Hackage-tarball pin at @version@,
 -- with no git repo (b1z). Preserves any @ghc-options@ already set for the dep
@@ -294,8 +317,10 @@ addVendored :: WorkspaceManifest -> String -> String -> WorkspaceManifest
 addVendored w name version =
   w
     { wsDependencies =
-        sortOn depName (Dependency name (Vendored version) Nothing keptOpts : others)
+        sortOn depName (Dependency name (Vendored version) Nothing keptOpts keptFlags : others)
     }
   where
-    keptOpts = maybe [] depGhcOptions (find ((== name) . depName) (wsDependencies w))
+    prior = find ((== name) . depName) (wsDependencies w)
+    keptOpts = maybe [] depGhcOptions prior
+    keptFlags = maybe [] depFlags prior
     others = filter ((/= name) . depName) (wsDependencies w)

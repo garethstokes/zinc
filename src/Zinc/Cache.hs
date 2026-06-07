@@ -25,6 +25,7 @@ data BuildKey = BuildKey
   , bkGhcVersion :: String
   , bkDepUnitIds :: [String] -- ^ dependency unit-ids (order-insensitive)
   , bkOptions    :: [String] -- ^ ghc-options + extensions (order-insensitive)
+  , bkFlags      :: [(String, Bool)] -- ^ manual cabal flag assignments (zinc-iaj.2; order-insensitive)
   }
   deriving (Eq, Show)
 
@@ -50,10 +51,17 @@ buildCacheKeyFor target bk = showDigest (sha256 (BL8.pack payload))
         , bkGhcVersion bk
         , intercalate "," (sort (bkDepUnitIds bk))
         , intercalate "," (sort (bkOptions bk))
+        , -- Manual cabal flags (zinc-iaj.2): a flag can toggle build-depends /
+          -- ghc-options (e.g. postgresql-libpq's @use-pkg-config@), so flipping
+          -- one must serve a fresh artifact, not the one built with the old
+          -- assignment. Rendered deterministically (sorted name=bool) so order
+          -- never changes the key.
+          intercalate "," (sort ["flag:" ++ n ++ "=" ++ boolStr v | (n, v) <- bkFlags bk])
         ]
           ++ case target of
             Native -> []
             _      -> ["target:" ++ targetTriple target]
+    boolStr b = if b then "true" else "false"
 
 -- | Location of a cached built package within the store.
 storePkgPath :: FilePath -> String -> FilePath

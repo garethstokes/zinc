@@ -7,6 +7,7 @@ module Zinc.TOML
   , stringArrayField
   , optStringArray
   , subTable
+  , flagsField
   ) where
 
 import Data.Map (Map)
@@ -44,6 +45,15 @@ optStringArray k t = case Map.lookup k t of
   Nothing         -> Right []
   Just (Array xs) -> mapM (asString k) xs
   Just _          -> Left ("expected an array for field: " ++ k)
+
+-- | Parse a @flags = { name = true, ... }@ inline table into manual cabal flag
+-- assignments (zinc-iaj.2), defaulting to @[]@ when absent. Non-bool entries are
+-- ignored. Shared by 'Zinc.Manifest' (manifest deps) and 'Zinc.Lock' (lock
+-- entries) so both read the table identically.
+flagsField :: Map String Value -> [(String, Bool)]
+flagsField t = case Map.lookup "flags" t of
+  Just (Table fs) -> [(k, b) | (k, Bool b) <- Map.toList fs]
+  _               -> []
 
 asString :: String -> Value -> Either String String
 asString _ (String s) = Right s

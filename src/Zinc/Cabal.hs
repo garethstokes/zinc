@@ -52,6 +52,7 @@ import Distribution.PackageDescription.Parsec (parseGenericPackageDescription, r
 import Distribution.Pretty (prettyShow)
 import Distribution.System (Platform, buildPlatform)
 import Distribution.Types.ComponentRequestedSpec (ComponentRequestedSpec (ComponentRequestedSpec))
+import Distribution.Types.Flag (mkFlagAssignment, mkFlagName)
 import Distribution.Types.Dependency (depLibraries, depPkgName, depVerRange)
 import Distribution.Types.Library (libName, reexportedModules)
 import Distribution.Types.ModuleReexport (ModuleReexport (moduleReexportName, moduleReexportOriginalName, moduleReexportOriginalPackage))
@@ -75,7 +76,7 @@ parseCabalComponents = parseCabalComponentsForGhc "9.6.5"
 -- against the given GHC version (e.g. the workspace's @ghc@), for the HOST
 -- platform.
 parseCabalComponentsForGhc :: String -> String -> Either String [Component]
-parseCabalComponentsForGhc = parseCabalComponentsForPlatform buildPlatform
+parseCabalComponentsForGhc = parseCabalComponentsForPlatform buildPlatform []
 
 -- | Like 'parseCabalComponentsForGhc', but resolve @os(...)/arch(...)@
 -- conditionals against an explicit 'Platform' (zinc-xum). A wasm build must
@@ -83,8 +84,8 @@ parseCabalComponentsForGhc = parseCabalComponentsForPlatform buildPlatform
 -- is false and a package like miso builds its VANILLA FFI variant (ffi/ghc,
 -- @-DVANILLA@) instead of the wasm one (ffi/wasm, @-DWASM@, @Miso.DSL.TH@,
 -- @ghc-experimental@). The host platform is the right default elsewhere.
-parseCabalComponentsForPlatform :: Platform -> String -> String -> Either String [Component]
-parseCabalComponentsForPlatform platform ghcVersion src =
+parseCabalComponentsForPlatform :: Platform -> [(String, Bool)] -> String -> String -> Either String [Component]
+parseCabalComponentsForPlatform platform flags ghcVersion src =
   case snd (runParseResult (parseGenericPackageDescription (BS.pack src))) of
     Left err -> Left ("cabal parse error: " ++ show err)
     Right gpd ->
@@ -93,12 +94,18 @@ parseCabalComponentsForPlatform platform ghcVersion src =
       -- otherwise flip a shared flag to keep a test-suite buildable, dragging
       -- test-only deps (QuickCheck, tasty -> ansi-terminal -> colour) into the
       -- library's build-depends and the closure (zinc-ffm.7).
-      case finalizePD mempty (ComponentRequestedSpec False False) (const True) platform ghc [] gpd of
+      --
+      -- Manual flags (zinc-iaj.2) PIN the listed flags (e.g.
+      -- @use-pkg-config = true@ to select postgresql-libpq's pkg-config
+      -- provider); finalizePD's automatic resolution still fills the rest, so
+      -- manual wins and automatic covers the gaps.
+      case finalizePD flagAssignment (ComponentRequestedSpec False False) (const True) platform ghc [] gpd of
         Left missing -> Left ("cabal finalize error: unsatisfied " ++ show (map prettyShow missing))
         Right (pd, _flags) ->
           Right (libraryComponent pd ++ executableComponents pd ++ testComponents pd)
   where
     ghc = unknownCompilerInfo (CompilerId GHC (mkVersion (versionInts ghcVersion))) NoAbiTag
+    flagAssignment = mkFlagAssignment [(mkFlagName n, v) | (n, v) <- flags]
 
 -- | Boot-library version conflicts in a @.cabal@ (zinc-sib): each
 -- @build-depends@ on a GHC boot library whose declared version range EXCLUDES

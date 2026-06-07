@@ -15,10 +15,11 @@ import Control.Monad (when)
 import Data.Bifunctor (first)
 import Data.Char (toLower)
 import Data.List (find, nub)
-import Data.Maybe (isJust, listToMaybe)
+import Data.Maybe (fromMaybe, isJust, listToMaybe)
+import Distribution.System (buildPlatform)
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory, removeDirectoryRecursive)
 import System.FilePath (takeExtension, (</>))
-import Zinc.Cabal (cabalBuildType, parseCabalComponentsForGhc)
+import Zinc.Cabal (cabalBuildType, parseCabalComponentsForPlatform)
 import Zinc.Diagnostic (ZincError (BuildTypeCustom))
 import Zinc.Except (failWith, failWithError, liftEither, liftIO, orFail, orFailE, runResult)
 import Zinc.Git (cloneAt, listTags, splitRepoSubdir)
@@ -34,9 +35,14 @@ import Zinc.Version (newestTagFor)
 -- from the root workspace registry). A vendored pin ('Vendored') is fetched as
 -- a Hackage sdist tarball instead of a git clone (b1z); its deps come from the
 -- unpacked @.cabal@ the same way. @ghcVersion@ resolves @impl(ghc)@
--- conditionals. Matches the fetch signature 'Zinc.Resolve.resolve' expects.
-gitFetchManifest :: FilePath -> String -> String -> String -> Ref -> IO (Either ZincError DepManifest)
-gitFetchManifest storeRoot ghcVersion name repo ref = runResult $ do
+-- conditionals; @flagsMap@ carries each direct dep's manual cabal flags (keyed
+-- by name) so the @build-depends@ closure a dep contributes is finalized with
+-- the SAME flags the build will use — a flag that toggles @build-depends@ (e.g.
+-- postgresql-libpq's @use-pkg-config@) must select the same provider at resolve
+-- time as at build time, or the lock fetches the wrong dependency (zinc-iaj.2).
+-- Matches the fetch signature 'Zinc.Resolve.resolve' expects.
+gitFetchManifest :: FilePath -> String -> [(String, [(String, Bool)])] -> String -> String -> Ref -> IO (Either ZincError DepManifest)
+gitFetchManifest storeRoot ghcVersion flagsMap name repo ref = runResult $ do
   let dest = storeRoot </> "checkout" </> name
   pkgDir <- case ref of
     Vendored ver ->
@@ -54,13 +60,13 @@ gitFetchManifest storeRoot ghcVersion name repo ref = runResult $ do
       src <- liftIO (readFile (pkgDir </> "zinc.toml"))
       (deps, reg) <- liftEither (first ((name ++ ": ") ++) (parseDependencies src))
       pure (DepManifest deps reg)
-    else orFailE (cabalManifest name ghcVersion pkgDir)
+    else orFailE (cabalManifest name ghcVersion (fromMaybe [] (lookup name flagsMap)) pkgDir)
 
 -- | Derive a 'DepManifest' for a real upstream from its @.cabal@: the library
 -- component's @build-depends@ become dependencies pinned to @Latest@ (their
 -- repos are supplied by the root workspace registry). No own registry.
-cabalManifest :: String -> String -> FilePath -> IO (Either ZincError DepManifest)
-cabalManifest name ghcVersion pkgDir = runResult $ do
+cabalManifest :: String -> String -> [(String, Bool)] -> FilePath -> IO (Either ZincError DepManifest)
+cabalManifest name ghcVersion flags pkgDir = runResult $ do
   entries <- liftIO (listDirectory pkgDir)
   let cabals = filter ((== ".cabal") . takeExtension) entries
   -- Pick THIS package's cabal (<name>.cabal) when present: a monorepo checkout
@@ -85,9 +91,13 @@ cabalManifest name ghcVersion pkgDir = runResult $ do
     depsFromCabal src = do
       when (cabalBuildType src == Right "Custom") $
         failWithError (BuildTypeCustom name)
-      comps <- liftEither (first ((name ++ ": ") ++) (parseCabalComponentsForGhc ghcVersion src))
+      -- Finalize with this dep's manual flags (zinc-iaj.2) on the host platform
+      -- (resolve/freeze is native): a flag toggling @build-depends@ must select
+      -- the same provider here as the build does, so the closure locks the dep
+      -- that actually gets built.
+      comps <- liftEither (first ((name ++ ": ") ++) (parseCabalComponentsForPlatform buildPlatform flags ghcVersion src))
       let libDeps = nub (concat [compDepends c | c <- comps, compKind c == Library])
-      pure (DepManifest [Dependency d Latest Nothing [] | d <- libDeps] [])
+      pure (DepManifest [Dependency d Latest Nothing [] [] | d <- libDeps] [])
 
 -- | An hpack package: a @package.yaml@ but no committed @.cabal@. zinc reads
 -- @.cabal@, not @package.yaml@, so such a checkout can't be built directly — its
