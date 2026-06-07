@@ -42,6 +42,14 @@ module Zinc.Deploy
   , rollbackScript
   , runActivate
   , runRollback
+  , Generation (..)
+  , listGenerationsScript
+  , parseGenerations
+  , switchGenerationScript
+  , runDeployList
+  , runSwitchGeneration
+  , generationsJson
+  , renderGenerations
   ) where
 
 import Data.Char (isDigit)
@@ -275,13 +283,18 @@ profileName service = "zinc-" ++ service
 -- the previous version) and rollback (nbk.4) reverts to the prior generation.
 -- Verified against a real host (zinc-nbk.2). Runs on the host via SSH, so
 -- @$HOME@ expands there.
-profileInstallScript :: String -> FilePath -> String
-profileInstallScript service path =
+profileInstallScript :: String -> String -> FilePath -> String
+profileInstallScript service version path =
   unlines
     [ "set -e"
     , "prof=\"$HOME/.local/state/nix/profiles/" ++ profileName service ++ "\""
     , "mkdir -p \"$(dirname \"$prof\")\""
     , "nix-env --profile \"$prof\" --set " ++ path
+    , -- Stamp the app version against the new generation so `deploy --list`
+      -- (nbk.7) can label each release; the sidecar maps gen number -> version
+      -- (the timestamp comes from nix-env --list-generations itself).
+      "gen=$(nix-env --profile \"$prof\" --list-generations | sed -n 's/^ *\\([0-9][0-9]*\\).*(current).*/\\1/p')"
+    , "[ -n \"$gen\" ] && printf '%s\\t%s\\n' \"$gen\" '" ++ version ++ "' >> \"$prof.zinc-versions\""
     ]
 
 -- | Push a built store closure to the host with @nix copy@ (deploy sequence
@@ -301,10 +314,10 @@ runNixCopy h path = do
 -- | Install a copied store path into the service's user profile over SSH
 -- (deploy sequence step 4). NOTE (nbk.2): unit-tested command construction; the
 -- IO path is UNVERIFIED without a real NixOS host.
-runProfileInstall :: DeployHost -> String -> FilePath -> IO (Either ZincError ())
-runProfileInstall h service path = do
+runProfileInstall :: DeployHost -> String -> String -> FilePath -> IO (Either ZincError ())
+runProfileInstall h service version path = do
   (code, _out, err) <-
-    readProcessWithExitCode "ssh" (sshArgs h ["sh", "-s"]) (profileInstallScript service path)
+    readProcessWithExitCode "ssh" (sshArgs h ["sh", "-s"]) (profileInstallScript service version path)
   pure $ case code of
     ExitSuccess   -> Right ()
     ExitFailure _ -> Left (DeployCopy (dhHost h) (firstLine err))
@@ -418,6 +431,118 @@ runRollback h service = do
   pure $ case code of
     ExitSuccess   -> Right ()
     ExitFailure _ -> Left (DeployActivate (dhHost h) (firstLine err))
+
+-- | One deployed release: a profile generation, its app version (from the
+-- version sidecar, 'Nothing' for a pre-nbk.7 deploy), its timestamp, and whether
+-- it is the currently-active generation (zinc-nbk.7).
+data Generation = Generation
+  { genNum       :: Int
+  , genTimestamp :: String
+  , genCurrent   :: Bool
+  , genVersion   :: Maybe String
+  }
+  deriving (Eq, Show)
+
+-- | The remote script that dumps a service's generation history (zinc-nbk.7):
+-- @nix-env --list-generations@ for the numbers + timestamps + the current
+-- marker, then the @.zinc-versions@ sidecar (gen -> app version), separated by a
+-- marker line for 'parseGenerations'. No profile yet → both empty (exit 0).
+listGenerationsScript :: String -> String
+listGenerationsScript service =
+  unlines
+    [ "prof=\"$HOME/.local/state/nix/profiles/" ++ profileName service ++ "\""
+    , "nix-env --profile \"$prof\" --list-generations 2>/dev/null || true"
+    , "echo '" ++ generationsMarker ++ "'"
+    , "cat \"$prof.zinc-versions\" 2>/dev/null || true"
+    ]
+
+-- | The line separating @list-generations@ output from the version sidecar in
+-- 'listGenerationsScript' output.
+generationsMarker :: String
+generationsMarker = "---ZINC-VERSIONS---"
+
+-- | Parse 'listGenerationsScript' output into the generation history (nbk.7),
+-- joining each @nix-env --list-generations@ row (gen, timestamp, current) with
+-- the sidecar's @gen\\tversion@ lines.
+parseGenerations :: String -> [Generation]
+parseGenerations out =
+  [ Generation n ts cur (lookup n vers)
+  | l <- genLines
+  , Just (n, ts, cur) <- [parseGenLine l]
+  ]
+  where
+    (genLines, rest) = break (== generationsMarker) (lines out)
+    -- Reverse so a gen restamped on a no-op redeploy (identical closure → no new
+    -- generation, but a fresh version stamp) shows its LATEST version.
+    vers = reverse [(n, v) | l <- drop 1 rest, Just (n, v) <- [parseVerLine l]]
+    parseGenLine line = case words line of
+      (g : ws) | [(n, "")] <- reads g ->
+        Just (n, unwords (filter (/= "(current)") ws), "(current)" `elem` ws)
+      _ -> Nothing
+    parseVerLine line = case break (== '\t') line of
+      (g, '\t' : v) | [(n, "")] <- reads g -> Just (n, v)
+      _ -> Nothing
+
+-- | The remote script that pins a service's profile to a SPECIFIC generation
+-- (zinc-nbk.7 @--rollback-to \<N\>@): @nix-env --switch-generation@ — works
+-- backward AND forward, unlike the single-step @--rollback@. The caller then
+-- re-runs the activate + health-check path (so a bad target auto-rolls-back).
+switchGenerationScript :: String -> Int -> String
+switchGenerationScript service n =
+  unlines
+    [ "set -e"
+    , "prof=\"$HOME/.local/state/nix/profiles/" ++ profileName service ++ "\""
+    , "nix-env --profile \"$prof\" --switch-generation " ++ show n
+    ]
+
+-- | @zinc deploy --list \<host\>@ (nbk.7): the service's generation history.
+runDeployList :: DeployHost -> String -> IO (Either ZincError [Generation])
+runDeployList h service = do
+  (code, out, err) <-
+    readProcessWithExitCode "ssh" (sshArgs h ["sh", "-s"]) (listGenerationsScript service)
+  pure $ case code of
+    ExitSuccess   -> Right (parseGenerations out)
+    ExitFailure _ -> Left (DeploySsh (dhHost h) (firstLine err))
+
+-- | @zinc deploy --rollback-to \<N\> \<host\>@ (nbk.7): switch the profile to
+-- generation @N@. The caller follows with 'runActivate' to restart + health-check
+-- (auto-rolling-back on failure, like a normal deploy).
+runSwitchGeneration :: DeployHost -> String -> Int -> IO (Either ZincError ())
+runSwitchGeneration h service n = do
+  (code, _out, err) <-
+    readProcessWithExitCode "ssh" (sshArgs h ["sh", "-s"]) (switchGenerationScript service n)
+  pure $ case code of
+    ExitSuccess   -> Right ()
+    ExitFailure _ -> Left (DeployActivate (dhHost h) (firstLine err))
+
+-- | The @--json@ data block for @deploy --list@ (nbk.7).
+generationsJson :: [Generation] -> Json
+generationsJson gens =
+  JObject
+    [ ( "generations"
+      , JArray
+          [ JObject
+              [ ("generation", JInt (genNum g))
+              , ("version", maybe JNull JString (genVersion g))
+              , ("timestamp", JString (genTimestamp g))
+              , ("current", JBool (genCurrent g))
+              ]
+          | g <- gens
+          ]
+      )
+    ]
+
+-- | The human rendering for @deploy --list@ (nbk.7): one release per line —
+-- @gen N  vX.Y.Z  \<timestamp\>  (current)@.
+renderGenerations :: [Generation] -> String
+renderGenerations [] = "No deployed generations.\n"
+renderGenerations gens = unlines (map row gens)
+  where
+    row g =
+      "  gen " ++ show (genNum g)
+        ++ "  " ++ maybe "(unversioned)" id (genVersion g)
+        ++ "  " ++ genTimestamp g
+        ++ (if genCurrent g then "  (current)" else "")
 
 -- | The @--json@ data block for a ready host.
 deployReadyJson :: DeployHost -> ProbeChecks -> Json

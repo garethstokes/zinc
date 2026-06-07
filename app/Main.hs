@@ -14,12 +14,12 @@ import Zinc.CLI (Command (..), helpOverview, parseArgs)
 import Zinc.Closure (closureReportJson, renderClosure, runClosure)
 import Zinc.Diagnostic (ZincError (OtherError), envelope, exitCodeFor, humanError, rawToolOutput, toDiagnostic, toDiagnostics, zincVersion, zincVersionLine)
 import Zinc.Delta (deltaJson, renderDelta)
-import Zinc.Deploy (ProbeChecks (..), ResolvedDeploy (..), deployReadyJson, dhHost, profileName, resolveDeploy, runActivate, runDeploy, runInit, runNixCopy, runProfileInstall, runRollback)
+import Zinc.Deploy (ProbeChecks (..), ResolvedDeploy (..), deployReadyJson, dhHost, generationsJson, profileName, renderGenerations, resolveDeploy, runActivate, runDeploy, runDeployList, runInit, runNixCopy, runProfileInstall, runRollback, runSwitchGeneration)
 import Zinc.Docker (runDockerfile)
 import Zinc.Env (provisionToolchainFor)
 import Zinc.Target (Target (Native), isWasm, parseTarget, targetTriple)
 import Zinc.Git (gitInitIfNeeded)
-import Zinc.Manifest (parseDeployTargets, parseMember, parseWorkspace, pkgName, wsGhc)
+import Zinc.Manifest (parseDeployTargets, parseMember, parseWorkspace, pkgName, pkgVersion, wsGhc)
 import Zinc.Store (resolveStoreRoot)
 import Zinc.Doctor (doctorJson, doctorOk, renderDoctor, runDoctor)
 import Zinc.Fmt (runFmt)
@@ -296,13 +296,12 @@ dispatch mode (Package fmtStr tag out to) =
   case parsePackageFormat fmtStr of
     Left err  -> hPutStrLn stderr err >> exitWith (ExitFailure 2)
     Right fmt -> runPackage fmt tag out to "." >>= either (failCmd mode) putStrLn
-dispatch mode (Deploy arg service initFlag rollback _dryRun) = do
+dispatch mode (Deploy arg service initFlag rollback _dryRun listFlag rollbackTo) = do
   -- nbk.6: resolve <arg> against the manifest's [deploy.*] targets (an ad-hoc
-  -- user@host still works); a broken/absent manifest just means no named
-  -- targets. nbk.5: --init prints the NixOS trusted-users + linger snippet.
-  -- nbk.4: --rollback reverts the service to its previous generation. Otherwise
-  -- the full deploy sequence (nbk.1/.2/.3): probe → build the nix closure → nix
-  -- copy → profile install → user-systemd unit + health-check (auto-rollback).
+  -- user@host still works). nbk.5: --init prints the NixOS snippet. nbk.7: --list
+  -- shows the generation history; --rollback-to <N> pins a specific release.
+  -- nbk.4: --rollback reverts one generation. Otherwise the full deploy sequence
+  -- (nbk.1/.2/.3): probe → build closure → copy → install → unit + health-check.
   src <- readFile "zinc.toml" `catchIOError` const (pure "")
   let targets = either (const []) id (parseDeployTargets src)
       resolved = resolveDeploy targets arg service
@@ -310,20 +309,35 @@ dispatch mode (Deploy arg service initFlag rollback _dryRun) = do
       -- The systemd service name: --service / [deploy.*].service, else the
       -- manifest's package name (the deployed exe's name).
       manifestSvc = either (const Nothing) (Just . pkgName) (parseMember src)
+      svc' = rdService resolved `mplus` manifestSvc
+      needSvc f = maybe (failDeploy (OtherError "this deploy action needs a service: pass --service <name> or run in a workspace with a [package].name")) f svc'
   if initFlag
     then runInit h >>= \r -> case r of
       Left e -> failDeploy e
       Right snippet
         | machine mode -> putStrLn (renderJson (envelope "deploy" True (Just (JObject [("init", JString snippet)])) Nothing []))
         | otherwise    -> putStrLn "Add this to the host's NixOS configuration, then rebuild:" >> putStr snippet
-    else if rollback
-      then case rdService resolved `mplus` manifestSvc of
-        Nothing  -> failDeploy (OtherError "deploy --rollback needs a service: pass --service <name> or run in a workspace with a [package].name")
-        Just svc -> runRollback h svc >>= \r -> case r of
+    else if listFlag
+      then needSvc $ \svc -> runDeployList h svc >>= \r -> case r of
+        Left e     -> failDeploy e
+        Right gens
+          | machine mode -> putStrLn (renderJson (envelope "deploy" True (Just (generationsJson gens)) Nothing []))
+          | otherwise    -> putStr (renderGenerations gens)
+    else case rollbackTo of
+      Just n -> needSvc $ \svc -> do
+        -- switch to generation N, then re-run activate (restart + health-check +
+        -- auto-rollback) so a bad target self-recovers like a normal deploy.
+        r <- chainE [runSwitchGeneration h svc n, runActivate h svc (rdArgs resolved) (rdEnv resolved)]
+        case r of
           Left e   -> failDeploy e
-          Right () -> deployOk (JObject [("host", JString (dhHost h)), ("service", JString svc), ("rolledBack", JBool True)])
-                        ("Rolled " ++ svc ++ " back to its previous generation on " ++ dhHost h ++ " and restarted.")
-      else fullDeploy resolved manifestSvc
+          Right () -> deployOk (JObject [("host", JString (dhHost h)), ("service", JString svc), ("generation", JInt n), ("activated", JBool True)])
+                        ("Switched " ++ svc ++ " on " ++ dhHost h ++ " to generation " ++ show n ++ " and restarted.")
+      Nothing
+        | rollback -> needSvc $ \svc -> runRollback h svc >>= \r -> case r of
+            Left e   -> failDeploy e
+            Right () -> deployOk (JObject [("host", JString (dhHost h)), ("service", JString svc), ("rolledBack", JBool True)])
+                          ("Rolled " ++ svc ++ " back to its previous generation on " ++ dhHost h ++ " and restarted.")
+        | otherwise -> fullDeploy resolved manifestSvc (either (const "unknown") pkgVersion (parseMember src))
   where
     tick b = if b then "\10003" else "\10007"
     failDeploy e
@@ -334,7 +348,7 @@ dispatch mode (Deploy arg service initFlag rollback _dryRun) = do
       | otherwise    = putStrLn human
     -- The full sequence: probe (typed gaps), build the closure, copy + install +
     -- activate. Any step's Left short-circuits to the typed diagnostic.
-    fullDeploy resolved manifestSvc = do
+    fullDeploy resolved manifestSvc version = do
       probe <- runDeploy h
       case probe of
         Left e -> failDeploy e
@@ -345,15 +359,15 @@ dispatch mode (Deploy arg service initFlag rollback _dryRun) = do
             steps <-
               chainE
                 [ runNixCopy h path
-                , runProfileInstall h svc path
+                , runProfileInstall h svc version path
                 , runActivate h svc (rdArgs resolved) (rdEnv resolved)
                 ]
             case steps of
               Left e   -> failDeploy e
               Right () ->
                 deployOk
-                  (JObject [("host", JString (dhHost h)), ("service", JString svc), ("storePath", JString path), ("activated", JBool True)])
-                  ("Deployed " ++ svc ++ " to " ++ dhHost h ++ " — " ++ path ++ "\n  systemd unit " ++ profileName svc ++ " is active.")
+                  (JObject [("host", JString (dhHost h)), ("service", JString svc), ("version", JString version), ("storePath", JString path), ("activated", JBool True)])
+                  ("Deployed " ++ svc ++ " " ++ version ++ " to " ++ dhHost h ++ " — " ++ path ++ "\n  systemd unit " ++ profileName svc ++ " is active.")
       where h = rdHost resolved
     -- Run Either-returning IO steps in order, stopping at the first Left.
     chainE [] = pure (Right ())

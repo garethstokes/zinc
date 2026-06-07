@@ -48,6 +48,12 @@ import Zinc.Deploy
   , systemdUnit
   , activateScript
   , rollbackScript
+  , Generation (..)
+  , parseGenerations
+  , listGenerationsScript
+  , switchGenerationScript
+  , generationsJson
+  , renderGenerations
   , parseDeployHost
   , parseProbeOutput
   , probeScript
@@ -3790,13 +3796,19 @@ main = hspec $ do
   describe "deploy verb parsing (nbk.1)" $ do
     it "parses `deploy <host>` with the v1 flag surface" $ do
       parseArgs ["deploy", "gareth@box"]
-        `shouldBe` Right (OutputFlags False False, Deploy "gareth@box" Nothing False False False)
+        `shouldBe` Right (OutputFlags False False, Deploy "gareth@box" Nothing False False False False Nothing)
       parseArgs ["deploy", "homelab", "--service", "myapp", "--dry-run"]
-        `shouldBe` Right (OutputFlags False False, Deploy "homelab" (Just "myapp") False False True)
+        `shouldBe` Right (OutputFlags False False, Deploy "homelab" (Just "myapp") False False True False Nothing)
       parseArgs ["deploy", "box", "--init"]
-        `shouldBe` Right (OutputFlags False False, Deploy "box" Nothing True False False)
+        `shouldBe` Right (OutputFlags False False, Deploy "box" Nothing True False False False Nothing)
       parseArgs ["deploy", "box", "--rollback"]
-        `shouldBe` Right (OutputFlags False False, Deploy "box" Nothing False True False)
+        `shouldBe` Right (OutputFlags False False, Deploy "box" Nothing False True False False Nothing)
+
+    it "parses --list and --rollback-to <gen> (nbk.7)" $ do
+      parseArgs ["deploy", "box", "--list"]
+        `shouldBe` Right (OutputFlags False False, Deploy "box" Nothing False False False True Nothing)
+      parseArgs ["deploy", "box", "--rollback-to", "3"]
+        `shouldBe` Right (OutputFlags False False, Deploy "box" Nothing False False False False (Just 3))
 
   describe "Zinc.Deploy --init snippet (nbk.5)" $ do
     it "generates a NixOS trusted-users + linger snippet for the deploy user" $ do
@@ -3858,12 +3870,14 @@ main = hspec $ do
 
     it "names the per-service profile and installs into it (GC-root + generations)" $ do
       profileName "myapp" `shouldBe` "zinc-myapp"
-      let s = profileInstallScript "myapp" "/nix/store/abc-app"
+      let s = profileInstallScript "myapp" "0.3.1" "/nix/store/abc-app"
       all
         (`isInfixOf` s)
         [ ".local/state/nix/profiles/zinc-myapp"
         , "nix-env --profile"
         , "--set /nix/store/abc-app"
+        , "0.3.1" -- stamps the app version against the new generation (nbk.7)
+        , ".zinc-versions"
         ]
         `shouldBe` True
 
@@ -3905,6 +3919,38 @@ main = hspec $ do
         ]
         `shouldBe` True
       ("copy" `isInfixOf` s) `shouldBe` False
+
+  describe "Zinc.Deploy version history — list / rollback-to (nbk.7)" $ do
+    it "parses list-generations + the version sidecar, joining gen -> version + current" $ do
+      let out =
+            unlines
+              [ "   1   2026-06-07 21:11:52   "
+              , "   2   2026-06-07 21:11:55   (current)"
+              , "---ZINC-VERSIONS---"
+              , "1\t0.3.0"
+              , "2\t0.3.1"
+              ]
+      parseGenerations out
+        `shouldBe` [ Generation 1 "2026-06-07 21:11:52" False (Just "0.3.0")
+                   , Generation 2 "2026-06-07 21:11:55" True (Just "0.3.1")
+                   ]
+
+    it "leaves a pre-nbk.7 generation (no sidecar entry) unversioned" $
+      parseGenerations (unlines ["   1   2026-06-07 21:11:52   (current)", "---ZINC-VERSIONS---"])
+        `shouldBe` [Generation 1 "2026-06-07 21:11:52" True Nothing]
+
+    it "switch-generation script pins a specific generation (forward or back)" $
+      switchGenerationScript "myapp" 3 `shouldContain` "nix-env --profile \"$prof\" --switch-generation 3"
+
+    it "list script dumps generations then the version sidecar, separated by a marker" $ do
+      let s = listGenerationsScript "myapp"
+      all (`isInfixOf` s) ["--list-generations", "---ZINC-VERSIONS---", ".zinc-versions"] `shouldBe` True
+
+    it "renders + JSON-encodes the history with the current marker" $ do
+      let gens = [Generation 1 "2026-06-07 21:11:52" False (Just "0.3.0"), Generation 2 "2026-06-07 21:11:55" True (Just "0.3.1")]
+      renderGenerations gens `shouldContain` "gen 2  0.3.1  2026-06-07 21:11:55  (current)"
+      renderJson (generationsJson gens)
+        `shouldBe` "{\"generations\":[{\"generation\":1,\"version\":\"0.3.0\",\"timestamp\":\"2026-06-07 21:11:52\",\"current\":false},{\"generation\":2,\"version\":\"0.3.1\",\"timestamp\":\"2026-06-07 21:11:55\",\"current\":true}]}"
 
   describe "Zinc.Cabal reexported-modules (jdf)" $ do
     it "reads bare and renamed reexports from a library .cabal" $ do
