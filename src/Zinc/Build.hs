@@ -272,9 +272,13 @@ buildMemberFor target mb = runResult $ do
 -- | The extra @ghc@ flags that turn a wasm executable into a browser reactor
 -- module exporting @exports@ (zinc-9po.5): no Haskell @main@, the @reactor@
 -- exec-model, and an explicit linker @--export@ per symbol so wasm-ld keeps them.
+-- @hs_init@ is always exported (a reactor's host must call it once to start the
+-- Haskell RTS before any other export, else @newBoundTask: RTS is not
+-- initialised@) — so the user lists only their own entry points.
 reactorLinkFlags :: [String] -> [String]
 reactorLinkFlags exports =
-  ["-no-hs-main", "-optl-mexec-model=reactor"] ++ ["-optl-Wl,--export=" ++ e | e <- exports]
+  ["-no-hs-main", "-optl-mexec-model=reactor"]
+    ++ ["-optl-Wl,--export=" ++ e | e <- nub ("hs_init" : exports)]
 
 -- | Generate the @ghc_wasm_jsffi.js@ glue beside a linked reactor module, via
 -- the toolchain's @post-link.mjs@ (run with the provisioned @node@). The glue

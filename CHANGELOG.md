@@ -38,8 +38,9 @@ The first self-hosting, agent-first release.
   (`-no-hs-main -optl-mexec-model=reactor`, with each symbol linker-exported)
   and generates the `ghc_wasm_jsffi.js` glue (via the toolchain's
   `post-link.mjs`) so a browser can bind its `foreign import javascript` calls —
-  zero toolchain setup. An empty/absent `wasm-exports` stays a WASI command
-  module.
+  zero toolchain setup. `hs_init` is exported automatically (the host calls it
+  once to start the RTS before any entry point). An empty/absent `wasm-exports`
+  stays a WASI command module.
 
 ### Agent-native DevEx
 

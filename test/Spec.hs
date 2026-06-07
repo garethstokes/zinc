@@ -3402,9 +3402,12 @@ main = hspec $ do
       code (wasmSupported Wasm32Wasi (pureLib {compSystemLibs = ["zlib"]})) `shouldBe` Just "ZINC_WASM_UNSUPPORTED"
 
   describe "Zinc.Build reactor link flags (9po.5)" $ do
-    it "emits no-hs-main, reactor exec-model, and one --export per symbol" $
+    it "emits no-hs-main, reactor exec-model, an auto hs_init export, and one --export per symbol" $
       reactorLinkFlags ["hs_start", "myFunc"]
-        `shouldBe` ["-no-hs-main", "-optl-mexec-model=reactor", "-optl-Wl,--export=hs_start", "-optl-Wl,--export=myFunc"]
+        `shouldBe` ["-no-hs-main", "-optl-mexec-model=reactor", "-optl-Wl,--export=hs_init", "-optl-Wl,--export=hs_start", "-optl-Wl,--export=myFunc"]
+    it "does not double-export hs_init when the user lists it" $
+      reactorLinkFlags ["hs_init", "hs_start"]
+        `shouldBe` ["-no-hs-main", "-optl-mexec-model=reactor", "-optl-Wl,--export=hs_init", "-optl-Wl,--export=hs_start"]
 
   describe "Zinc.Cabal.bootConflicts (sib)" $ do
     let isBoot = (`elem` ["transformers", "base"])
