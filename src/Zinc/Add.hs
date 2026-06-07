@@ -16,11 +16,12 @@ module Zinc.Add
 
 import Control.Monad (when)
 import Data.Bifunctor (first)
-import Data.List (find, intercalate)
+import Data.List (find, intercalate, nub)
 import Data.Maybe (fromMaybe)
 import System.IO (readFile')
-import System.Directory (doesDirectoryExist, doesFileExist, removeDirectoryRecursive)
-import System.FilePath (takeDirectory, (</>))
+import System.Directory (doesDirectoryExist, doesFileExist, listDirectory, removeDirectoryRecursive)
+import System.FilePath (takeDirectory, takeExtension, (</>))
+import Zinc.Cabal (parseCabalComponents)
 import Zinc.Closure (ClosureReport (crMembers, crNeedsVendoring), installedVersion, runClosure)
 import Zinc.Delta (ClosureDelta, closureDelta)
 import Zinc.Diagnostic (ZincError (DepNoGitRepo, ManifestParse, NoZincToml))
@@ -31,13 +32,16 @@ import Zinc.Git (cloneAt)
 import Zinc.Hackage (fetchHackageTarball, hackageLatestVersion, hackageSourceRepo)
 import Zinc.Lock (LockedPackage (..), Source (..), parseLock, renderLock)
 import Zinc.Manifest
-  ( Dependency (depName, depRef)
+  ( Component (compSystemLibs)
+  , Dependency (depName, depRef)
+  , MemberManifest (pkgComponents)
   , Ref (Latest, Rev, Vendored)
   , WorkspaceManifest (wsDependencies, wsGhc)
   , depRepos
   , depFlagsOf
   , addDep
   , addVendored
+  , parseMember
   , parseWorkspace
   , renderWorkspace
   )
@@ -63,8 +67,8 @@ writeManifestPreserving wsFile src ws =
 -- workspace's @[dependencies.<name>].flags@ for a direct dep (or @[]@ for a
 -- transitive one) and are recorded in the lock so a frozen build reproduces the
 -- same finalize.
-lockEntry :: [(String, [(String, Bool)])] -> ResolvedDep -> String -> String -> LockedPackage
-lockEntry flagsMap dep rev sha =
+lockEntry :: [(String, [(String, Bool)])] -> [String] -> ResolvedDep -> String -> String -> LockedPackage
+lockEntry flagsMap systemLibs dep rev sha =
   LockedPackage
     { lockName = rdName dep
     , lockSource = case rdRef dep of
@@ -73,7 +77,24 @@ lockEntry flagsMap dep rev sha =
     , lockSha256 = sha
     , lockDepends = rdDepends dep
     , lockFlags = fromMaybe [] (lookup (rdName dep) flagsMap)
+    , lockSystemLibs = systemLibs
     }
+
+-- | The nixpkgs system-lib attrs a fetched package declares — a cabal's
+-- @extra-libraries@/@pkgconfig-depends@ (via 'compSystemLibs') or a zinc-native
+-- @[build].system-libs@ — unioned across its components. Recorded into the lock
+-- at freeze so @zinc build@ can provision them (the @-L@ the linker needs) from
+-- the lock alone, without re-parsing every dep's .cabal up front (zinc-389).
+systemLibsOf :: FilePath -> IO [String]
+systemLibsOf pkgDir = do
+  hasZinc <- doesFileExist (pkgDir </> "zinc.toml")
+  if hasZinc
+    then either (const []) (nub . concatMap compSystemLibs . pkgComponents) . parseMember <$> readFile (pkgDir </> "zinc.toml")
+    else do
+      entries <- listDirectory pkgDir
+      case filter ((== ".cabal") . takeExtension) entries of
+        (c : _) -> either (const []) (nub . concatMap compSystemLibs) . parseCabalComponents <$> readFile (pkgDir </> c)
+        []      -> pure []
 
 -- | Bring every dep in the closure into the store at its ref — git clone, or a
 -- Hackage tarball fetch for a vendored pin (b1z) — capture its exact
@@ -89,7 +110,8 @@ freezeClosure storeRoot flagsMap = runResult . traverse freezeOne
         Vendored ver -> do
           _ <- orFail (first (("freeze " ++ rdName dep ++ ": ") ++) <$> fetchHackageTarball (rdName dep) ver dest)
           sha <- liftIO (contentHash dest)
-          pure (lockEntry flagsMap dep ver sha)
+          slibs <- liftIO (systemLibsOf dest)
+          pure (lockEntry flagsMap slibs dep ver sha)
         _ -> do
           refStr <- orFail (first ((rdName dep ++ ": ") ++) <$> resolveRef (rdName dep) (rdRepo dep) (rdRef dep))
           liftIO $ do
@@ -97,6 +119,7 @@ freezeClosure storeRoot flagsMap = runResult . traverse freezeOne
             when stale (removeDirectoryRecursive dest)
           rev <- orFail (first (("freeze " ++ rdName dep ++ ": ") ++) <$> cloneAt (rdRepo dep) refStr dest)
           pkgDir <- liftIO (packageDirIn dest (rdRepo dep) (rdName dep))
+          slibs <- liftIO (systemLibsOf pkgDir)
           hpack <- liftIO (isHpackOnly pkgDir)
           if hpack
             then do
@@ -107,10 +130,10 @@ freezeClosure storeRoot flagsMap = runResult . traverse freezeOne
               ver <- orFail (maybe (Left (rdName dep ++ ": hpack package has no .cabal and no Hackage release to vendor")) Right <$> hackageLatestVersion (rdName dep))
               _ <- orFail (first (("vendor " ++ rdName dep ++ ": ") ++) <$> fetchHackageTarball (rdName dep) ver dest)
               sha <- liftIO (contentHash dest)
-              pure (LockedPackage (rdName dep) (TarballSource ver) sha (rdDepends dep) (fromMaybe [] (lookup (rdName dep) flagsMap)))
+              pure (LockedPackage (rdName dep) (TarballSource ver) sha (rdDepends dep) (fromMaybe [] (lookup (rdName dep) flagsMap)) slibs)
             else do
               sha <- liftIO (contentHash dest)
-              pure (lockEntry flagsMap dep rev sha)
+              pure (lockEntry flagsMap slibs dep rev sha)
 
 -- | Resolve a workspace's dependency closure (real git fetch), freeze it, and
 -- write @zinc.lock@; returns the resolution table for display. Shared by

@@ -2,7 +2,8 @@ module Main (main) where
 
 import Control.Monad (unless, when)
 import System.IO.Error (catchIOError)
-import Data.List (intercalate)
+import Data.List (intercalate, nub)
+import Zinc.Lock (lockSystemLibs, parseLock)
 import Data.Maybe (maybeToList)
 import System.Environment (getArgs, lookupEnv)
 import System.Exit (ExitCode (ExitFailure), exitWith)
@@ -84,12 +85,18 @@ provisionToolchainHere :: Target -> Maybe String -> IO ()
 provisionToolchainHere target ghcOverride = do
   storeRoot <- resolveStoreRoot
   manifest <- readFile "zinc.toml" `catchIOError` const (pure "")
-  let ghc = maybe (either (const "9.6.5") wsGhc (parseWorkspace manifest)) id ghcOverride
+  -- System libs the build needs (the C libraries closure deps FFI into, recorded
+  -- at freeze): provision them into the toolchain env so GHC's linker gets their
+  -- -L when emitting -l<lib> for a dependent — e.g. libpq for postgresql-libpq
+  -- (zinc-389). Read from the lock alone (no fetch), deduped.
+  lockSrc <- readFile "zinc.lock" `catchIOError` const (pure "")
+  let systemLibs = nub (concatMap lockSystemLibs (either (const []) id (parseLock lockSrc)))
+      ghc = maybe (either (const "9.6.5") wsGhc (parseWorkspace manifest)) id ghcOverride
       cacheRoot = storeRoot ++ "/devenv"
       -- Target-suffixed flake dir so the native + wasm toolchains don't clobber
       -- each other's flake/lock (zinc-9po.3).
       flakeDir = cacheRoot ++ "/flake" ++ (if target == Native then "" else "-" ++ targetTriple target)
-  provisionToolchainFor target cacheRoot flakeDir ghc []
+  provisionToolchainFor target cacheRoot flakeDir ghc systemLibs
 
 -- | True in @--json@ machine mode.
 machine :: OutputMode -> Bool

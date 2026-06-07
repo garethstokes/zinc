@@ -38,6 +38,7 @@ data LockedPackage = LockedPackage
   , lockSha256  :: String   -- ^ content hash; validates the fetch
   , lockDepends :: [String] -- ^ flattened dep names, for fast graph load
   , lockFlags   :: [(String, Bool)] -- ^ manual cabal flag assignments chosen for this package (from the manifest's @[dependencies.<name>].flags@), recorded so a locked build reproduces the same finalize (zinc-iaj.2)
+  , lockSystemLibs :: [String] -- ^ nixpkgs attr names of the external C libraries this package needs (cabal extra-libraries / pkgconfig-depends), recorded at freeze so @zinc build@ can provision them into the toolchain env (-L) without re-parsing every dep's .cabal up front (zinc-389)
   }
   deriving (Eq, Show)
 
@@ -84,6 +85,7 @@ parseLock src = do
         <*> stringField "sha256" t
         <*> optStringArray "depends" t
         <*> pure (optFlags t)
+        <*> optStringArray "system-libs" t
     toLocked _ = Left "expected a table in the [[locked]] array"
     -- A @vendored@ key marks a Hackage tarball (no repo/rev); otherwise the
     -- entry is a git source with @repo@ + @rev@.
@@ -107,6 +109,9 @@ renderLock = intercalate "\n" . map renderOne
              ]
           ++ [ "flags = { " ++ intercalate ", " [n ++ " = " ++ bool b | (n, b) <- lockFlags p] ++ " }"
              | not (null (lockFlags p))
+             ]
+          ++ [ "system-libs = [" ++ intercalate ", " (map str (lockSystemLibs p)) ++ "]"
+             | not (null (lockSystemLibs p))
              ]
     sourceLines (GitSource repo rev) = ["repo = " ++ str repo, "rev = " ++ str rev]
     sourceLines (TarballSource ver)  = ["vendored = " ++ str ver]
