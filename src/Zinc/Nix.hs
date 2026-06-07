@@ -33,6 +33,10 @@ generateFlakeFor Native ghcVersion systemLibs =
       [ ghcAttr
       , "pkgs.haskellPackages.alex"
       , "pkgs.haskellPackages.happy"
+      , -- hspec-discover: GHC runs it as a source preprocessor for the common
+        -- @{-# OPTIONS_GHC -F -pgmF hspec-discover #-}@ test entrypoint, so it
+        -- must be on PATH — like alex/happy, a host code generator (zinc-x6b).
+        "pkgs.haskellPackages.hspec-discover"
       ]
         ++ map ("pkgs." ++) systemLibs
 
@@ -85,6 +89,7 @@ generateFlakeFor Wasm32Wasi _ghcVersion _systemLibs =
     , "              ghc-wasm-meta.packages.${system}.wasmtime"
     , "              pkgs.haskellPackages.alex"
     , "              pkgs.haskellPackages.happy"
+    , "              pkgs.haskellPackages.hspec-discover"
     , "            ];"
     , "          };"
     , "        });"

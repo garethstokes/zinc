@@ -85,7 +85,7 @@ import Zinc.Manifest
 import Zinc.Fetch (gitFetchManifest, isHpackOnly, namedCabal, packageDirIn)
 import Zinc.GC (GCRoot (..), gcStore, runGc)
 import Zinc.Add (enrichWithRepos, freezeClosure, lockEntry, runAdd, runUpdate, runVendor, splitNameVersion, vendoredSoftPins)
-import Zinc.Build (GhcInvocation (..), LibBuild (..), MemberBuild (..), PackageConf (..), archiveArgs, buildLib, buildMember, discoverModules, ghcMakeArgs, initPackageDb, installedVersions, memberBuildDir, packageFlags, ppCommand, preprocessorFor, reactorLinkFlags, registeredExposedMatches, registerPackage, renderConf, replArgs, runPreprocessor, wasmSupported, writeFileIfChanged, zincBuiltUnitIds)
+import Zinc.Build (GhcInvocation (..), LibBuild (..), MemberBuild (..), PackageConf (..), archiveArgs, buildLib, buildMember, discoverModules, externalInterpFlags, ghcMakeArgs, initPackageDb, installedVersions, memberBuildDir, packageFlags, ppCommand, preprocessorFor, reactorLinkFlags, registeredExposedMatches, registerPackage, renderConf, replArgs, runPreprocessor, wasmSupported, writeFileIfChanged, zincBuiltUnitIds)
 import Zinc.Cache (BuildKey (..), buildCacheKey, buildCacheKeyFor, cacheHit, storeConfPath, storePkgPath, writeCachedConf)
 import Zinc.Cabal (bootConflicts, cabalBuildType, cabalVersion, parseCabalComponents, parseCabalComponentsForGhc, parseCabalComponentsForPlatform)
 import Distribution.System (Arch (Wasm32), OS (Wasi), Platform (Platform), buildPlatform)
@@ -1720,6 +1720,9 @@ main = hspec $ do
 
     it "includes the alex/happy preprocessors" $
       all (`isInfixOf` flake) ["alex", "happy"] `shouldBe` True
+
+    it "includes hspec-discover (the -pgmF preprocessor for test entrypoints; zinc-x6b)" $
+      ("hspec-discover" `isInfixOf` flake) `shouldBe` True
 
     it "pins nixpkgs and exposes a devShell" $
       all (`isInfixOf` flake) ["nixpkgs.url", "devShells"] `shouldBe` True
@@ -3815,6 +3818,14 @@ main = hspec $ do
     it "does not double-export hs_init when the user lists it" $
       reactorLinkFlags ["hs_init", "hs_start"]
         `shouldBe` ["-no-hs-main", "-optl-mexec-model=reactor", "-optl-Wl,--export=hs_init", "-optl-Wl,--export=hs_start"]
+
+  describe "Zinc.Build externalInterpFlags (zinc-1wa)" $ do
+    -- Native compiles route TH splices through the external interpreter so a
+    -- splice can load zinc's static .a deps (no libHS*.so); wasm has its own
+    -- iserv via the toolchain, so it adds nothing.
+    it "uses -fexternal-interpreter for native, nothing for wasm" $
+      (externalInterpFlags Native, externalInterpFlags Wasm32Wasi)
+        `shouldBe` (["-fexternal-interpreter"], [])
 
   describe "Zinc.Cabal.bootConflicts (sib)" $ do
     let isBoot = (`elem` ["transformers", "base"])

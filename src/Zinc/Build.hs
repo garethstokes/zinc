@@ -3,6 +3,7 @@
 module Zinc.Build
   ( GhcInvocation (..)
   , ghcMakeArgs
+  , externalInterpFlags
   , packageFlags
   , zincBuiltUnitIds
   , PackageConf (..)
@@ -79,6 +80,20 @@ ghcMakeArgs gi =
     ++ map ("-X" ++) (giExtensions gi)
     ++ giGhcOptions gi
     ++ giModules gi
+
+-- | TemplateHaskell splices run in GHC's interpreter. On a dynamically-linked
+-- GHC (the nixpkgs default) the *internal* interpreter loads each package
+-- dependency as a shared object (@libHS<pkg>.so@) to evaluate a splice. zinc
+-- builds dependencies as static archives only, so a splice that calls into
+-- another package — e.g. @th-lift@'s @deriveLiftMany@, reached transitively via
+-- aeson — fails with "libHSth-lift.so: cannot open shared object file". Routing
+-- splices through the *external* interpreter (the vanilla @ghc-iserv@) makes GHC
+-- load the static @.a@ via the RTS object linker instead, so TH works against
+-- zinc's static deps with no @.so@ needed. GHC spawns iserv only when a module
+-- actually has a splice, so TH-free modules are unaffected. WASM cross-compiles
+-- wire up their own iserv via the toolchain, so this is native-only (zinc-1wa).
+externalInterpFlags :: Target -> [String]
+externalInterpFlags t = if isWasm t then [] else ["-fexternal-interpreter"]
 
 -- | A synthesized installed-package description (@.conf@) — the metadata
 -- @ghc-pkg register@ records so later compiles can @-package@ this build.
@@ -307,6 +322,7 @@ buildMemberFor target mb = runResult $ do
           ++ ["-hide-all-packages"]
           ++ packageFlags zincBuilt (map fst installed) (compDepends comp)
           ++ map (\d -> "-i" ++ (mbMemberDir mb </> d)) srcDirs
+          ++ externalInterpFlags target
           ++ map ("-X" ++) (compExtensions comp)
           ++ compGhcOptions comp
           ++ (if reactor then reactorLinkFlags (compWasmExports comp) else [])
@@ -468,6 +484,7 @@ buildLibArtifactsFor target lb = runResult $ do
           -- package's own headers (e.g. version-compatibility-macros.h) resolves.
           ++ concatMap (\d -> let p = lbMemberDir lb </> d in ["-I" ++ p, "-optP-I" ++ p]) (compIncludeDirs comp)
           ++ ["-this-unit-id", unitId, "-outputdir", lbDistDir lb]
+          ++ externalInterpFlags target
           ++ map ("-X" ++) (compExtensions comp)
           -- CPP -D defines (cabal cpp-options) for conditionally-compiled source.
           ++ map ("-optP" ++) (compCppOptions comp)
