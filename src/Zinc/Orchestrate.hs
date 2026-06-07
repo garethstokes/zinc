@@ -173,8 +173,8 @@ runBuildMember wsDir target = buildWorkspace wsDir target (== Executable)
 -- slow-stable closure can be its own Docker layer / CI cache entry, separate
 -- from fast-changing source (ephemeral-builds spec §3). Returns the per-package
 -- closure report.
-runWarm :: Sink -> FilePath -> Maybe String -> IO (Either ZincError [PackageReport])
-runWarm sink wsDir ghcOverride = runResult $ do
+runWarm :: Sink -> Target -> FilePath -> Maybe String -> IO (Either ZincError [PackageReport])
+runWarm sink target wsDir ghcOverride = runResult $ do
   ensureToolchain
   let wsFile = wsDir </> "zinc.toml"
   present <- liftIO (doesFileExist wsFile)
@@ -182,9 +182,12 @@ runWarm sink wsDir ghcOverride = runResult $ do
   wsSrc <- liftIO (readFile wsFile)
   ws <- liftEitherE (first (ManifestParse wsFile) (parseWorkspace wsSrc))
   let wsDb = wsDir </> ".zinc" </> "pkgdb"
-  orFail (initPackageDb wsDb)
+  -- Build the closure for the SELECTED target (zinc-hte): --deps-only/warm used
+  -- to hardcode Native, so `--target wasm32-wasi` silently produced native
+  -- objects. The pkgdb + store keys are target-scoped, like the full build.
+  orFail (initPackageDbFor target wsDb)
   storeRoot <- liftIO resolveStoreRoot
-  orFailE (buildClosure sink Native wsDir storeRoot wsDb (fromMaybe (wsGhc ws) ghcOverride) (depGhcOptionsOf ws) (depFlagsOf ws) Nothing)
+  orFailE (buildClosure sink target wsDir storeRoot wsDb (fromMaybe (wsGhc ws) ghcOverride) (depGhcOptionsOf ws) (depFlagsOf ws) Nothing)
 
 -- | @zinc build [member] --json@: build, returning the structured outcome
 -- (executables + per-package closure report) and the 'Timing' block (total

@@ -27,7 +27,7 @@ data Command
   | Explain String        -- ^ why a package is in the build
   | Prime                 -- ^ AI-optimized orientation for this workspace
   | Onboard               -- ^ minimal AGENTS.md/CLAUDE.md snippet
-  | Warm (Maybe String)   -- ^ build only the dependency closure; arg = --ghc override
+  | Warm (Maybe String) (Maybe String) -- ^ build only the dependency closure; args = --ghc override, --target (zinc-hte)
   | Dockerfile            -- ^ emit a multi-stage Docker build recipe
   | Fmt Bool              -- ^ canonically format zinc.toml; Bool = --check
   | Closure String        -- ^ discover a package's non-boot closure + repos
@@ -74,7 +74,7 @@ commandParser =
       , sub "add"    "Add a dependency"               (Add <$> (yesFlag *> strArgument (metavar "PKG")) <*> switch (long "dry-run" <> help "Preview the closure + per-member repo resolvability without touching zinc.toml/zinc.lock"))
       , sub "vendor" "Pin a no-git dependency from its Hackage tarball" (Vendor <$> (yesFlag *> some (strArgument (metavar "PKG..."))))
       , sub "build"  "Build the workspace or a member" buildCmd
-      , sub "warm"   "Build only the dependency closure (CI/Docker cache)" (Warm <$> ghcOption)
+      , sub "warm"   "Build only the dependency closure (CI/Docker cache)" (Warm <$> ghcOption <*> targetOption)
       , sub "run"    "Build then run an executable"   (Run <$> optional (strArgument (metavar "[TARGET]")) <*> many (strArgument (metavar "[-- ARGS...]")) <*> targetOption)
       , sub "repl"   "Open ghci for a target"         (Repl <$> optional (strArgument (metavar "TARGET")))
       , sub "test"   "Build and run tests"            (Test <$> optional (strArgument (metavar "TARGET")))
@@ -109,7 +109,7 @@ commandParser =
     sub name desc p = command name (info (((,) <$> outputFlags <*> p) <**> helper) (progDesc desc))
     -- `build --deps-only` is a synonym for `warm` (build just the closure).
     buildCmd =
-      (\member depsOnly ghc target -> if depsOnly then Warm ghc else Build member ghc target)
+      (\member depsOnly ghc target -> if depsOnly then Warm ghc target else Build member ghc target)
         <$> optional (strArgument (metavar "MEMBER"))
         <*> switch (long "deps-only" <> help "Build only the dependency closure (alias: zinc warm)")
         <*> ghcOption

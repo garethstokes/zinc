@@ -58,14 +58,14 @@ buildsToolchain c = case c of
   Run {}    -> True
   Test _    -> True
   Repl _    -> True
-  Warm _    -> True
+  Warm {}   -> True
   Package {} -> True
   _         -> False
 
 -- | A command's explicit @--ghc@ override, if any (build/warm carry it; ey4).
 ghcOverrideOf :: Command -> Maybe String
 ghcOverrideOf (Build _ g _) = g
-ghcOverrideOf (Warm g)      = g
+ghcOverrideOf (Warm g _)    = g
 ghcOverrideOf _             = Nothing
 
 -- | A command's compile target (zinc-9po.3): the @--target@ on @build@, else
@@ -74,6 +74,7 @@ ghcOverrideOf _             = Nothing
 targetOf :: Command -> Target
 targetOf (Build _ _ (Just t))  = either (const Native) id (parseTarget t)
 targetOf (Run _ _ (Just t))    = either (const Native) id (parseTarget t)
+targetOf (Warm _ (Just t))     = either (const Native) id (parseTarget t) -- --deps-only/warm --target (zinc-hte)
 targetOf _                     = Native
 
 -- | Provision the current workspace's Nix toolchain into the process env so the
@@ -258,20 +259,27 @@ dispatch mode Graph =
   runGraph "." >>= emitIntrospection "graph" mode graphJson renderGraph
 dispatch mode (Explain pkg) =
   runExplain "." >>= emitIntrospection "explain" mode (explainJson pkg) (renderExplain pkg)
-dispatch mode (Warm ghcOverride) = do
-  r <- withRenderer mode $ \sink -> do
-    res <- runWarm sink "." ghcOverride
-    case res of
-      Right pkgs -> emit sink (Finished (warmSummary pkgs))
-      Left _     -> pure ()
-    pure res
-  case r of
-    Left e
-      | machine mode -> putStrLn (renderJson (envelope "warm" False Nothing Nothing [toDiagnostic e])) >> exitWith (exitCodeFor e)
-      | otherwise    -> failCmd mode e
-    Right pkgs
-      | machine mode -> putStrLn (renderJson (envelope "warm" True (Just (JObject [("packages", JArray (map packageReportJson pkgs))])) Nothing []))
-      | otherwise    -> putStrLn (warmSummary pkgs)
+dispatch mode (Warm ghcOverride targetStr) =
+  -- Resolve the compile target (zinc-hte): --deps-only/warm now honors --target
+  -- instead of always building Native. An unknown --target is a usage error.
+  case maybe (Right Native) parseTarget targetStr of
+    Left err -> hPutStrLn stderr err >> exitWith (ExitFailure 2)
+    Right tgt -> warmWith tgt
+  where
+   warmWith tgt = do
+    r <- withRenderer mode $ \sink -> do
+      res <- runWarm sink tgt "." ghcOverride
+      case res of
+        Right pkgs -> emit sink (Finished (warmSummary pkgs))
+        Left _     -> pure ()
+      pure res
+    case r of
+      Left e
+        | machine mode -> putStrLn (renderJson (envelope "warm" False Nothing Nothing [toDiagnostic e])) >> exitWith (exitCodeFor e)
+        | otherwise    -> failCmd mode e
+      Right pkgs
+        | machine mode -> putStrLn (renderJson (envelope "warm" True (Just (JObject [("packages", JArray (map packageReportJson pkgs))])) Nothing []))
+        | otherwise    -> putStrLn (warmSummary pkgs)
 dispatch mode Prime =
   runPrime "." >>= either (failCmd mode) putStr
 dispatch mode Onboard =

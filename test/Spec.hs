@@ -603,22 +603,30 @@ main = hspec $ do
 
   describe "warm / build --deps-only (vwn.1)" $ do
     it "parses warm and build --deps-only to the same closure-only command" $ do
-      parseArgs ["warm"] `shouldBe` Right (OutputFlags False False, Warm Nothing)
-      parseArgs ["warm", "--json"] `shouldBe` Right (OutputFlags True False, Warm Nothing)
-      parseArgs ["build", "--deps-only"] `shouldBe` Right (OutputFlags False False, Warm Nothing)
-      parseArgs ["build", "--deps-only", "--json"] `shouldBe` Right (OutputFlags True False, Warm Nothing)
+      parseArgs ["warm"] `shouldBe` Right (OutputFlags False False, Warm Nothing Nothing)
+      parseArgs ["warm", "--json"] `shouldBe` Right (OutputFlags True False, Warm Nothing Nothing)
+      parseArgs ["build", "--deps-only"] `shouldBe` Right (OutputFlags False False, Warm Nothing Nothing)
+      parseArgs ["build", "--deps-only", "--json"] `shouldBe` Right (OutputFlags True False, Warm Nothing Nothing)
+
+    it "threads --target through deps-only/warm instead of dropping it (zinc-hte)" $ do
+      -- the bug: `build --deps-only --target wasm32-wasi` discarded the target
+      -- and built Native. Both spellings must now carry the target.
+      parseArgs ["build", "--deps-only", "--target", "wasm32-wasi"]
+        `shouldBe` Right (OutputFlags False False, Warm Nothing (Just "wasm32-wasi"))
+      parseArgs ["warm", "--target", "wasm32-wasi"]
+        `shouldBe` Right (OutputFlags False False, Warm Nothing (Just "wasm32-wasi"))
 
     it "builds the closure only (empty for a depless workspace)" $ do
       let d = "/tmp/zinc-warm-test"
       createDirectoryIfMissing True d
       writeFileIn (d </> "zinc.toml") (renderWorkspace (WorkspaceManifest [] "9.6.5" []))
-      r <- runWarm nullSink d Nothing
+      r <- runWarm nullSink Native d Nothing
       r `shouldBe` Right []
 
     it "fails with NoZincToml outside a workspace" $ do
       let d = "/tmp/zinc-warm-nows"
       createDirectoryIfMissing True d
-      r <- runWarm nullSink d Nothing
+      r <- runWarm nullSink Native d Nothing
       either errorCode (const "ok") r `shouldBe` "ZINC_NO_ZINC_TOML"
 
   describe "writeFileIfChanged (zinc-k2i regression)" $ do
@@ -843,8 +851,8 @@ main = hspec $ do
     it "parses the `--ghc <version>` override on build and warm (ey4)" $ do
       parseArgs ["build", "--ghc", "9.10"] `shouldBe` Right (OutputFlags False False, Build Nothing (Just "9.10") Nothing)
       parseArgs ["build", "mylib", "--ghc", "9.8.2"] `shouldBe` Right (OutputFlags False False, Build (Just "mylib") (Just "9.8.2") Nothing)
-      parseArgs ["warm", "--ghc", "9.10"] `shouldBe` Right (OutputFlags False False, Warm (Just "9.10"))
-      parseArgs ["build", "--deps-only", "--ghc", "9.10"] `shouldBe` Right (OutputFlags False False, Warm (Just "9.10"))
+      parseArgs ["warm", "--ghc", "9.10"] `shouldBe` Right (OutputFlags False False, Warm (Just "9.10") Nothing)
+      parseArgs ["build", "--deps-only", "--ghc", "9.10"] `shouldBe` Right (OutputFlags False False, Warm (Just "9.10") Nothing)
 
     it "parses `new <name>` (flat default) and `new --workspace <name>`" $ do
       parseArgs ["new", "myapp"] `shouldBe` Right (OutputFlags False False, New "myapp" False)
