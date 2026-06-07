@@ -13,6 +13,8 @@ module Zinc.Diagnostic
   , ghcLocation
   , tomlLocation
   , toDiagnostic
+  , toDiagnostics
+  , manyErrors
   , renderError
   , humanError
   , rawToolOutput
@@ -76,6 +78,7 @@ data ZincError
   | DeployNotTrusted String           -- ^ user (not in the host's trusted-users)
   | DeployNoLinger String             -- ^ user (lingering disabled on the host)
   | DeployCopy String String          -- ^ host, detail (nix copy / profile install failed, zinc-nbk.2)
+  | ManyErrors [ZincError]            -- ^ several independent blockers reported together (zinc-91n.1); expanded to one diagnostic each at the boundary
   | OtherError String                 -- ^ escape hatch for not-yet-migrated messages
   deriving (Eq, Show)
 
@@ -189,6 +192,7 @@ errorCode e = case e of
   DeployNotTrusted {}    -> "ZINC_DEPLOY_NOT_TRUSTED"
   DeployNoLinger {}      -> "ZINC_DEPLOY_NO_LINGER"
   DeployCopy {}          -> "ZINC_DEPLOY_COPY"
+  ManyErrors {}          -> "ZINC_MANY_BLOCKERS"
   OtherError {}          -> "ZINC_ERROR"
 
 -- | The single boundary renderer: 'ZincError' to the agent-facing 'Diagnostic'.
@@ -283,8 +287,30 @@ toDiagnostic e =
       DeployNoLinger user ->
         ( "user lingering is disabled on the host", Just ("services for " ++ user ++ " will not run without an active login"), Nothing, Nothing
         , Just ("set `users.users." ++ user ++ ".linger = true` (`zinc deploy --init` prints the snippet)") )
+      ManyErrors es ->
+        -- A summary fallback; the boundary uses 'toDiagnostics' to surface each
+        -- blocker as its own diagnostic (zinc-91n.1).
+        ( show (length es) ++ " dependency blockers"
+        , Just (intercalate "; " (map (diagTitle . toDiagnostic) es))
+        , Nothing, Nothing
+        , Just "fix each blocker below and re-run — they are reported together so you can resolve them in one pass" )
       OtherError msg ->
         ( msg, Nothing, Nothing, Nothing, Nothing )
+
+-- | Flatten a 'ZincError' into the agent-facing diagnostics it represents: a
+-- 'ManyErrors' batch expands to one 'Diagnostic' per blocker (recursively), any
+-- other error is a singleton. The boundary (CLI failure path + @--json@ envelope)
+-- uses this so several closure blockers surface together (zinc-91n.1).
+toDiagnostics :: ZincError -> [Diagnostic]
+toDiagnostics (ManyErrors es) = concatMap toDiagnostics es
+toDiagnostics e               = [toDiagnostic e]
+
+-- | Combine accumulated blockers into one 'ZincError': a single error stays
+-- itself; several become a 'ManyErrors' batch; none is an empty batch (the
+-- caller should only invoke this when there is at least one).
+manyErrors :: [ZincError] -> ZincError
+manyErrors [e] = e
+manyErrors es  = ManyErrors es
 
 -- | The raw, untruncated tool output behind an error, when there is one — the
 -- full compiler stderr for a 'GhcCompile' failure (zinc-rxa). The human renderer
@@ -358,6 +384,7 @@ primaryMessage detail =
 -- parsing. 2 = usage/manifest, 3 = resolution/fetch, 4 = build, 5 = environment,
 -- 6 = integrity, 1 = other.
 exitCodeFor :: ZincError -> ExitCode
+exitCodeFor (ManyErrors es) = ExitFailure (maximum (1 : [c | e <- es, ExitFailure c <- [exitCodeFor e]]))
 exitCodeFor e = ExitFailure $ case e of
   NoZincToml {}          -> 2
   ManifestParse {}       -> 2

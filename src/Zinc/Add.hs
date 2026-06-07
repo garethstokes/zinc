@@ -25,7 +25,7 @@ import System.FilePath (takeDirectory, takeExtension, (</>))
 import Zinc.Cabal (parseCabalComponents)
 import Zinc.Closure (ClosureReport (crMembers, crNeedsVendoring), installedVersion, runClosure)
 import Zinc.Delta (ClosureDelta, closureDelta)
-import Zinc.Diagnostic (ZincError (DepNoGitRepo, ManifestParse, NoZincToml))
+import Zinc.Diagnostic (ZincError (DepNoGitRepo, ManifestParse, NoZincToml), manyErrors)
 import Zinc.Except (Result, failWith, failWithError, liftEitherE, liftIO, orFail, orFailE, runResult)
 import Zinc.Fetch (gitFetchManifest, isHpackOnly, packageDirIn, resolveRef)
 import Zinc.Fmt (mergeManifestDependencies)
@@ -101,9 +101,15 @@ systemLibsOf pkgDir = do
 -- | Bring every dep in the closure into the store at its ref — git clone, or a
 -- Hackage tarball fetch for a vendored pin (b1z) — capture its exact
 -- commit/version + content hash, and produce the lockfile entries.
--- Short-circuits on the first failure.
+-- Each dep freezes independently; ALL failures (e.g. no release tags, clone
+-- errors) are accumulated and reported together (zinc-91n.1), so a closure with
+-- several unfreezable deps is fixed in one pass rather than one re-run per dep.
 freezeClosure :: FilePath -> [(String, [(String, Bool)])] -> [ResolvedDep] -> IO (Either ZincError [LockedPackage])
-freezeClosure storeRoot flagsMap = runResult . traverse freezeOne
+freezeClosure storeRoot flagsMap closure = do
+  results <- mapM (runResult . freezeOne) closure
+  pure $ case [e | Left e <- results] of
+    []       -> Right [lp | Right lp <- results]
+    blockers -> Left (manyErrors blockers)
   where
     freezeOne :: ResolvedDep -> Result LockedPackage
     freezeOne dep = do

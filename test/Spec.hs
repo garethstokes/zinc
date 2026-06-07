@@ -26,7 +26,7 @@ import System.Process (readProcess)
 import Test.Hspec
 import System.Exit (ExitCode (..))
 import Zinc.CLI (Command (..), helpOverview, parseArgs)
-import Zinc.Diagnostic (Diagnostic (..), Severity (..), SourceLocation (..), ZincError (..), diagnosticJson, envelope, errorCode, exitCodeFor, ghcLocation, humanError, rawToolOutput, renderError, toDiagnostic, tomlLocation, zincVersion, zincVersionLine)
+import Zinc.Diagnostic (Diagnostic (..), Severity (..), SourceLocation (..), ZincError (..), diagnosticJson, envelope, errorCode, exitCodeFor, ghcLocation, humanError, rawToolOutput, renderError, toDiagnostic, toDiagnostics, tomlLocation, zincVersion, zincVersionLine)
 import Control.Concurrent.STM (atomically, modifyTVar', newTVarIO, readTVarIO)
 import Zinc.Closure (discoverRepos, parseDependsField, pkgNameOf)
 import Zinc.Ansi (greenBold, style)
@@ -1392,6 +1392,16 @@ main = hspec $ do
           , Dependency "hpke" (Vendored "0.1") Nothing [] []
           ])
         `shouldBe` [("colour", Vendored "2.3.6"), ("hpke", Vendored "0.1")]
+
+    it "accumulates ALL unresolvable blockers in one report, not just the first (zinc-91n.1)" $ do
+      -- 'app' (resolvable) pulls in base16 + colour, neither of which has a repo
+      -- anywhere (no registry, no discovery). The whole closure is walked and
+      -- BOTH are reported — fail-fast would surface only the first, forcing a
+      -- fix/re-run cycle per blocker (THE slog).
+      let fix = [("app", DepManifest [dep "base16" Latest, dep "colour" Latest] [])]
+          r = run fix [dep "app" Latest] [("app", "r/app")]
+      sort (either (map diagCode . toDiagnostics) (const []) r)
+        `shouldBe` ["ZINC_NO_REPO_IN_REGISTRY", "ZINC_NO_REPO_IN_REGISTRY"]
 
   describe "topoSort" $ do
     let rd n ds = ResolvedDep n ("r/" ++ n) Latest ds

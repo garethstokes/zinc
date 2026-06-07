@@ -16,9 +16,8 @@ module Zinc.Resolve
   ) where
 
 import Control.Monad (foldM)
-import Control.Monad.Trans.Except (ExceptT (ExceptT), runExceptT)
 import Data.Maybe (fromMaybe)
-import Zinc.Diagnostic (ZincError (NoRepoInRegistry, OtherError))
+import Zinc.Diagnostic (ZincError (NoRepoInRegistry, OtherError), manyErrors)
 import qualified Data.Map as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
@@ -57,12 +56,21 @@ resolve
   -> [Dependency]                                                 -- ^ root @[dependencies]@
   -> [(String, String)]                                           -- ^ root @[registry]@
   -> m (Either ZincError [ResolvedDep])
-resolve isBoot fetch discoverRepo pins rootDeps rootReg = runExceptT $ do
-  reqs <- ExceptT (resolveReqs rootReg "<workspace>" rootDeps)
-  go Map.empty reqs
+resolve isBoot fetch discoverRepo pins rootDeps rootReg = do
+  -- Walk the WHOLE closure, accumulating every blocker (no repo, fetch failure)
+  -- rather than failing on the first, so `zinc add` reports them all in one pass
+  -- instead of forcing a fix/re-run cycle per blocker (zinc-91n.1). An
+  -- unresolvable dep is recorded and its subtree skipped; resolvable branches
+  -- continue.
+  rootEithers <- resolveReqs rootReg "<workspace>" rootDeps
+  let rootBlockers = [(n, e) | (n, Left e) <- rootEithers]
+      rootReqs     = [r | (_, Right r) <- rootEithers]
+  (seen, blockers) <- go Map.empty (Set.fromList (map fst rootBlockers)) (map snd rootBlockers) rootReqs
+  pure $ if null blockers then Right (Map.elems seen) else Left (manyErrors (reverse blockers))
   where
-    -- Resolve a batch of (non-boot) deps to fetch requests; first failure wins.
-    resolveReqs reg parent = fmap sequence . traverse (toReq reg parent)
+    -- Resolve a batch of (non-boot) deps to fetch requests, paired with their
+    -- name so blockers can be deduped by name (one report line per dep).
+    resolveReqs reg parent = mapM (\d -> (,) (depName d) <$> toReq reg parent d)
 
     -- A dep's repo comes from the declaring package's own @[registry]@ first,
     -- then the root workspace registry, then — for real upstreams that carry no
@@ -87,19 +95,30 @@ resolve isBoot fetch discoverRepo pins rootDeps rootReg = runExceptT $ do
                   Just repo -> Right (Req name ref repo)
                   Nothing   -> Left (NoRepoInRegistry name parent)
 
-    go seen [] = pure (Map.elems seen)
-    go seen (Req name ref repo : rest)
-      | isBoot name            = go seen rest
-      | name `Map.member` seen = go seen rest -- one ref per name; first/root wins
+    -- @go seen blocked blockers worklist@: @seen@ the resolved nodes, @blocked@
+    -- the names already recorded as blockers (so a name reached via several
+    -- parents blocks once), @blockers@ the accumulated errors (newest first).
+    go seen _ blockers [] = pure (seen, blockers)
+    go seen blocked blockers (Req name ref repo : rest)
+      | isBoot name            = go seen blocked blockers rest
+      | name `Map.member` seen || name `Set.member` blocked = go seen blocked blockers rest -- one ref per name; first/root wins
       | otherwise = do
-          dm <- ExceptT (fetch name repo ref)
-          -- Exclude boot libs AND the package's own name: a package's .cabal can
-          -- list itself (internal sub-libraries, e.g. attoparsec), which is a
-          -- spurious self-edge, not a real closure dependency / build cycle.
-          let transitive = filter (\d -> depName d /= name && not (isBoot (depName d))) (dmDeps dm)
-              node = ResolvedDep name repo ref (map depName transitive)
-          newReqs <- ExceptT (resolveReqs (dmRegistry dm) name transitive)
-          go (Map.insert name node seen) (rest ++ newReqs)
+          r <- fetch name repo ref
+          case r of
+            -- Fetch failed (e.g. no release tags, clone error): record + skip its
+            -- subtree, but keep walking the rest of the closure (zinc-91n.1).
+            Left err -> go seen (Set.insert name blocked) (err : blockers) rest
+            Right dm -> do
+              -- Exclude boot libs AND the package's own name: a package's .cabal
+              -- can list itself (internal sub-libraries, e.g. attoparsec), which
+              -- is a spurious self-edge, not a real closure dependency / cycle.
+              let transitive = filter (\d -> depName d /= name && not (isBoot (depName d))) (dmDeps dm)
+                  node = ResolvedDep name repo ref (map depName transitive)
+              nameEithers <- resolveReqs (dmRegistry dm) name transitive
+              let newBlockers = [(n, e) | (n, Left e) <- nameEithers, not (n `Set.member` blocked), not (n `Map.member` seen)]
+                  newReqs     = [rq | (_, Right rq) <- nameEithers]
+                  blocked'    = foldr (Set.insert . fst) blocked newBlockers
+              go (Map.insert name node seen) blocked' (map snd newBlockers ++ blockers) (rest ++ newReqs)
 
 -- | Topologically sort a resolved closure so each package appears after all
 -- the in-closure dependencies it builds against (build order). Dependency

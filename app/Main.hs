@@ -12,7 +12,7 @@ import System.Process (CreateProcess (std_err, std_in, std_out), StdStream (Inhe
 import Zinc.Add (addInWorkspace, updateInWorkspace, vendorInWorkspace)
 import Zinc.CLI (Command (..), helpOverview, parseArgs)
 import Zinc.Closure (closureReportJson, renderClosure, runClosure)
-import Zinc.Diagnostic (ZincError, envelope, exitCodeFor, humanError, rawToolOutput, toDiagnostic, zincVersion, zincVersionLine)
+import Zinc.Diagnostic (ZincError, envelope, exitCodeFor, humanError, rawToolOutput, toDiagnostic, toDiagnostics, zincVersion, zincVersionLine)
 import Zinc.Delta (deltaJson, renderDelta)
 import Zinc.Deploy (ProbeChecks (..), ResolvedDeploy (..), deployReadyJson, dhHost, resolveDeploy, runDeploy, runInit)
 import Zinc.Docker (runDockerfile)
@@ -114,7 +114,9 @@ humanColor _ = False
 -- this path.)
 failCmd :: OutputMode -> ZincError -> IO ()
 failCmd mode e = do
-  hPutStrLn stderr (humanError (humanColor mode) (toDiagnostic e))
+  -- A batch of closure blockers (zinc-91n.1) prints one error block each, so the
+  -- user sees every blocker to fix in one pass rather than one per re-run.
+  mapM_ (hPutStrLn stderr . humanError (humanColor mode)) (toDiagnostics e)
   -- ZINC_VERBOSE: print the full, untruncated tool output (e.g. GHC's complete
   -- stderr) so a failure the concise caret view summarizes can be fully
   -- inspected — the package-id / module-not-found detail consumers need (rxa).
@@ -135,7 +137,7 @@ isVerbose = maybe False (not . null) <$> lookupEnv "ZINC_VERBOSE"
 emitIntrospection :: String -> OutputMode -> (a -> Json) -> (a -> String) -> Either ZincError a -> IO ()
 emitIntrospection cmd mode toJson toHuman r = case r of
   Left e
-    | machine mode -> putStrLn (renderJson (envelope cmd False Nothing Nothing [toDiagnostic e])) >> exitWith (exitCodeFor e)
+    | machine mode -> putStrLn (renderJson (envelope cmd False Nothing Nothing (toDiagnostics e))) >> exitWith (exitCodeFor e)
     | otherwise    -> failCmd mode e
   Right a
     | machine mode -> putStrLn (renderJson (envelope cmd True (Just (toJson a)) Nothing []))
