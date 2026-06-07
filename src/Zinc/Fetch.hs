@@ -25,7 +25,7 @@ import Zinc.Cabal (cabalBuildType, parseCabalComponentsForPlatform)
 import Zinc.Diagnostic (ZincError (BuildTypeCustom, NoReleaseTags, OtherError))
 import Zinc.Except (failWith, failWithError, liftEither, liftIO, orFail, orFailE, runResult)
 import Zinc.Git (cloneAt, listTags, splitRepoSubdir)
-import Zinc.Hackage (fetchHackageTarball, hackageCabal, hackageLatestVersion)
+import Zinc.Hackage (fetchHackageTarball, hackageCabal, hackagePreferredVersion)
 import Zinc.Manifest (Component (compDepends, compKind), ComponentKind (Library), Dependency (..), Ref (..), parseDependencies)
 import Zinc.Resolve (DepManifest (..))
 import Zinc.Version (newestTagFor, newestVersionFor, parseVersion)
@@ -220,13 +220,16 @@ chooseLatestRef mtag mhackage = case mhackage of
     | otherwise              -> Latest
 
 -- | Resolve a @Latest@ ref to a concrete ref, preferring a newer Hackage release
--- over a stale newest git tag (zinc-ngd via 'chooseLatestRef'). Consults Hackage
--- for the latest version and the repo for its newest release tag; non-@Latest@
--- refs are returned unchanged. Best-effort: any lookup miss falls back to
--- 'Latest' (git), preserving the prior behavior.
+-- over a stale newest git tag (zinc-ngd via 'chooseLatestRef'). The Hackage
+-- candidate is the newest NON-DEPRECATED release ('hackagePreferredVersion'),
+-- not the absolute latest — a deprecated release (e.g. @network-uri 2.7.0.0@,
+-- which GHC 9.6 rejects) is one Hackage flags as broken on current GHCs, so
+-- preferring it would overshoot to a version that won't build (zinc-22z).
+-- Consults the repo for its newest release tag; non-@Latest@ refs are returned
+-- unchanged. Best-effort: any lookup miss falls back to 'Latest' (git).
 preferHackageForLatest :: String -> String -> Ref -> IO Ref
 preferHackageForLatest name repo Latest = do
-  mhs <- hackageLatestVersion name
+  mhs <- hackagePreferredVersion name
   case (\hs -> (,) hs <$> parseVersion hs) =<< mhs of
     Nothing -> pure Latest -- no Hackage release (or unparseable): keep git
     Just (hs, hv) -> do

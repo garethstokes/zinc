@@ -10,14 +10,19 @@ module Zinc.Hackage
   , hackageTarballUrl
   , fetchHackageTarball
   , hackageLatestVersion
+  , hackagePreferredVersion
+  , newestNormalVersion
   ) where
 
 import Control.Applicative ((<|>))
 import Control.Monad (when)
 import Data.Char (isSpace, toLower)
 import qualified Data.ByteString.Char8 as BS
-import Data.Maybe (listToMaybe)
-import Data.List (dropWhileEnd, isInfixOf, isPrefixOf, stripPrefix)
+import Data.Maybe (isJust, listToMaybe)
+import Data.List (dropWhileEnd, isInfixOf, isPrefixOf, maximumBy, stripPrefix)
+import Data.Ord (comparing)
+import Zinc.Json (Json (JObject, JString), parseJson)
+import Zinc.Version (parseVersion)
 import Distribution.PackageDescription (homepage, packageDescription, sourceRepos)
 import Distribution.PackageDescription.Parsec (parseGenericPackageDescription, runParseResult)
 import Distribution.Types.SourceRepo (RepoKind (RepoHead), SourceRepo (repoKind, repoLocation, repoSubdir))
@@ -148,6 +153,36 @@ hackageLatestVersion pkg = do
         , let v = dropWhileEnd isSpace (dropWhile (== ' ') (drop 1 rest))
         , not (null v)
         ]
+
+-- | The Hackage per-package version index URL (@\<pkg\>.json@): a flat object
+-- @{"\<version\>": "normal" | "deprecated", ...}@.
+hackageVersionsUrl :: String -> String
+hackageVersionsUrl pkg = "https://hackage.haskell.org/package/" ++ pkg ++ ".json"
+
+-- | The newest NON-DEPRECATED version in a Hackage @\<pkg\>.json@ index
+-- (zinc-22z). Pure, so it's testable without the network. 'Nothing' if the JSON
+-- doesn't parse or no @normal@ version does.
+newestNormalVersion :: String -> Maybe String
+newestNormalVersion src = case parseJson src of
+  Right (JObject kvs) ->
+    case [v | (v, JString status) <- kvs, status /= "deprecated", isJust (parseVersion v)] of
+      []      -> Nothing
+      normals -> Just (maximumBy (comparing parseVersion) normals)
+  _ -> Nothing
+
+-- | The newest BUILD-COMPATIBLE version of a package on Hackage (zinc-22z): the
+-- highest version NOT marked @deprecated@ in the version index. Hackage
+-- maintainers deprecate a release that no longer builds on current GHCs (e.g.
+-- @network-uri 2.7.0.0@, which GHC 9.6 rejects), so this avoids ngd overshooting
+-- to an absolute-latest that won't compile — the plain @\<pkg\>.cabal@ endpoint
+-- (used by 'hackageLatestVersion') serves the highest version REGARDLESS of
+-- deprecation. 'Nothing' if the fetch fails or nothing parses.
+hackagePreferredVersion :: String -> IO (Maybe String)
+hackagePreferredVersion pkg = do
+  (code, out, _) <- readProcessWithExitCode "curl" ["-fsSL", hackageVersionsUrl pkg] ""
+  pure $ case code of
+    ExitSuccess   -> newestNormalVersion out
+    ExitFailure _ -> Nothing
 
 -- | URL of a package's sdist tarball (@\<name\>-\<version\>.tar.gz@) on Hackage —
 -- the vendoring source (b1z, design s2). Pinned by sha256 at vendor time;

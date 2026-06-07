@@ -70,7 +70,7 @@ import Zinc.Introspect (DepStatus (..), explainJson, graphJson, runStatus, statu
 import Zinc.Prime (onboardText, primeText)
 import Zinc.Json (Json (..), parseJson, renderJson)
 import Zinc.Git (cloneAt, gitEnv, gitInitIfNeeded, isInsideRepo, listTags, splitRepoSubdir)
-import Zinc.Hackage (hackageCabalUrl, hackageTarballUrl, sourceRepoOf)
+import Zinc.Hackage (hackageCabalUrl, hackageTarballUrl, newestNormalVersion, sourceRepoOf)
 import Zinc.Outdated (OutdatedDep (..), Status (..), classify)
 import Zinc.Quirks (quirkGhcOptions)
 import Zinc.Package (PackageFormat (..), dockerImageRef, formatName, packagingFlake, parsePackageFormat, storePathRefs)
@@ -1648,6 +1648,19 @@ main = hspec $ do
 
     it "keeps Latest (git) when the package has no Hackage release" $
       chooseLatestRef (Just [0, 17]) Nothing `shouldBe` Latest
+
+  describe "newestNormalVersion — skip Hackage-deprecated releases (zinc-22z)" $ do
+    it "picks the newest NON-deprecated version (network-uri: 2.6.4.2, not deprecated 2.7.0.0)" $
+      newestNormalVersion "{\"2.6.4.1\":\"normal\",\"2.6.4.2\":\"normal\",\"2.7.0.0\":\"deprecated\"}"
+        `shouldBe` Just "2.6.4.2"
+
+    it "ignores deprecation order in the JSON and compares versions numerically" $
+      newestNormalVersion "{\"2.10.0\":\"normal\",\"2.2.0\":\"normal\",\"2.9.0\":\"deprecated\"}"
+        `shouldBe` Just "2.10.0"
+
+    it "is Nothing when every version is deprecated or the JSON is unparseable" $ do
+      newestNormalVersion "{\"1.0\":\"deprecated\"}" `shouldBe` Nothing
+      newestNormalVersion "not json" `shouldBe` Nothing
 
   describe "Zinc.Outdated.classify (90j.1)" $ do
     it "flags a newer version, distinguishing minor from major jumps" $ do
