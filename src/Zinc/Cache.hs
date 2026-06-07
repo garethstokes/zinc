@@ -3,8 +3,10 @@
 -- compiles once per machine and branch-switching reuses builds.
 module Zinc.Cache
   ( BuildKey (..)
+  , confCodegenEpoch
   , buildCacheKey
   , buildCacheKeyFor
+  , cacheKeyPayload
   , storePkgPath
   , storeConfPath
   , cacheHit
@@ -29,6 +31,28 @@ data BuildKey = BuildKey
   }
   deriving (Eq, Show)
 
+-- | The conf-generation epoch: a manual version of zinc's @package.conf@
+-- derivation (what 'Zinc.Build.renderConf' + the 'PackageConf' it's fed
+-- contain). It is folded into every cache key, so bumping it invalidates ALL
+-- cached store entries.
+--
+-- WHY this exists (zinc-bie): the rest of 'BuildKey' describes the SOURCE and
+-- how it's invoked (rev, deps, ghc, options, flags) — NOT zinc's logic for
+-- turning that source into a @.conf@. So when a zinc change makes the generated
+-- conf carry new content for an UNCHANGED source — reexports (zinc-0k7),
+-- extra-libraries / system-libs (zinc-389) — the key was unchanged and the
+-- stale cached conf was silently re-registered, forcing a manual store purge.
+-- The epoch is the missing input.
+--
+-- BUMP THIS whenever a change alters the generated conf for an unchanged source
+-- (a new 'PackageConf' field, a 'renderConf' format change, a change to how a
+-- field is derived from the .cabal/.toml). Coarse by design — a bump also
+-- re-fetches + recompiles the artifact, not just the cheap conf; that one-time
+-- cost on upgrade buys correctness without a per-build source re-parse (the
+-- finer split is a future optimization, see zinc-bie option 2).
+confCodegenEpoch :: String
+confCodegenEpoch = "1"
+
 -- | A stable cache key (sha256 hex) over the build inputs. The package name is
 -- part of the key: a monorepo's sub-packages share one commit (and often the
 -- same deps/options), so without it @effectful@ and @effectful-core@ would
@@ -42,25 +66,34 @@ buildCacheKey = buildCacheKeyFor Native
 -- @~\/.zinc\/store@ holds both. @Native@ appends nothing, so its key (and every
 -- existing native artifact) is byte-identical: no cache invalidation.
 buildCacheKeyFor :: Target -> BuildKey -> String
-buildCacheKeyFor target bk = showDigest (sha256 (BL8.pack payload))
+buildCacheKeyFor target bk = showDigest (sha256 (BL8.pack (cacheKeyPayload target bk)))
+
+-- | The exact pre-hash material a cache key is computed from (the @\\0@-joined
+-- inputs). Exposed so the keyed inputs — including the conf-codegen epoch
+-- (zinc-bie) — are inspectable/testable without recomputing the digest.
+cacheKeyPayload :: Target -> BuildKey -> String
+cacheKeyPayload target bk =
+  intercalate "\0" $
+    [ bkName bk
+    , bkRev bk
+    , bkGhcVersion bk
+    , intercalate "," (sort (bkDepUnitIds bk))
+    , intercalate "," (sort (bkOptions bk))
+    , -- Manual cabal flags (zinc-iaj.2): a flag can toggle build-depends /
+      -- ghc-options (e.g. postgresql-libpq's @use-pkg-config@), so flipping
+      -- one must serve a fresh artifact, not the one built with the old
+      -- assignment. Rendered deterministically (sorted name=bool) so order
+      -- never changes the key.
+      intercalate "," (sort ["flag:" ++ n ++ "=" ++ boolStr v | (n, v) <- bkFlags bk])
+    , -- The conf-generation epoch (zinc-bie): bumping it invalidates every
+      -- cached entry so a conf-codegen change can't silently reuse a stale
+      -- package.conf for an unchanged source.
+      "codegen:" ++ confCodegenEpoch
+    ]
+      ++ case target of
+        Native -> []
+        _      -> ["target:" ++ targetTriple target]
   where
-    payload =
-      intercalate "\0" $
-        [ bkName bk
-        , bkRev bk
-        , bkGhcVersion bk
-        , intercalate "," (sort (bkDepUnitIds bk))
-        , intercalate "," (sort (bkOptions bk))
-        , -- Manual cabal flags (zinc-iaj.2): a flag can toggle build-depends /
-          -- ghc-options (e.g. postgresql-libpq's @use-pkg-config@), so flipping
-          -- one must serve a fresh artifact, not the one built with the old
-          -- assignment. Rendered deterministically (sorted name=bool) so order
-          -- never changes the key.
-          intercalate "," (sort ["flag:" ++ n ++ "=" ++ boolStr v | (n, v) <- bkFlags bk])
-        ]
-          ++ case target of
-            Native -> []
-            _      -> ["target:" ++ targetTriple target]
     boolStr b = if b then "true" else "false"
 
 -- | Location of a cached built package within the store.

@@ -86,7 +86,7 @@ import Zinc.Fetch (gitFetchManifest, isHpackOnly, namedCabal, packageDirIn)
 import Zinc.GC (GCRoot (..), gcStore, runGc)
 import Zinc.Add (enrichWithRepos, freezeClosure, lockEntry, runAdd, runUpdate, runVendor, splitNameVersion, vendoredSoftPins)
 import Zinc.Build (GhcInvocation (..), LibBuild (..), MemberBuild (..), PackageConf (..), archiveArgs, buildLib, buildMember, discoverModules, externalInterpFlags, ghcMakeArgs, initPackageDb, installedVersions, memberBuildDir, packageFlags, ppCommand, preprocessorFor, reactorLinkFlags, registeredExposedMatches, registerPackage, renderConf, replArgs, runPreprocessor, wasmSupported, writeFileIfChanged, zincBuiltUnitIds)
-import Zinc.Cache (BuildKey (..), buildCacheKey, buildCacheKeyFor, cacheHit, storeConfPath, storePkgPath, writeCachedConf)
+import Zinc.Cache (BuildKey (..), buildCacheKey, buildCacheKeyFor, cacheHit, cacheKeyPayload, confCodegenEpoch, storeConfPath, storePkgPath, writeCachedConf)
 import Zinc.Cabal (bootConflicts, cabalBuildType, cabalVersion, parseCabalComponents, parseCabalComponentsForGhc, parseCabalComponentsForPlatform)
 import Distribution.System (Arch (Wasm32), OS (Wasi), Platform (Platform), buildPlatform)
 import Zinc.Env (devEnvVars, envCacheKey, envCacheKeyFor, nixPrintDevEnv, provisionEnv, toolchainPath, toolchainVars)
@@ -2525,6 +2525,16 @@ main = hspec $ do
       let bk = BuildKey "pkg" "abc" "9.6.5" ["base-4"] ["-O2"] []
       buildCacheKeyFor Native bk `shouldBe` buildCacheKey bk -- native: no cache invalidation
       (buildCacheKeyFor Wasm32Wasi bk == buildCacheKey bk) `shouldBe` False -- wasm never collides with native
+
+    it "folds the conf-codegen epoch into the keyed inputs (zinc-bie)" $ do
+      -- The epoch is part of the material the key is hashed from, for every
+      -- target — so bumping it (a conf-generation change for unchanged source)
+      -- changes the key and a stale cached package.conf can't be reused.
+      let bk = BuildKey "pkg" "abc" "9.6.5" ["base-4"] ["-O2"] []
+      ("codegen:" ++ confCodegenEpoch) `isInfixOf` cacheKeyPayload Native bk `shouldBe` True
+      ("codegen:" ++ confCodegenEpoch) `isInfixOf` cacheKeyPayload Wasm32Wasi bk `shouldBe` True
+      -- and the hashed key reflects that payload (the digest of the payload)
+      cacheKeyPayload Native bk /= cacheKeyPayload Wasm32Wasi bk `shouldBe` True
 
     it "lays out the package store path" $
       storePkgPath "/store" "deadbeef" `shouldBe` "/store/pkg/deadbeef"
