@@ -39,7 +39,7 @@ import Control.Monad (unless, when)
 import Data.List (find, intercalate, isInfixOf, isPrefixOf, nub, sort)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getModificationTime, listDirectory, makeAbsolute)
 import System.Exit (ExitCode (..))
-import System.FilePath (dropExtension, makeRelative, takeDirectory, takeExtension, (-<.>), (<.>), (</>))
+import System.FilePath (dropExtension, makeRelative, splitDirectories, takeDirectory, takeExtension, (-<.>), (<.>), (</>))
 import System.IO (readFile')
 import System.Process (CreateProcess (cwd), proc, readCreateProcessWithExitCode, readProcessWithExitCode)
 import Zinc.Diagnostic (ZincError (GhcCompile, OtherError, WasmUnsupported))
@@ -449,7 +449,15 @@ buildLibArtifactsFor target lb = runResult $ do
   -- Generate sources from any .x/.y/.hsc the dep ships (e.g. toml-parser's
   -- alex/happy lexer+parser) so ghc --make finds the resulting .hs modules,
   -- then compile and archive. orFail short-circuits on the first failure.
-  orFail (runPreprocessorsTo target ["-I" ++ (lbMemberDir lb </> d) | d <- compIncludeDirs comp] ppGen (map (lbMemberDir lb </>) srcDirs))
+  -- hsc2hs compiles a C program that may use MIN_VERSION_<dep>/VERSION_<dep> CPP
+  -- macros (e.g. network's Flag.hsc: @#if !(MIN_VERSION_base(4,11,0))@). GHC
+  -- auto-generates these for @ghc --make@, but the preprocessor's cc step has no
+  -- such help, so emit a macros header covering this package's deps and -include
+  -- it ahead of every .hsc compile (zinc-bxw.4).
+  let hscMacros = gen </> "hsc_macros.h"
+  _ <- liftIO $ writeFileIfChanged hscMacros $
+    emitCabalMacros [(d, depVersion d) | d <- nub ("base" : compDepends comp)]
+  orFail (runPreprocessorsTo target (["-I" ++ (lbMemberDir lb </> d) | d <- compIncludeDirs comp] ++ ["-include", hscMacros]) (if null (compModules comp) then Nothing else Just modules) ppGen (map (lbMemberDir lb </>) srcDirs))
   -- Run in the package source root so package-relative TH file splices resolve.
   orFailE (runGhcInFor (Just (lbMemberDir lb)) target (lbName lb) compileArgs)
   -- C sources (cabal c-sources, e.g. primitive's cbits/primitive-memops.c) are
@@ -595,11 +603,21 @@ preprocessableUnder root = do
 -- would change its hash and fail the lock's sha256 check on the next build
 -- (zinc-c3g). @genRoot@ must be on ghc's @-i@ search path so the generated
 -- modules are found. First failure wins.
-runPreprocessorsTo :: Target -> [String] -> FilePath -> [FilePath] -> IO (Either String ())
-runPreprocessorsTo target cflags genRoot dirs = do
+-- @mAllow@ restricts preprocessing to files whose derived module name is in the
+-- list (the component's finalized modules). A cabal dependency selects its
+-- modules by platform (@network@'s @Network.Socket.Win32.*@ live only under
+-- @if os(windows)@), so on Linux those @.hsc@ must NOT be preprocessed — hsc2hs
+-- would choke on Win32-only identifiers (zinc-bxw.3). @Nothing@ preprocesses
+-- everything (a zinc-native package auto-discovers .hs and lists no modules).
+runPreprocessorsTo :: Target -> [String] -> Maybe [String] -> FilePath -> [FilePath] -> IO (Either String ())
+runPreprocessorsTo target cflags mAllow genRoot dirs = do
   pairs <- concat <$> mapM (\d -> map ((,) d) <$> preprocessableUnder d) dirs
-  go pairs
+  go (filter inBuild pairs)
   where
+    inBuild (dir, f) = case mAllow of
+      Nothing    -> True
+      Just allow -> moduleNameOf dir f `elem` allow
+    moduleNameOf dir f = intercalate "." (splitDirectories (dropExtension (makeRelative dir f)))
     go [] = pure (Right ())
     go ((dir, f) : rest) =
       let out = genRoot </> (makeRelative dir f -<.> "hs")

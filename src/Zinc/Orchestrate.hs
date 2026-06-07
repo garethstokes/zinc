@@ -47,6 +47,7 @@ import System.Process (callProcess, readProcess, readProcessWithExitCode)
 import Zinc.Build (LibBuild (..), MemberBuild (..), buildLibArtifactsFor, buildLibFor, buildMemberFor, initPackageDb, initPackageDbFor, installedVersionsFor, isRegistered, registeredExposedMatches, registerPackage, replArgs)
 import Zinc.Cabal (bootConflicts, cabalBuildType, cabalVersion, parseCabalComponentsForPlatform)
 import Zinc.Cache (BuildKey (..), buildCacheKey, buildCacheKeyFor, storeConfPath, storePkgPath)
+import Zinc.Configure (configureComponent)
 import Zinc.Target (Target (Native), isWasm)
 import Distribution.System (Arch (Wasm32), OS (Wasi), Platform (Platform), buildPlatform)
 import Zinc.CacheBackend (CacheBackend (cbPull, cbPush), CacheConfig (ccReadUrls, ccWriteUrl), PullOutcome (Pulled), httpBackend, resolveCacheConfig)
@@ -469,8 +470,17 @@ buildClosure sink target wsDir storeRoot wsDb ghcVersion buildOpts mAcc = runRes
           -- Apply any per-dependency build overrides (extra ghc flags,
           -- e.g. -XSafe) from the workspace [build-options].
           let lib' = lib {compGhcOptions = compGhcOptions lib ++ overrideFor l}
+          -- bxw.2: a build-type:Configure dep (e.g. network) needs ./configure
+          -- run to generate its system-probed headers (HsNetworkConfig.h) before
+          -- the .hsc preprocess. Run it from the Hackage sdist (the git checkout
+          -- ships only configure.ac) and fold the generated include dir into the
+          -- component. Skipped for wasm, where a Configure/C dep is unsupported.
+          lib2 <-
+            if isWasm target
+              then pure lib'
+              else orFail (configureComponent (lockName l) version pkgDir pkgOut lib')
           liftIO (emit sink (CompileStart (lockName l)))
-          built <- liftIO (accuminto mAcc "compile" (buildLibArtifactsFor target (LibBuild pkgDir pkgOut wsDb (lockName l) version lib')))
+          built <- liftIO (accuminto mAcc "compile" (buildLibArtifactsFor target (LibBuild pkgDir pkgOut wsDb (lockName l) version lib2)))
           case built of
             Right (conf, _) -> pure (report Built, Just (lockName l, pkgOut, conf))
             -- sib: cabal version bounds are ADVISORY (GHC ignores them), so we

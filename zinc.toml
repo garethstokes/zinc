@@ -27,7 +27,7 @@ depends = ["base", "process", "zinc"]
 [build.test.spec]
 source-dirs = ["test"]
 main = "Spec.hs"
-depends = ["base", "directory", "filepath", "process", "zinc", "hspec"]
+depends = ["base", "Cabal", "directory", "filepath", "process", "stm", "zinc", "hspec"]
 
 # Whole non-boot closure pinned by rev to the versions GHC/Nix ships zinc
 # against (so zinc's own source compiles). Boot libs incl. Cabal come from GHC.
