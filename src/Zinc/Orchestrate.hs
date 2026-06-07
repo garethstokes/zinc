@@ -45,9 +45,10 @@ import System.Exit (ExitCode (..))
 import System.FilePath (takeExtension, takeFileName, (</>))
 import System.Process (callProcess, readProcess, readProcessWithExitCode)
 import Zinc.Build (LibBuild (..), MemberBuild (..), buildLibArtifactsFor, buildLibFor, buildMemberFor, initPackageDb, initPackageDbFor, installedVersionsFor, isRegistered, registeredExposedMatches, registerPackage, replArgs)
-import Zinc.Cabal (bootConflicts, cabalBuildType, cabalVersion, parseCabalComponentsForGhc)
+import Zinc.Cabal (bootConflicts, cabalBuildType, cabalVersion, parseCabalComponentsForPlatform)
 import Zinc.Cache (BuildKey (..), buildCacheKey, buildCacheKeyFor, storeConfPath, storePkgPath)
-import Zinc.Target (Target (Native))
+import Zinc.Target (Target (Native), isWasm)
+import Distribution.System (Arch (Wasm32), OS (Wasi), Platform (Platform), buildPlatform)
 import Zinc.CacheBackend (CacheBackend (cbPull, cbPush), CacheConfig (ccReadUrls, ccWriteUrl), PullOutcome (Pulled), httpBackend, resolveCacheConfig)
 import Zinc.Quirks (quirkGhcOptions)
 import Zinc.Fetch (packageDirIn)
@@ -558,7 +559,10 @@ buildClosure sink target wsDir storeRoot wsDb ghcVersion buildOpts mAcc = runRes
               src <- readFile (dest </> cabal)
               pure $ case cabalBuildType src of
                 Right "Custom" -> Left "build-type: Custom (Setup.hs) is not supported yet"
-                _ -> case parseCabalComponentsForGhc ghcVersion src of
+                -- Finalize against the build TARGET's platform so arch(wasm32)
+                -- conditionals resolve for a wasm build (zinc-xum) — a host-only
+                -- finalize would pick a dep's vanilla (non-wasm) variant.
+                _ -> case parseCabalComponentsForPlatform (if isWasm target then Platform Wasm32 Wasi else buildPlatform) ghcVersion src of
                   Left err -> Left err
                   Right cs -> Right (either (const "0") id (cabalVersion src), cs)
             [] -> pure (Left "no zinc.toml or .cabal")

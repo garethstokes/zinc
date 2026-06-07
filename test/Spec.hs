@@ -86,7 +86,8 @@ import Zinc.GC (GCRoot (..), gcStore, runGc)
 import Zinc.Add (enrichWithRepos, freezeClosure, lockEntry, runAdd, runUpdate, runVendor, splitNameVersion)
 import Zinc.Build (GhcInvocation (..), LibBuild (..), MemberBuild (..), PackageConf (..), archiveArgs, buildLib, buildMember, ghcMakeArgs, initPackageDb, installedVersions, ppCommand, preprocessorFor, reactorLinkFlags, registeredExposedMatches, registerPackage, renderConf, replArgs, runPreprocessor, wasmSupported, writeFileIfChanged)
 import Zinc.Cache (BuildKey (..), buildCacheKey, buildCacheKeyFor, cacheHit, storeConfPath, storePkgPath, writeCachedConf)
-import Zinc.Cabal (bootConflicts, cabalBuildType, cabalVersion, parseCabalComponents, parseCabalComponentsForGhc)
+import Zinc.Cabal (bootConflicts, cabalBuildType, cabalVersion, parseCabalComponents, parseCabalComponentsForGhc, parseCabalComponentsForPlatform)
+import Distribution.System (Arch (Wasm32), OS (Wasi), Platform (Platform), buildPlatform)
 import Zinc.Env (devEnvVars, envCacheKey, envCacheKeyFor, nixPrintDevEnv, provisionEnv, toolchainPath, toolchainVars)
 import Zinc.Macros (emitCabalMacros)
 import Zinc.Nix (generateFlake, generateFlakeFor)
@@ -3469,6 +3470,26 @@ main = hspec $ do
               ]
       fmap (concatMap compReexports . filter ((== Library) . compKind)) (parseCabalComponents cabal)
         `shouldBe` Right [("Effectful", Nothing, "Effectful"), ("Renamed", Nothing, "Orig")]
+
+  describe "Zinc.Cabal platform finalization (xum)" $
+    -- A wasm build must finalize against Platform Wasm32 Wasi so arch(wasm32)
+    -- conditionals pick a package's wasm variant (e.g. miso's ffi/wasm +
+    -- ghc-experimental), not the host's vanilla one.
+    it "resolves arch(wasm32) conditionals for the wasm platform only" $ do
+      let cabal =
+            unlines
+              [ "cabal-version: 2.2"
+              , "name: p"
+              , "version: 1.0"
+              , "library"
+              , "  build-depends: base"
+              , "  if arch(wasm32)"
+              , "    build-depends: ghc-experimental"
+              , "  default-language: Haskell2010"
+              ]
+          deps plat = either (const []) (concatMap compDepends . filter ((== Library) . compKind)) (parseCabalComponentsForPlatform plat "9.6.5" cabal)
+      ("ghc-experimental" `elem` deps buildPlatform, "ghc-experimental" `elem` deps (Platform Wasm32 Wasi))
+        `shouldBe` (False, True)
 
   describe "Zinc.Build wasm support gate (9po.3, 90t)" $ do
     let pureLib =

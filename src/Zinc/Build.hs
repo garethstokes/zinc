@@ -231,12 +231,18 @@ data MemberBuild = MemberBuild
 -- base). zinc-built deps are pinned by their exact unit-id via @-package-id@
 -- (their unit-id is the bare package name), so a same-named package in GHC's
 -- global db — e.g. a Nix-provided @ansi-terminal-types@ — cannot shadow the
--- version zinc actually built. Boot libs resolve from the global db by name.
-packageFlags :: [String] -> [String]
-packageFlags deps = concatMap flag (nub ("base" : deps))
+-- version zinc actually built. A dep the toolchain itself provides resolves from
+-- the global db by name (@-package@): boot libs, and any other bundled library
+-- the cross toolchain ships whose unit-id is HASHED — e.g. the wasm GHC's
+-- @ghc-experimental@, where @-package-id ghc-experimental@ (bare) cannot match
+-- @ghc-experimental-<ver>-<hash>@ (zinc-xum). @toolchain@ is the toolchain's
+-- package names (from 'installedVersionsFor'); empty falls back to boot-list-only
+-- detection (the native repl, where bare ids hold).
+packageFlags :: [String] -> [String] -> [String]
+packageFlags toolchain deps = concatMap flag (nub ("base" : deps))
   where
     flag d
-      | isBootLib d = ["-package", d]
+      | isBootLib d || d `elem` toolchain = ["-package", d]
       | otherwise = ["-package-id", d]
 
 -- | Compile + link a member executable with @ghc --make@, returning the
@@ -254,6 +260,9 @@ buildMemberFor target mb = runResult $ do
   let comp = mbComponent mb
   orFailE (pure (wasmSupported target comp))
   liftIO (createDirectoryIfMissing True (mbBuildDir mb))
+  -- Toolchain-provided packages (boot + bundled, e.g. the wasm GHC's
+  -- ghc-experimental) resolve by name; only zinc-built deps take -package-id.
+  installed <- liftIO (installedVersionsFor target)
   -- A wasm exe with a non-empty wasm-exports is a browser REACTOR module
   -- (zinc-9po.5): no hs-main, the reactor exec-model, and the listed symbols
   -- exported (the linker dead-code-elims anything unexported). Otherwise it is a
@@ -266,7 +275,7 @@ buildMemberFor target mb = runResult $ do
         ["--make", "-j"]
           ++ maybe [] (\db -> ["-package-db", db]) (mbPackageDb mb)
           ++ ["-hide-all-packages"]
-          ++ packageFlags (compDepends comp)
+          ++ packageFlags (map fst installed) (compDepends comp)
           ++ map (\d -> "-i" ++ (mbMemberDir mb </> d)) srcDirs
           ++ map ("-X" ++) (compExtensions comp)
           ++ compGhcOptions comp
@@ -377,16 +386,18 @@ buildLibArtifactsFor target lb = runResult $ do
   installed <- liftIO (installedVersionsFor target)
   bootUnitIds <- liftIO (installedUnitIdsFor target)
   let depVersion d = fromMaybe [0] (lookup d installed)
+      toolchainNames = map fst installed
       -- A direct dep's id for the conf's @depends@ (drives a dependent's
-      -- linking): zinc-built deps by bare name (their unit-id); non-base boot
-      -- libs by their real installed unit-id, queried from the target toolchain.
-      -- A stock GHC hashes boot-lib unit-ids (the wasm cross GHC's @bytestring@
-      -- is @bytestring-0.12.2.0-2834@), so a synthesized @name-version@ won't
-      -- match and a dependent reports the package "unusable due to missing
-      -- dependencies" (zinc-90t). Fall back to @name-version@ when the lookup
-      -- misses. base is omitted — it is always linked via -package base.
+      -- linking): zinc-built deps by bare name (their unit-id); a TOOLCHAIN-
+      -- provided dep (boot or bundled, i.e. present in the target's global db) by
+      -- its real installed unit-id. A stock GHC hashes those unit-ids (the wasm
+      -- cross GHC's @bytestring@ is @bytestring-0.12.2.0-2834@, @ghc-experimental@
+      -- likewise), so a synthesized @name-version@ won't match and a dependent
+      -- reports the package "unusable due to missing dependencies" (zinc-90t).
+      -- Fall back to @name-version@ when the lookup misses. base is omitted — it
+      -- is always linked via -package base.
       depConfId d
-        | isBootLib d = fromMaybe (d ++ "-" ++ intercalate "." (map show (depVersion d))) (lookup d bootUnitIds)
+        | d `elem` toolchainNames = fromMaybe (d ++ "-" ++ intercalate "." (map show (depVersion d))) (lookup d bootUnitIds)
         | otherwise = d
   -- Emit cabal_macros.h for the package's OWN version only. GHC 8.0+
   -- auto-generates VERSION_<dep>/MIN_VERSION_<dep> for every -package dep, so
@@ -410,7 +421,7 @@ buildLibArtifactsFor target lb = runResult $ do
   let modules = nub (discovered ++ [pathsMod])
       compileArgs =
         ["--make", "-j", "-hide-all-packages", "-package-db", lbPackageDb lb]
-          ++ packageFlags (compDepends comp)
+          ++ packageFlags (map fst installed) (compDepends comp)
           ++ map (\d -> "-i" ++ (lbMemberDir lb </> d)) srcDirs
           ++ ["-i" ++ gen, "-i" ++ ppGen, "-optP-include", "-optP" ++ macrosHeader]
           -- C-header search dirs (cabal include-dirs) so CPP #include of the
@@ -594,7 +605,7 @@ replArgs :: Maybe FilePath -> FilePath -> Component -> [String]
 replArgs packageDb memberDir comp =
   maybe [] (\db -> ["-package-db", db]) packageDb
     ++ ["-hide-all-packages"]
-    ++ packageFlags (compDepends comp)
+    ++ packageFlags [] (compDepends comp)
     ++ map (\d -> "-i" ++ (memberDir </> d)) srcDirs
     ++ map ("-X" ++) (compExtensions comp)
     ++ compGhcOptions comp

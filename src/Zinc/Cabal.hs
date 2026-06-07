@@ -8,6 +8,7 @@
 module Zinc.Cabal
   ( parseCabalComponents
   , parseCabalComponentsForGhc
+  , parseCabalComponentsForPlatform
   , cabalBuildType
   , cabalVersion
   , bootConflicts
@@ -49,7 +50,7 @@ import Distribution.PackageDescription
 import Distribution.PackageDescription.Configuration (finalizePD)
 import Distribution.PackageDescription.Parsec (parseGenericPackageDescription, runParseResult)
 import Distribution.Pretty (prettyShow)
-import Distribution.System (buildPlatform)
+import Distribution.System (Platform, buildPlatform)
 import Distribution.Types.ComponentRequestedSpec (ComponentRequestedSpec (ComponentRequestedSpec))
 import Distribution.Types.Dependency (depLibraries, depPkgName, depVerRange)
 import Distribution.Types.Library (libName, reexportedModules)
@@ -71,9 +72,19 @@ parseCabalComponents :: String -> Either String [Component]
 parseCabalComponents = parseCabalComponentsForGhc "9.6.5"
 
 -- | Like 'parseCabalComponents', but resolve @impl(ghc ...)@ conditionals
--- against the given GHC version (e.g. the workspace's @ghc@).
+-- against the given GHC version (e.g. the workspace's @ghc@), for the HOST
+-- platform.
 parseCabalComponentsForGhc :: String -> String -> Either String [Component]
-parseCabalComponentsForGhc ghcVersion src =
+parseCabalComponentsForGhc = parseCabalComponentsForPlatform buildPlatform
+
+-- | Like 'parseCabalComponentsForGhc', but resolve @os(...)/arch(...)@
+-- conditionals against an explicit 'Platform' (zinc-xum). A wasm build must
+-- finalize against @Platform Wasm32 Wasi@, not the host: otherwise @arch(wasm32)@
+-- is false and a package like miso builds its VANILLA FFI variant (ffi/ghc,
+-- @-DVANILLA@) instead of the wasm one (ffi/wasm, @-DWASM@, @Miso.DSL.TH@,
+-- @ghc-experimental@). The host platform is the right default elsewhere.
+parseCabalComponentsForPlatform :: Platform -> String -> String -> Either String [Component]
+parseCabalComponentsForPlatform platform ghcVersion src =
   case snd (runParseResult (parseGenericPackageDescription (BS.pack src))) of
     Left err -> Left ("cabal parse error: " ++ show err)
     Right gpd ->
@@ -82,7 +93,7 @@ parseCabalComponentsForGhc ghcVersion src =
       -- otherwise flip a shared flag to keep a test-suite buildable, dragging
       -- test-only deps (QuickCheck, tasty -> ansi-terminal -> colour) into the
       -- library's build-depends and the closure (zinc-ffm.7).
-      case finalizePD mempty (ComponentRequestedSpec False False) (const True) buildPlatform ghc [] gpd of
+      case finalizePD mempty (ComponentRequestedSpec False False) (const True) platform ghc [] gpd of
         Left missing -> Left ("cabal finalize error: unsatisfied " ++ show (map prettyShow missing))
         Right (pd, _flags) ->
           Right (libraryComponent pd ++ executableComponents pd ++ testComponents pd)
