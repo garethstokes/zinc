@@ -5,6 +5,8 @@
 module Zinc.Fetch
   ( gitFetchManifest
   , resolveRef
+  , preferHackageForLatest
+  , chooseLatestRef
   , packageDirIn
   , namedCabal
   , isHpackOnly
@@ -23,10 +25,10 @@ import Zinc.Cabal (cabalBuildType, parseCabalComponentsForPlatform)
 import Zinc.Diagnostic (ZincError (BuildTypeCustom, NoReleaseTags, OtherError))
 import Zinc.Except (failWith, failWithError, liftEither, liftIO, orFail, orFailE, runResult)
 import Zinc.Git (cloneAt, listTags, splitRepoSubdir)
-import Zinc.Hackage (fetchHackageTarball, hackageCabal)
+import Zinc.Hackage (fetchHackageTarball, hackageCabal, hackageLatestVersion)
 import Zinc.Manifest (Component (compDepends, compKind), ComponentKind (Library), Dependency (..), Ref (..), parseDependencies)
 import Zinc.Resolve (DepManifest (..))
-import Zinc.Version (newestTagFor)
+import Zinc.Version (newestTagFor, newestVersionFor, parseVersion)
 
 -- | Fetch a dependency's manifest: bring @repo@ at @ref@ into the store and
 -- read its dependency list. A zinc-native dep declares @[dependencies]@ +
@@ -44,11 +46,14 @@ import Zinc.Version (newestTagFor)
 gitFetchManifest :: FilePath -> String -> [(String, [(String, Bool)])] -> String -> String -> Ref -> IO (Either ZincError DepManifest)
 gitFetchManifest storeRoot ghcVersion flagsMap name repo ref = runResult $ do
   let dest = storeRoot </> "checkout" </> name
-  pkgDir <- case ref of
+  -- zinc-ngd: a Latest ref may resolve to a Hackage-vendored pin (newer than the
+  -- newest git tag), so the closure walk reads the COMPATIBLE release's .cabal.
+  ref' <- liftIO (preferHackageForLatest name repo ref)
+  pkgDir <- case ref' of
     Vendored ver ->
       orFail (first (("fetch " ++ name ++ ": ") ++) <$> fetchHackageTarball name ver dest)
     _ -> do
-      refStr <- orFailE (resolveRef name repo ref)
+      refStr <- orFailE (resolveRef name repo ref')
       liftIO $ do
         stale <- doesDirectoryExist dest
         when stale (removeDirectoryRecursive dest)
@@ -197,3 +202,36 @@ resolveRef name repo Latest     = do
     -- tag like hashable-1.3.2.0 (zinc-myx). No tags at all → a typed,
     -- actionable ZINC_NO_RELEASE_TAGS rather than an opaque ZINC_ERROR (91n.4).
     Right ts -> maybe (Left (NoReleaseTags name repo)) Right (newestTagFor (Just name) (isJust msubdir) ts)
+
+-- | The pure prefer-Hackage policy for a @Latest@ ref (zinc-ngd). Given the
+-- repo's newest release-tag version and Hackage's latest version (+ its raw
+-- string), choose the ref to resolve to. Prefer the Hackage release as a
+-- 'Vendored' pin when it is STRICTLY NEWER than the newest git tag — many
+-- widely-used packages' newest tag predates the current toolchain (GHC 9.6 /
+-- mtl 2.3) and fails to build, while Hackage carries a newer compatible release
+-- (the sdist also ships a generated .cabal + pre-run configure). Never a
+-- downgrade: if Hackage is absent or not newer than the newest tag, keep
+-- 'Latest' (git), so a repo ahead of Hackage is unaffected.
+chooseLatestRef :: Maybe [Int] -> Maybe ([Int], String) -> Ref
+chooseLatestRef mtag mhackage = case mhackage of
+  Nothing -> Latest
+  Just (hv, hs)
+    | maybe True (hv >) mtag -> Vendored hs -- Hackage newer, or no usable git tag
+    | otherwise              -> Latest
+
+-- | Resolve a @Latest@ ref to a concrete ref, preferring a newer Hackage release
+-- over a stale newest git tag (zinc-ngd via 'chooseLatestRef'). Consults Hackage
+-- for the latest version and the repo for its newest release tag; non-@Latest@
+-- refs are returned unchanged. Best-effort: any lookup miss falls back to
+-- 'Latest' (git), preserving the prior behavior.
+preferHackageForLatest :: String -> String -> Ref -> IO Ref
+preferHackageForLatest name repo Latest = do
+  mhs <- hackageLatestVersion name
+  case (\hs -> (,) hs <$> parseVersion hs) =<< mhs of
+    Nothing -> pure Latest -- no Hackage release (or unparseable): keep git
+    Just (hs, hv) -> do
+      let (base, msubdir) = splitRepoSubdir repo
+      tags <- listTags base
+      let mtag = either (const Nothing) (newestVersionFor (Just name) (isJust msubdir)) tags
+      pure (chooseLatestRef mtag (Just (hv, hs)))
+preferHackageForLatest _ _ ref = pure ref

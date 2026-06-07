@@ -27,7 +27,7 @@ import Zinc.Closure (ClosureReport (crMembers, crNeedsVendoring), installedVersi
 import Zinc.Delta (ClosureDelta, closureDelta)
 import Zinc.Diagnostic (ZincError (DepNoGitRepo, ManifestParse, NoZincToml), manyErrors)
 import Zinc.Except (Result, failWith, failWithError, liftEitherE, liftIO, orFail, orFailE, runResult)
-import Zinc.Fetch (gitFetchManifest, isHpackOnly, packageDirIn, resolveRef)
+import Zinc.Fetch (gitFetchManifest, isHpackOnly, packageDirIn, preferHackageForLatest, resolveRef)
 import Zinc.Fmt (mergeManifestDependencies)
 import Zinc.Git (cloneAt)
 import Zinc.Hackage (fetchHackageTarball, hackageLatestVersion, hackageSourceRepo)
@@ -119,8 +119,13 @@ freezeClosure sink storeRoot flagsMap closure = do
       emit sink (FetchDone (rdName dep))
       pure r
     freezeOne :: ResolvedDep -> Result LockedPackage
-    freezeOne dep = do
-      let dest = storeRoot </> "checkout" </> rdName dep
+    freezeOne dep0 = do
+      -- zinc-ngd: resolve a Latest ref the SAME way the closure walk did — it may
+      -- prefer a newer Hackage release (Vendored) over a stale newest git tag, so
+      -- the FROZEN source matches the .cabal the resolver read.
+      ref' <- liftIO (preferHackageForLatest (rdName dep0) (rdRepo dep0) (rdRef dep0))
+      let dep = dep0 {rdRef = ref'}
+          dest = storeRoot </> "checkout" </> rdName dep
       case rdRef dep of
         Vendored ver -> do
           _ <- orFail (first (("freeze " ++ rdName dep ++ ": ") ++) <$> fetchHackageTarball (rdName dep) ver dest)

@@ -3,6 +3,7 @@
 module Zinc.Version
   ( newestTag
   , newestTagFor
+  , newestVersionFor
   , parseVersion
   ) where
 
@@ -36,12 +37,23 @@ newestTag = newestTagFor Nothing False
 --     both and take the newest — never let a stale scoped tag mask newer bare
 --     releases (zinc-myx).
 newestTagFor :: Maybe String -> Bool -> [String] -> Maybe String
-newestTagFor mpkg isSubdir tags
+newestTagFor mpkg isSubdir tags = snd <$> newestPairFor mpkg isSubdir tags
+
+-- | The parsed VERSION of the tag 'newestTagFor' would pick (zinc-ngd): lets the
+-- resolver compare a repo's newest release tag against Hackage's latest version
+-- to prefer a build-compatible release.
+newestVersionFor :: Maybe String -> Bool -> [String] -> Maybe [Int]
+newestVersionFor mpkg isSubdir tags = fst <$> newestPairFor mpkg isSubdir tags
+
+-- | The (version, tag) the selection picks — shared by 'newestTagFor' (snd) and
+-- 'newestVersionFor' (fst).
+newestPairFor :: Maybe String -> Bool -> [String] -> Maybe ([Int], String)
+newestPairFor mpkg isSubdir tags
   | isSubdir  = maybePick (if null scoped then bare else scoped)
   | otherwise = maybePick (scoped ++ bare)
   where
     maybePick [] = Nothing
-    maybePick xs = Just (snd (maximumBy (comparing fst) xs))
+    maybePick xs = Just (maximumBy (comparing fst) xs)
     bare = [(v, t) | t <- tags, Just v <- [parseVersion t]]
     scoped = case mpkg of
       Nothing  -> []
