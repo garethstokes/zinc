@@ -21,7 +21,7 @@ import System.Directory (createDirectoryIfMissing, createDirectoryLink, doesDire
 import System.FilePath (takeDirectory, takeFileName, (</>))
 import System.IO (readFile')
 import Zinc.Diagnostic (ZincError)
-import Zinc.Except (Result, failWith, liftEither, liftIO, orFail, runResult)
+import Zinc.Except (Result, failWith, liftEither, liftIO, orFail, orFailE, runResult)
 import Zinc.Fetch (resolveRef)
 import Zinc.Git (cloneAt, splitRepoSubdir)
 import Zinc.Lock (parseLock, renderLock)
@@ -38,7 +38,7 @@ runSkillAdd repo mref wsDir = runResult $ do
   storeRoot <- liftIO resolveStoreRoot
   let repoUrl  = fst (splitRepoSubdir repo)
       provName = skillRepoName repoUrl -- provisional name for resolve/errors (real name is in SKILL.md)
-  refStr <- orFail (first ((provName ++ ": ") ++) <$> resolveRef provName repo (parseSkillRef mref))
+  refStr <- orFailE (resolveRef provName repo (parseSkillRef mref))
   -- Clone to a staging dir, then move under the COMMIT-keyed store path so `add`
   -- and `sync` (which only knows the locked commit) agree on the location.
   let staging = storeRoot </> "skill" </> (".staging-" ++ srcDirName repoUrl refStr)

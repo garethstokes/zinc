@@ -115,7 +115,7 @@ freezeClosure storeRoot flagsMap = runResult . traverse freezeOne
           slibs <- liftIO (systemLibsOf dest)
           pure (lockEntry flagsMap slibs dep ver sha)
         _ -> do
-          refStr <- orFail (first ((rdName dep ++ ": ") ++) <$> resolveRef (rdName dep) (rdRepo dep) (rdRef dep))
+          refStr <- orFailE (resolveRef (rdName dep) (rdRepo dep) (rdRef dep))
           liftIO $ do
             stale <- doesDirectoryExist dest
             when stale (removeDirectoryRecursive dest)

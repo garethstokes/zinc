@@ -236,6 +236,15 @@ main = hspec $ do
       diagNextAction (toDiagnostic (DepNoGitRepo "colour tf-random"))
         `shouldSatisfy` maybe False (isInfixOf "zinc vendor colour tf-random")
 
+    it "no-release-tags is a typed, actionable resolution error (zinc-91n.4)" $ do
+      let d = toDiagnostic (NoReleaseTags "base16" "https://github.com/haskellari/base16")
+      diagCode d `shouldBe` "ZINC_NO_RELEASE_TAGS"
+      diagPackage d `shouldBe` Just "base16"
+      exitCodeFor (NoReleaseTags "base16" "r") `shouldBe` ExitFailure 3 -- resolution category, not generic ZINC_ERROR
+      -- names the repo and suggests pinning an explicit ref
+      diagDetail d `shouldSatisfy` maybe False (isInfixOf "github.com/haskellari/base16")
+      diagNextAction d `shouldSatisfy` maybe False (\a -> all (`isInfixOf` a) ["rev =", "[dependencies.base16]"])
+
     it "renders a Diagnostic to JSON, omitting absent optional fields" $
       renderJson (diagnosticJson (toDiagnostic (ManifestParse "f.toml" "bad")))
         `shouldBe` "{\"code\":\"ZINC_MANIFEST_PARSE\",\"severity\":\"error\",\"title\":\"manifest parse error\",\"detail\":\"bad\",\"location\":{\"file\":\"f.toml\"},\"nextAction\":\"fix the TOML in the manifest\"}"

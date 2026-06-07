@@ -20,7 +20,7 @@ import Distribution.System (buildPlatform)
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory, removeDirectoryRecursive)
 import System.FilePath (takeExtension, (</>))
 import Zinc.Cabal (cabalBuildType, parseCabalComponentsForPlatform)
-import Zinc.Diagnostic (ZincError (BuildTypeCustom))
+import Zinc.Diagnostic (ZincError (BuildTypeCustom, NoReleaseTags, OtherError))
 import Zinc.Except (failWith, failWithError, liftEither, liftIO, orFail, orFailE, runResult)
 import Zinc.Git (cloneAt, listTags, splitRepoSubdir)
 import Zinc.Hackage (fetchHackageTarball, hackageCabal)
@@ -48,7 +48,7 @@ gitFetchManifest storeRoot ghcVersion flagsMap name repo ref = runResult $ do
     Vendored ver ->
       orFail (first (("fetch " ++ name ++ ": ") ++) <$> fetchHackageTarball name ver dest)
     _ -> do
-      refStr <- orFail (first ((name ++ ": ") ++) <$> resolveRef name repo ref)
+      refStr <- orFailE (resolveRef name repo ref)
       liftIO $ do
         stale <- doesDirectoryExist dest
         when stale (removeDirectoryRecursive dest)
@@ -179,7 +179,7 @@ firstThatM p (x : xs) = do
 
 -- | The git checkout target for a ref. 'Latest' is resolved to the repo's
 -- newest release tag.
-resolveRef :: String -> String -> Ref -> IO (Either String String)
+resolveRef :: String -> String -> Ref -> IO (Either ZincError String)
 resolveRef _    _    (Tag t)      = pure (Right t)
 resolveRef _    _    (Branch b)   = pure (Right b)
 resolveRef _    _    (Rev r)      = pure (Right r)
@@ -188,11 +188,12 @@ resolveRef name repo Latest     = do
   let (base, msubdir) = splitRepoSubdir repo
   tags <- listTags base
   pure $ case tags of
-    Left err -> Left err
+    Left err -> Left (OtherError (name ++ ": " ++ err))
     -- Scope Latest by the PACKAGE NAME. For a monorepo SUBDIR dep, package-
     -- prefixed tags (vector-stream-*) must win over a sibling's or a stale
     -- global tag. For a standalone repo (no #subdir, e.g. hashable), the bare
     -- v* tags ARE this package's releases, so they are considered alongside any
     -- scoped tag and the newest overall wins — never masked by a stale scoped
-    -- tag like hashable-1.3.2.0 (zinc-myx).
-    Right ts -> maybe (Left "no release tags found") Right (newestTagFor (Just name) (isJust msubdir) ts)
+    -- tag like hashable-1.3.2.0 (zinc-myx). No tags at all → a typed,
+    -- actionable ZINC_NO_RELEASE_TAGS rather than an opaque ZINC_ERROR (91n.4).
+    Right ts -> maybe (Left (NoReleaseTags name repo)) Right (newestTagFor (Just name) (isJust msubdir) ts)

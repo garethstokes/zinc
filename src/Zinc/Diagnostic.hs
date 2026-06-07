@@ -67,6 +67,7 @@ data ZincError
   | ToolchainMissing String            -- ^ a required build tool (e.g. ghc) is not on PATH
   | NoZincToml String                 -- ^ directory
   | NoRepoInRegistry String String    -- ^ name, requiring parent
+  | NoReleaseTags String String       -- ^ name, repo: a Latest (@*@) ref but the repo has no release tags to resolve (zinc-91n.4)
   | StaticUnsupported String          -- ^ binary name: fully-static (musl) packaging not supported for this toolchain
   | WasmUnsupported String String     -- ^ package, reason: a closure member needs C sources / system-libs, unsupported for wasm32-wasi (zinc-9po.3)
   | DepBootConflict String String String String (Maybe String) -- ^ package, boot lib, declared range, toolchain version, suggested forward commit (HEAD-probe; stale tag vs toolchain, zinc-sib)
@@ -179,6 +180,7 @@ errorCode e = case e of
   ToolchainMissing {}    -> "ZINC_TOOLCHAIN_MISSING"
   NoZincToml {}          -> "ZINC_NO_ZINC_TOML"
   NoRepoInRegistry {}    -> "ZINC_NO_REPO_IN_REGISTRY"
+  NoReleaseTags {}       -> "ZINC_NO_RELEASE_TAGS"
   StaticUnsupported {}   -> "ZINC_STATIC_UNSUPPORTED"
   WasmUnsupported {}     -> "ZINC_WASM_UNSUPPORTED"
   DepBootConflict {}     -> "ZINC_DEP_BOOT_CONFLICT"
@@ -243,6 +245,11 @@ toDiagnostic e =
       NoRepoInRegistry name parent ->
         ( "no repo in [registry] for dependency", Just (name ++ " (required by " ++ parent ++ ")"), Nothing, Just name
         , Just ("add `" ++ name ++ " = \"<git-url>\"` to the workspace [registry]") )
+      NoReleaseTags name repo ->
+        ( "no release tags to resolve `*` (latest) for dependency"
+        , Just (name ++ ": " ++ repo ++ " has no release tags")
+        , Nothing, Just name
+        , Just ("pin an explicit ref in [dependencies." ++ name ++ "]: `rev = \"<commit>\"`, `tag = \"<tag>\"`, or `branch = \"<branch>\"`") )
       StaticUnsupported bin ->
         ( "static packaging is not supported on this toolchain"
         , Just (bin ++ " is dynamically linked; zinc builds against the dynamic GHC, and fully-static (musl) re-linking of GHC binaries is not available")
@@ -360,6 +367,7 @@ exitCodeFor e = ExitFailure $ case e of
   GitAuth {}             -> 3
   DepNoGitRepo {}        -> 3
   NoRepoInRegistry {}    -> 3
+  NoReleaseTags {}       -> 3
   DepBootConflict {}     -> 3
   GhcCompile {}          -> 4
   BuildTypeCustom {}     -> 4
