@@ -42,10 +42,10 @@ import qualified Data.Map as Map
 import Data.Maybe (catMaybes, fromMaybe, isNothing, mapMaybe)
 import System.Directory (canonicalizePath, copyFile, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, doesPathExist, findExecutable, listDirectory, makeAbsolute, removeDirectoryRecursive)
 import System.Exit (ExitCode (..))
-import System.FilePath (takeExtension, takeFileName, (</>))
+import System.FilePath (takeDirectory, takeExtension, takeFileName, (</>))
 import System.Process (callProcess, readProcess, readProcessWithExitCode)
 import Zinc.Build (LibBuild (..), MemberBuild (..), buildLibArtifactsFor, buildLibFor, buildMemberFor, initPackageDb, initPackageDbFor, installedVersionsFor, isRegistered, memberBuildDir, registeredExposedMatches, registerPackage, replArgs)
-import Zinc.Cabal (bootConflicts, cabalBuildType, cabalVersion, parseCabalComponentsForPlatform)
+import Zinc.Cabal (bootConflicts, cabalBuildType, cabalJsSources, cabalVersion, parseCabalComponentsForPlatform)
 import Zinc.Cache (BuildKey (..), buildCacheKey, buildCacheKeyFor, storeConfPath, storePkgPath)
 import Zinc.Configure (configureComponent)
 import Zinc.Target (Target (Native), isWasm)
@@ -123,6 +123,9 @@ buildWorkspaceReport sink target wsDir member ghcOverride keep = runResult $ do
   acc <- liftIO (newIORef Map.empty)
   (pkgs, closureMs) <- timed (orFailE (buildClosure sink target wsDir storeRoot wsDb effectiveGhc (depGhcOptionsOf ws) (depFlagsOf ws) (Just acc)))
   (exes, memberMs) <- timed (concat <$> traverse (buildMemberAll (Just acc) wsDb) (orderMembers members))
+  -- For a wasm build, surface each member's + closure deps' js-sources next to
+  -- the built .wasm so a browser page can load them (zinc-gdk).
+  liftIO (when (isWasm target) (surfaceWasmJsSources storeRoot wsDir members))
   breakdownMap <- liftIO (readIORef acc)
   -- Present in build order, only the phases that actually ran.
   let breakdown = [(p, ms) | p <- ["fetch", "compile", "register", "link"], Just ms <- [Map.lookup p breakdownMap]]
@@ -159,6 +162,46 @@ buildWorkspaceReport sink target wsDir member ghcOverride keep = runResult $ do
     wanted mem
       | maybe True (== pkgName mem) member = filter (keep . compKind) (pkgComponents mem)
       | otherwise = []
+
+-- | Surface wasm @js-sources@ next to the built @.wasm@ (zinc-gdk): for each
+-- workspace member, copy the js-source files declared by every locked closure
+-- dependency (read from its store source tree) into the member's build dir,
+-- preserving the declared relative path — so a browser page can load a
+-- framework's JS runtime that isn't embedded in the wasm (the embedded case,
+-- e.g. miso's TH-spliced js/miso.js, needs nothing). Best-effort: a dependency
+-- whose source is gone, or that declares none, is simply skipped.
+surfaceWasmJsSources :: FilePath -> FilePath -> [(FilePath, MemberManifest)] -> IO ()
+surfaceWasmJsSources storeRoot wsDir members = do
+  let lockFile = wsDir </> "zinc.lock"
+  haveLock <- doesFileExist lockFile
+  locks <- if haveLock then either (const []) id . parseLock <$> readFile lockFile else pure []
+  let depDirs = [storeSrcPath storeRoot (srcKey l) (lockRev l) | l <- locks]
+  forM_ members $ \(mdir, _) -> do
+    let buildDir = memberBuildDir mdir
+    forM_ depDirs $ \sdir -> do
+      js <- jsSourcesIn sdir
+      forM_ js $ \rel -> do
+        let from = sdir </> rel
+            to = buildDir </> rel
+        present <- doesFileExist from
+        when present $ do
+          createDirectoryIfMissing True (takeDirectory to)
+          copyFile from to
+
+-- | A package's declared @js-sources@ (relative paths), read from its @.cabal@
+-- (zinc-gdk). Finalized against the wasm platform so a wasm-gated @js-sources@ is
+-- seen. A dir with only a @zinc.toml@ (zinc-native, no js-sources concept) or no
+-- manifest yields none.
+jsSourcesIn :: FilePath -> IO [String]
+jsSourcesIn dir = do
+  there <- doesDirectoryExist dir
+  if not there
+    then pure []
+    else do
+      entries <- listDirectory dir
+      case filter ((== ".cabal") . takeExtension) entries of
+        (c : _) -> cabalJsSources (Platform Wasm32 Wasi) <$> readFile (dir </> c)
+        []      -> pure []
 
 -- | @zinc build@: build every member's executables (libraries first).
 runBuild :: FilePath -> IO (Either ZincError [FilePath])

@@ -87,7 +87,7 @@ import Zinc.GC (GCRoot (..), gcStore, runGc)
 import Zinc.Add (enrichWithRepos, freezeClosure, lockEntry, runAdd, runUpdate, runVendor, splitNameVersion, vendoredSoftPins)
 import Zinc.Build (GhcInvocation (..), LibBuild (..), MemberBuild (..), PackageConf (..), archiveArgs, buildLib, buildMember, discoverModules, externalInterpFlags, ghcMakeArgs, initPackageDb, installedVersions, memberBuildDir, packageFlags, ppCommand, preprocessorFor, reactorLinkFlags, registeredExposedMatches, registerPackage, renderConf, replArgs, runPreprocessor, wasmSupported, writeFileIfChanged, zincBuiltUnitIds)
 import Zinc.Cache (BuildKey (..), buildCacheKey, buildCacheKeyFor, cacheHit, cacheKeyPayload, confCodegenEpoch, storeConfPath, storePkgPath, writeCachedConf)
-import Zinc.Cabal (bootConflicts, cabalBuildType, cabalVersion, parseCabalComponents, parseCabalComponentsForGhc, parseCabalComponentsForPlatform)
+import Zinc.Cabal (bootConflicts, cabalBuildType, cabalJsSources, cabalVersion, parseCabalComponents, parseCabalComponentsForGhc, parseCabalComponentsForPlatform)
 import Distribution.System (Arch (Wasm32), OS (Wasi), Platform (Platform), buildPlatform)
 import Zinc.Env (devEnvVars, envCacheKey, envCacheKeyFor, nixPrintDevEnv, provisionEnv, toolchainPath, toolchainVars)
 import Zinc.Macros (emitCabalMacros)
@@ -1853,6 +1853,65 @@ main = hspec $ do
       _ <- provisionEnv evalr root "9.6.5" ["zlib", "pcre"]
       n <- readIORef counter
       n `shouldBe` 2
+
+  describe "cabalJsSources (zinc-gdk)" $ do
+    it "extracts a library's js-sources (relative paths)" $
+      cabalJsSources (Platform Wasm32 Wasi)
+        (unlines
+          [ "cabal-version: 2.4"
+          , "name: demo"
+          , "version: 0.1"
+          , "library"
+          , "  exposed-modules: Demo"
+          , "  js-sources: js/demo.js, js/extra.js"
+          , "  build-depends: base"
+          ])
+        `shouldBe` ["js/demo.js", "js/extra.js"]
+
+    it "sees wasm-gated js-sources when finalized for the wasm platform" $
+      -- the motivating case: a framework ships its JS runtime only under
+      -- arch(wasm32) (e.g. miso's wasm reactor JS).
+      cabalJsSources (Platform Wasm32 Wasi)
+        (unlines
+          [ "cabal-version: 2.4"
+          , "name: demo"
+          , "version: 0.1"
+          , "library"
+          , "  exposed-modules: Demo"
+          , "  build-depends: base"
+          , "  if arch(wasm32)"
+          , "    js-sources: js/wasm-only.js"
+          ])
+        `shouldBe` ["js/wasm-only.js"]
+
+    it "is empty for a package that ships no js-sources" $
+      cabalJsSources (Platform Wasm32 Wasi)
+        (unlines ["cabal-version: 2.4", "name: demo", "version: 0.1", "library", "  exposed-modules: Demo", "  build-depends: base"])
+        `shouldBe` []
+
+    it "resolves js-sources from an imported common stanza with nested conditionals (miso shape)" $
+      -- miso declares its wasm JS in a `common client` (gated arch(wasm32), then
+      -- flag(production)) that the library `import:`s — the real-world structure.
+      cabalJsSources (Platform Wasm32 Wasi)
+        (unlines
+          [ "cabal-version: 2.4"
+          , "name: demo"
+          , "version: 0.1"
+          , "common client"
+          , "  if arch(wasm32)"
+          , "    if flag(production)"
+          , "      js-sources: js/demo.prod.js"
+          , "    else"
+          , "      js-sources: js/demo.js"
+          , "flag production"
+          , "  manual: True"
+          , "  default: False"
+          , "library"
+          , "  import: client"
+          , "  exposed-modules: Demo"
+          , "  build-depends: base"
+          ])
+        `shouldBe` ["js/demo.js"]
 
   describe "parseCabalComponents" $ do
     let cabal =

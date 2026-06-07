@@ -11,6 +11,7 @@ module Zinc.Cabal
   , parseCabalComponentsForPlatform
   , cabalBuildType
   , cabalVersion
+  , cabalJsSources
   , bootConflicts
   ) where
 
@@ -31,8 +32,10 @@ import Distribution.PackageDescription
   , PackageDescription (executables, library, package, subLibraries, testSuites)
   , TestSuite (testBuildInfo, testInterface, testName)
   , TestSuiteInterface (TestSuiteExeV10)
+  , allBuildInfo
   , buildType
   , cSources
+  , jsSources
   , cppOptions
   , defaultExtensions
   , defaultLanguage
@@ -106,6 +109,23 @@ parseCabalComponentsForPlatform platform flags ghcVersion src =
   where
     ghc = unknownCompilerInfo (CompilerId GHC (mkVersion (versionInts ghcVersion))) NoAbiTag
     flagAssignment = mkFlagAssignment [(mkFlagName n, v) | (n, v) <- flags]
+
+-- | Every @js-sources@ file declared across a .cabal's components (zinc-gdk),
+-- best-effort ([] on a parse/finalize miss). Finalized against @platform@ so a
+-- wasm-gated @js-sources@ (e.g. miso ships @js/miso.js@ for its wasm reactor) is
+-- seen; the paths are relative to the package root. Used to surface a wasm
+-- dependency's JS runtime next to the built @.wasm@ so a browser page can load
+-- it, for frameworks that don't self-embed their JS into the wasm.
+cabalJsSources :: Platform -> String -> [String]
+cabalJsSources platform src =
+  case snd (runParseResult (parseGenericPackageDescription (BS.pack src))) of
+    Left _ -> []
+    Right gpd ->
+      case finalizePD (mkFlagAssignment []) (ComponentRequestedSpec False False) (const True) platform ghc [] gpd of
+        Left _        -> []
+        Right (pd, _) -> nub (concatMap jsSources (allBuildInfo pd))
+  where
+    ghc = unknownCompilerInfo (CompilerId GHC (mkVersion [9, 6, 5])) NoAbiTag
 
 -- | Boot-library version conflicts in a @.cabal@ (zinc-sib): each
 -- @build-depends@ on a GHC boot library whose declared version range EXCLUDES
