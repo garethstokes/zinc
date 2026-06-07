@@ -30,9 +30,10 @@ module Zinc.Build
   , initPackageDbFor
   , installedVersions
   , installedVersionsFor
+  , installedUnitIdsFor
   ) where
 
-import Data.Maybe (fromMaybe, isJust, listToMaybe)
+import Data.Maybe (fromMaybe, isJust, listToMaybe, mapMaybe)
 import Control.Monad (unless, when)
 import Data.List (find, intercalate, isInfixOf, isPrefixOf, nub, sort)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getModificationTime, listDirectory)
@@ -296,16 +297,19 @@ generateJsffiGlue target wasmPath outDir = do
     ExitSuccess   -> Right ()
     ExitFailure _ -> Left (OtherError ("post-link JS-FFI glue generation failed: " ++ err))
 
--- | Reject a component that cannot build for a wasm target: the wasm32-wasi MVP
--- is pure-Haskell only, so C sources (cabal @c-sources@) or system libraries
--- (@extra-libraries@) are an up-front 'WasmUnsupported' rather than a cryptic
--- link failure (zinc-9po.3 / spec §5). Native always passes.
+-- | Reject a component that cannot build for a wasm target. Cabal @c-sources@
+-- ARE supported (zinc-90t): the wasm toolchain ships a clang that cross-compiles
+-- portable C to wasm, and zinc compiles them with the target @ghc@ like any
+-- object (e.g. miso's @cbits/foreign.c@). What still can't cross-compile is a
+-- dependency on a prebuilt system library (@extra-libraries@): there is rarely a
+-- wasm build of an external C library to link against, so that stays an up-front
+-- 'WasmUnsupported' rather than a cryptic link failure (zinc-9po.3 / spec §5).
+-- Non-portable C (Linux-only headers/syscalls) still fails, but at compile time
+-- with the toolchain's own error, exactly as it would natively. Native passes.
 wasmSupported :: Target -> Component -> Either ZincError ()
 wasmSupported target comp
-  | isWasm target, not (null (compCSources comp)) =
-      Left (WasmUnsupported (compName comp) "has C sources (cabal c-sources); wasm32-wasi builds pure-Haskell closures only")
   | isWasm target, not (null (compSystemLibs comp)) =
-      Left (WasmUnsupported (compName comp) "needs system libraries (extra-libraries); wasm32-wasi builds pure-Haskell closures only")
+      Left (WasmUnsupported (compName comp) "needs system libraries (extra-libraries); wasm32-wasi has no prebuilt wasm build of an external C library to link")
   | otherwise = Right ()
 
 -- | Inputs to build a member's library so siblings can link against it.
@@ -364,13 +368,18 @@ buildLibArtifactsFor target lb = runResult $ do
       macrosHeader = gen </> "cabal_macros.h"
   _ <- liftIO $ writeFileIfChanged (gen </> pathsMod <.> "hs") (synthesizePaths (lbName lb) (versionInts (lbVersion lb)))
   installed <- liftIO (installedVersionsFor target)
+  bootUnitIds <- liftIO (installedUnitIdsFor target)
   let depVersion d = fromMaybe [0] (lookup d installed)
       -- A direct dep's id for the conf's @depends@ (drives a dependent's
       -- linking): zinc-built deps by bare name (their unit-id); non-base boot
-      -- libs by their real installed id (e.g. @array-0.5.6.0@) so the linker
-      -- pulls them in. base is omitted — it is always linked via -package base.
+      -- libs by their real installed unit-id, queried from the target toolchain.
+      -- A stock GHC hashes boot-lib unit-ids (the wasm cross GHC's @bytestring@
+      -- is @bytestring-0.12.2.0-2834@), so a synthesized @name-version@ won't
+      -- match and a dependent reports the package "unusable due to missing
+      -- dependencies" (zinc-90t). Fall back to @name-version@ when the lookup
+      -- misses. base is omitted — it is always linked via -package base.
       depConfId d
-        | isBootLib d = d ++ "-" ++ intercalate "." (map show (depVersion d))
+        | isBootLib d = fromMaybe (d ++ "-" ++ intercalate "." (map show (depVersion d))) (lookup d bootUnitIds)
         | otherwise = d
   -- Emit cabal_macros.h for the package's OWN version only. GHC 8.0+
   -- auto-generates VERSION_<dep>/MIN_VERSION_<dep> for every -package dep, so
@@ -647,6 +656,23 @@ registeredExposedMatchesFor target db unitId confText = do
     -- and order insensitive (ghc-pkg comma-separates + line-wraps; the conf
     -- space-separates on one line — both yield the same word multiset).
     toks raw = sort (words (map (\ch -> if ch == ',' then ' ' else ch) (drop 1 (dropWhile (/= ':') raw))))
+
+-- | The installed unit-id (@ghc-pkg field <pkg> id@) of each package the target
+-- toolchain provides, e.g. @[("bytestring","bytestring-0.12.2.0-2834"), …]@. A
+-- stock GHC HASHES boot-lib unit-ids (the wasm cross GHC does), so a dependent's
+-- conf @depends@ must name the toolchain's ACTUAL id, not a synthesized
+-- @name-version@, or the package is "unusable due to missing dependencies"
+-- (zinc-90t). Parsed from @ghc-pkg field '*' name,id@ (alternating lines).
+installedUnitIdsFor :: Target -> IO [(String, String)]
+installedUnitIdsFor target = do
+  (_, out, _) <- readProcessWithExitCode (ghcPkgFor target) ["field", "*", "name,id"] ""
+  pure (pair (mapMaybe value (lines out)))
+  where
+    value l = case break (== ':') l of
+      (k, ':' : v) | k `elem` ["name", "id"] -> Just (dropWhile (== ' ') v)
+      _                                       -> Nothing
+    pair (n : i : rest) = (n, i) : pair rest
+    pair _              = []
 
 installedVersions :: IO [(String, [Int])]
 installedVersions = installedVersionsFor Native

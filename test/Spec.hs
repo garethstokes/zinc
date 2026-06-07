@@ -3460,7 +3460,7 @@ main = hspec $ do
       fmap (concatMap compReexports . filter ((== Library) . compKind)) (parseCabalComponents cabal)
         `shouldBe` Right [("Effectful", Nothing, "Effectful"), ("Renamed", Nothing, "Orig")]
 
-  describe "Zinc.Build wasm support gate (9po.3)" $ do
+  describe "Zinc.Build wasm support gate (9po.3, 90t)" $ do
     let pureLib =
           Component
             { compKind = Library
@@ -3481,12 +3481,15 @@ main = hspec $ do
         code = either (Just . errorCode) (const Nothing)
     it "passes a pure-Haskell component for both native and wasm" $
       (code (wasmSupported Native pureLib), code (wasmSupported Wasm32Wasi pureLib)) `shouldBe` (Nothing, Nothing)
-    it "rejects C sources for wasm only (native unaffected)" $ do
+    it "allows C sources for wasm (the toolchain's clang cross-compiles them; 90t)" $ do
+      -- C sources used to be rejected (9po.3 MVP); the wasm toolchain compiles
+      -- portable C (e.g. miso's cbits/foreign.c), so they are now supported.
       let withC = pureLib {compCSources = ["cbits/x.c"]}
       (code (wasmSupported Native withC), code (wasmSupported Wasm32Wasi withC))
+        `shouldBe` (Nothing, Nothing)
+    it "still rejects system libraries (extra-libraries) for wasm only" $
+      (code (wasmSupported Native (pureLib {compSystemLibs = ["zlib"]})), code (wasmSupported Wasm32Wasi (pureLib {compSystemLibs = ["zlib"]})))
         `shouldBe` (Nothing, Just "ZINC_WASM_UNSUPPORTED")
-    it "rejects system libraries for wasm only" $
-      code (wasmSupported Wasm32Wasi (pureLib {compSystemLibs = ["zlib"]})) `shouldBe` Just "ZINC_WASM_UNSUPPORTED"
 
   describe "Zinc.Build reactor link flags (9po.5)" $ do
     it "emits no-hs-main, reactor exec-model, an auto hs_init export, and one --export per symbol" $
