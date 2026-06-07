@@ -50,6 +50,11 @@ module Zinc.Deploy
   , runSwitchGeneration
   , generationsJson
   , renderGenerations
+  , socketUnitFile
+  , colorProfileName
+  , socketUnit
+  , blueGreenScript
+  , runBlueGreen
   ) where
 
 import Data.Char (isDigit)
@@ -81,17 +86,18 @@ data ResolvedDeploy = ResolvedDeploy
   , rdService :: Maybe String
   , rdArgs    :: [String]
   , rdEnv     :: [(String, String)]
+  , rdSocket  :: Maybe Int -- ^ listening port for socket-activated zero-downtime deploys (zinc-nbk.8)
   }
   deriving (Eq, Show)
 
 -- | Resolve the @zinc deploy \<arg\>@ argument: if @arg@ names a @[deploy.*]@
--- target use its host/service/args/env; otherwise treat @arg@ as an ad-hoc
--- @[user@]host[:port]@ / ssh alias. A @--service@ override always wins over the
--- configured service.
+-- target use its host/service/args/env/socket; otherwise treat @arg@ as an
+-- ad-hoc @[user@]host[:port]@ / ssh alias. A @--service@ override always wins
+-- over the configured service.
 resolveDeploy :: [DeployTarget] -> String -> Maybe String -> ResolvedDeploy
 resolveDeploy targets arg svcOverride = case find ((== arg) . dtName) targets of
-  Just t  -> ResolvedDeploy (parseDeployHost (dtHost t)) (svcOverride `orConfig` dtService t) (dtArgs t) (dtEnv t)
-  Nothing -> ResolvedDeploy (parseDeployHost arg) svcOverride [] []
+  Just t  -> ResolvedDeploy (parseDeployHost (dtHost t)) (svcOverride `orConfig` dtService t) (dtArgs t) (dtEnv t) (dtSocket t)
+  Nothing -> ResolvedDeploy (parseDeployHost arg) svcOverride [] [] Nothing
   where
     orConfig (Just s) _ = Just s
     orConfig Nothing  c = c
@@ -428,6 +434,130 @@ runRollback :: DeployHost -> String -> IO (Either ZincError ())
 runRollback h service = do
   (code, _out, err) <-
     readProcessWithExitCode "ssh" (sshArgs h ["sh", "-s"]) (rollbackScript service)
+  pure $ case code of
+    ExitSuccess   -> Right ()
+    ExitFailure _ -> Left (DeployActivate (dhHost h) (firstLine err))
+
+-- | The persistent @.socket@ unit name that owns a service's listening port
+-- (zinc-nbk.8). It matches the service unit's prefix (@zinc-\<svc\>@) so systemd
+-- hands its listening fd to @zinc-\<svc\>.service@ via socket activation.
+socketUnitFile :: String -> String
+socketUnitFile service = "zinc-" ++ service ++ ".socket"
+
+-- | The per-color profile name (zinc-nbk.8): each color is its own nix profile
+-- generation chain, so the versioning + rollback (nbk.7) compose per color.
+colorProfileName :: String -> String -> String
+colorProfileName service color = profileName service ++ "-" ++ color
+
+-- | The @.socket@ unit that owns the listening port (zinc-nbk.8). It is started
+-- ONCE and never stopped during a deploy, so it holds the port and buffers
+-- incoming connections in its listen backlog while the service is swapped to a
+-- new version — the source of the zero-dropped-connections guarantee.
+socketUnit :: String -> Int -> String
+socketUnit service port =
+  unlines
+    [ "[Unit]"
+    , "Description=zinc socket for " ++ service
+    , ""
+    , "[Socket]"
+    , "ListenStream=" ++ show port
+    , ""
+    , "[Install]"
+    , "WantedBy=sockets.target"
+    ]
+
+-- | The socket-activated, color-aware blue/green cutover script (zinc-nbk.8).
+-- Run on the host after the closure is copied. It: picks the INACTIVE color,
+-- points that color's profile at the new closure (+ stamps its version, nbk.7),
+-- (re)writes the persistent @.socket@ (port owner) and the @.service@ whose
+-- @ExecStart@ is the inactive color's profile bin, then restarts the service —
+-- the socket keeps the port open across the swap, so connections QUEUE rather
+-- than drop. It then health-checks the new color (active + @NRestarts=0@ after a
+-- settle window); on success it records the new active color, on failure it
+-- repoints the service at the PREVIOUS color and restarts (instant — that
+-- color's profile is untouched) and exits non-zero ('DeployActivate').
+--
+-- GUARANTEE + LIMIT (verified on a real host): a SUCCESSFUL cutover drops zero
+-- connections (the socket buffers across the swap). On FAILURE the new version
+-- never successfully serves and the live color is restored, but a crashing new
+-- version briefly stalls the socket during crash-detection, so a few in-flight
+-- connections can drop in that ~2s window. Truly-zero-drop on failure would need
+-- to validate the new color BEFORE the socket forwards to it, which a
+-- socket-activated binary can't do standalone (it needs the inherited fd) — an
+-- out-of-band validation port / app cooperation is the future refinement.
+blueGreenScript :: String -> Int -> String -> [String] -> [(String, String)] -> FilePath -> String
+blueGreenScript service port version args env' path =
+  unlines $
+    [ "set -e"
+    , "unitdir=\"$HOME/.config/systemd/user\""
+    , "mkdir -p \"$unitdir\""
+    , "sock=" ++ socketUnitFile service
+    , "unit=" ++ unitFile service
+    , "marker=\"$unitdir/zinc-" ++ service ++ ".color\""
+    , "active=$(cat \"$marker\" 2>/dev/null || echo '')"
+    , "if [ \"$active\" = blue ]; then target=green; else target=blue; fi"
+    , "prof=\"$HOME/.local/state/nix/profiles/" ++ profileName service ++ "-$target\""
+    , "mkdir -p \"$(dirname \"$prof\")\""
+    , "nix-env --profile \"$prof\" --set " ++ path
+    , "gen=$(nix-env --profile \"$prof\" --list-generations | sed -n 's/^ *\\([0-9][0-9]*\\).*(current).*/\\1/p')"
+    , "[ -n \"$gen\" ] && printf '%s\\t%s\\n' \"$gen\" '" ++ version ++ "' >> \"$prof.zinc-versions\""
+    , -- the persistent socket (owns the port; never stopped → buffers the swap)
+      "cat > \"$unitdir/$sock\" <<'ZINC_SOCK_EOF'"
+    , dropTrailingNewline (socketUnit service port)
+    , "ZINC_SOCK_EOF"
+    , -- the socket-activated service, ExecStart = the TARGET color's profile bin
+      "cat > \"$unitdir/$unit\" <<ZINC_SVC_EOF"
+    , "[Unit]"
+    , "Description=zinc service " ++ service ++ " ($target)"
+    , "Requires=$sock"
+    , "After=$sock"
+    , ""
+    , "[Service]"
+    , "ExecStart=$prof/bin/" ++ service ++ concatMap (' ' :) args
+    , "Restart=on-failure"
+    ]
+      ++ ["Environment=" ++ k ++ "=" ++ v | (k, v) <- env']
+      ++ [ "ZINC_SVC_EOF"
+         , "systemctl --user daemon-reload"
+         , "systemctl --user enable \"$sock\" >/dev/null 2>&1 || true"
+         , "systemctl --user start \"$sock\"" -- hold the port open across the swap
+         , "systemctl --user reset-failed \"$unit\" 2>/dev/null || true"
+         , "systemctl --user restart \"$unit\"" -- socket buffers connections here
+         , "up=no"
+         , "for _ in $(seq 1 50); do"
+         , "  state=$(systemctl --user is-active \"$unit\" 2>/dev/null || true)"
+         , "  if [ \"$state\" = active ]; then up=yes; break; fi"
+         , "  if [ \"$state\" = failed ]; then break; fi"
+         , "  sleep 0.2"
+         , "done"
+         , "if [ \"$up\" = yes ]; then"
+         , "  sleep 1.5"
+         , "  state=$(systemctl --user is-active \"$unit\" 2>/dev/null || true)"
+         , "  nr=$(systemctl --user show -p NRestarts --value \"$unit\" 2>/dev/null || echo 0)"
+         , "  if [ \"$state\" = active ] && [ \"${nr:-0}\" = 0 ]; then printf '%s' \"$target\" > \"$marker\"; echo ZINC_ACTIVE; exit 0; fi"
+         , "fi"
+         , -- health-check failed: repoint the service at the previous color (its
+           -- profile is untouched) and restart, so the live version is restored.
+           "if [ -n \"$active\" ]; then"
+         , "  oldprof=\"$HOME/.local/state/nix/profiles/" ++ profileName service ++ "-$active\""
+         , "  sed -i \"s#^ExecStart=.*#ExecStart=$oldprof/bin/" ++ service ++ concatMap (' ' :) args ++ "#\" \"$unitdir/$unit\""
+         , "  systemctl --user daemon-reload"
+         , "  systemctl --user reset-failed \"$unit\" 2>/dev/null || true"
+         , "  systemctl --user restart \"$unit\" || true"
+         , "fi"
+         , "echo ZINC_ROLLED_BACK >&2"
+         , "exit 1"
+         ]
+  where
+    dropTrailingNewline s = case reverse s of '\n' : r -> reverse r; _ -> s
+
+-- | @zinc deploy --strategy blue-green@ (zinc-nbk.8): the socket-activated,
+-- color-swapping, zero-dropped-connection cutover over SSH. A failed health-check
+-- has already been rolled back on the host by 'blueGreenScript'.
+runBlueGreen :: DeployHost -> String -> Int -> String -> [String] -> [(String, String)] -> FilePath -> IO (Either ZincError ())
+runBlueGreen h service port version args env' path = do
+  (code, _out, err) <-
+    readProcessWithExitCode "ssh" (sshArgs h ["sh", "-s"]) (blueGreenScript service port version args env' path)
   pure $ case code of
     ExitSuccess   -> Right ()
     ExitFailure _ -> Left (DeployActivate (dhHost h) (firstLine err))

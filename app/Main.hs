@@ -14,7 +14,7 @@ import Zinc.CLI (Command (..), helpOverview, parseArgs)
 import Zinc.Closure (closureReportJson, renderClosure, runClosure)
 import Zinc.Diagnostic (ZincError (OtherError), envelope, exitCodeFor, humanError, rawToolOutput, toDiagnostic, toDiagnostics, zincVersion, zincVersionLine)
 import Zinc.Delta (deltaJson, renderDelta)
-import Zinc.Deploy (ProbeChecks (..), ResolvedDeploy (..), deployReadyJson, dhHost, generationsJson, profileName, renderGenerations, resolveDeploy, runActivate, runDeploy, runDeployList, runInit, runNixCopy, runProfileInstall, runRollback, runSwitchGeneration)
+import Zinc.Deploy (ProbeChecks (..), ResolvedDeploy (..), deployReadyJson, dhHost, generationsJson, profileName, renderGenerations, resolveDeploy, runActivate, runBlueGreen, runDeploy, runDeployList, runInit, runNixCopy, runProfileInstall, runRollback, runSwitchGeneration)
 import Zinc.Docker (runDockerfile)
 import Zinc.Env (provisionToolchainFor)
 import Zinc.Target (Target (Native), isWasm, parseTarget, targetTriple)
@@ -296,7 +296,7 @@ dispatch mode (Package fmtStr tag out to) =
   case parsePackageFormat fmtStr of
     Left err  -> hPutStrLn stderr err >> exitWith (ExitFailure 2)
     Right fmt -> runPackage fmt tag out to "." >>= either (failCmd mode) putStrLn
-dispatch mode (Deploy arg service initFlag rollback _dryRun listFlag rollbackTo) = do
+dispatch mode (Deploy arg service initFlag rollback _dryRun listFlag rollbackTo strategy) = do
   -- nbk.6: resolve <arg> against the manifest's [deploy.*] targets (an ad-hoc
   -- user@host still works). nbk.5: --init prints the NixOS snippet. nbk.7: --list
   -- shows the generation history; --rollback-to <N> pins a specific release.
@@ -337,7 +337,7 @@ dispatch mode (Deploy arg service initFlag rollback _dryRun listFlag rollbackTo)
             Left e   -> failDeploy e
             Right () -> deployOk (JObject [("host", JString (dhHost h)), ("service", JString svc), ("rolledBack", JBool True)])
                           ("Rolled " ++ svc ++ " back to its previous generation on " ++ dhHost h ++ " and restarted.")
-        | otherwise -> fullDeploy resolved manifestSvc (either (const "unknown") pkgVersion (parseMember src))
+        | otherwise -> fullDeploy resolved manifestSvc (either (const "unknown") pkgVersion (parseMember src)) strategy
   where
     tick b = if b then "\10003" else "\10007"
     failDeploy e
@@ -348,26 +348,44 @@ dispatch mode (Deploy arg service initFlag rollback _dryRun listFlag rollbackTo)
       | otherwise    = putStrLn human
     -- The full sequence: probe (typed gaps), build the closure, copy + install +
     -- activate. Any step's Left short-circuits to the typed diagnostic.
-    fullDeploy resolved manifestSvc version = do
-      probe <- runDeploy h
-      case probe of
-        Left e -> failDeploy e
-        Right _ -> buildDeployClosure "." >>= \b -> case b of
-          Left e -> failDeploy e
-          Right (name, path) -> do
-            let svc = fromMaybe name (rdService resolved `mplus` manifestSvc)
-            steps <-
-              chainE
-                [ runNixCopy h path
-                , runProfileInstall h svc version path
-                , runActivate h svc (rdArgs resolved) (rdEnv resolved)
-                ]
-            case steps of
-              Left e   -> failDeploy e
-              Right () ->
-                deployOk
-                  (JObject [("host", JString (dhHost h)), ("service", JString svc), ("version", JString version), ("storePath", JString path), ("activated", JBool True)])
-                  ("Deployed " ++ svc ++ " " ++ version ++ " to " ++ dhHost h ++ " — " ++ path ++ "\n  systemd unit " ++ profileName svc ++ " is active.")
+    fullDeploy resolved manifestSvc version strategy
+      | strategy `notElem` ["recreate", "blue-green"] =
+          failDeploy (OtherError ("unknown deploy --strategy " ++ strategy ++ " (expected: recreate | blue-green)"))
+      | otherwise = do
+          probe <- runDeploy h
+          case probe of
+            Left e -> failDeploy e
+            Right _ -> buildDeployClosure "." >>= \b -> case b of
+              Left e -> failDeploy e
+              Right (name, path) -> do
+                let svc = fromMaybe name (rdService resolved `mplus` manifestSvc)
+                if strategy == "blue-green"
+                  then case rdSocket resolved of
+                    Nothing -> failDeploy (OtherError ("deploy --strategy blue-green needs a listening port: set [deploy." ++ arg ++ "].socket = <port> in zinc.toml"))
+                    Just port -> do
+                      -- socket-activated zero-downtime cutover (nbk.8): the socket
+                      -- buffers connections across the color swap; a crashing new
+                      -- version is rolled back to the live color by the health-check.
+                      steps <- chainE [runNixCopy h path, runBlueGreen h svc port version (rdArgs resolved) (rdEnv resolved) path]
+                      case steps of
+                        Left e   -> failDeploy e
+                        Right () ->
+                          deployOk
+                            (JObject [("host", JString (dhHost h)), ("service", JString svc), ("version", JString version), ("strategy", JString "blue-green"), ("port", JInt port), ("activated", JBool True)])
+                            ("Deployed " ++ svc ++ " " ++ version ++ " to " ++ dhHost h ++ " (blue-green, zero-downtime on port " ++ show port ++ ") — " ++ path)
+                  else do
+                    steps <-
+                      chainE
+                        [ runNixCopy h path
+                        , runProfileInstall h svc version path
+                        , runActivate h svc (rdArgs resolved) (rdEnv resolved)
+                        ]
+                    case steps of
+                      Left e   -> failDeploy e
+                      Right () ->
+                        deployOk
+                          (JObject [("host", JString (dhHost h)), ("service", JString svc), ("version", JString version), ("storePath", JString path), ("activated", JBool True)])
+                          ("Deployed " ++ svc ++ " " ++ version ++ " to " ++ dhHost h ++ " — " ++ path ++ "\n  systemd unit " ++ profileName svc ++ " is active.")
       where h = rdHost resolved
     -- Run Either-returning IO steps in order, stopping at the first Left.
     chainE [] = pure (Right ())

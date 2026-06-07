@@ -68,6 +68,7 @@ data DeployTarget = DeployTarget
   , dtService :: Maybe String
   , dtArgs    :: [String]
   , dtEnv     :: [(String, String)]
+  , dtSocket  :: Maybe Int -- ^ @socket = \<port\>@: the listening port for socket-activated zero-downtime deploys (zinc-nbk.8)
   }
   deriving (Eq, Show)
 
@@ -211,9 +212,10 @@ parseDeployTargets src = do
   top <- Toml.parse src
   pure [target name t | (name, Table t) <- Map.toList (subTable "deploy" top)]
   where
-    target name t = DeployTarget name (strField "host" t) (optStr "service" t) (arr "args" t) (env t)
+    target name t = DeployTarget name (strField "host" t) (optStr "service" t) (arr "args" t) (env t) (optInt "socket" t)
     strField k t = case Map.lookup k t of Just (String s) -> s; _ -> ""
     optStr k t = case Map.lookup k t of Just (String s) -> Just s; _ -> Nothing
+    optInt k t = case Map.lookup k t of Just (Integer n) -> Just (fromInteger n); _ -> Nothing
     arr k t = case Map.lookup k t of Just (Array xs) -> [s | String s <- xs]; _ -> []
     env t = case Map.lookup "env" t of
       Just (Table e) -> [(k, s) | (k, String s) <- Map.toList e]

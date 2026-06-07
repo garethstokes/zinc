@@ -54,6 +54,10 @@ import Zinc.Deploy
   , switchGenerationScript
   , generationsJson
   , renderGenerations
+  , socketUnit
+  , socketUnitFile
+  , colorProfileName
+  , blueGreenScript
   , parseDeployHost
   , parseProbeOutput
   , probeScript
@@ -3796,19 +3800,23 @@ main = hspec $ do
   describe "deploy verb parsing (nbk.1)" $ do
     it "parses `deploy <host>` with the v1 flag surface" $ do
       parseArgs ["deploy", "gareth@box"]
-        `shouldBe` Right (OutputFlags False False, Deploy "gareth@box" Nothing False False False False Nothing)
+        `shouldBe` Right (OutputFlags False False, Deploy "gareth@box" Nothing False False False False Nothing "recreate")
       parseArgs ["deploy", "homelab", "--service", "myapp", "--dry-run"]
-        `shouldBe` Right (OutputFlags False False, Deploy "homelab" (Just "myapp") False False True False Nothing)
+        `shouldBe` Right (OutputFlags False False, Deploy "homelab" (Just "myapp") False False True False Nothing "recreate")
       parseArgs ["deploy", "box", "--init"]
-        `shouldBe` Right (OutputFlags False False, Deploy "box" Nothing True False False False Nothing)
+        `shouldBe` Right (OutputFlags False False, Deploy "box" Nothing True False False False Nothing "recreate")
       parseArgs ["deploy", "box", "--rollback"]
-        `shouldBe` Right (OutputFlags False False, Deploy "box" Nothing False True False False Nothing)
+        `shouldBe` Right (OutputFlags False False, Deploy "box" Nothing False True False False Nothing "recreate")
 
     it "parses --list and --rollback-to <gen> (nbk.7)" $ do
       parseArgs ["deploy", "box", "--list"]
-        `shouldBe` Right (OutputFlags False False, Deploy "box" Nothing False False False True Nothing)
+        `shouldBe` Right (OutputFlags False False, Deploy "box" Nothing False False False True Nothing "recreate")
       parseArgs ["deploy", "box", "--rollback-to", "3"]
-        `shouldBe` Right (OutputFlags False False, Deploy "box" Nothing False False False False (Just 3))
+        `shouldBe` Right (OutputFlags False False, Deploy "box" Nothing False False False False (Just 3) "recreate")
+
+    it "parses --strategy (default recreate; blue-green opt-in) (nbk.8)" $ do
+      parseArgs ["deploy", "box", "--strategy", "blue-green"]
+        `shouldBe` Right (OutputFlags False False, Deploy "box" Nothing False False False False Nothing "blue-green")
 
   describe "Zinc.Deploy --init snippet (nbk.5)" $ do
     it "generates a NixOS trusted-users + linger snippet for the deploy user" $ do
@@ -3835,22 +3843,23 @@ main = hspec $ do
               , "service = \"myapp\""
               , "args = [\"--port\", \"8080\"]"
               , "env = { RUST_LOG = \"info\" }"
+              , "socket = 8080" -- nbk.8: socket-activated blue/green port
               ]
       parseDeployTargets toml
-        `shouldBe` Right [DeployTarget "homelab" "gareth@nixos-box" (Just "myapp") ["--port", "8080"] [("RUST_LOG", "info")]]
+        `shouldBe` Right [DeployTarget "homelab" "gareth@nixos-box" (Just "myapp") ["--port", "8080"] [("RUST_LOG", "info")] (Just 8080)]
 
     it "returns no targets when there is no [deploy] section" $
       parseDeployTargets "[workspace]\nmembers = []\nghc = \"9.6.5\"\n" `shouldBe` Right []
 
   describe "Zinc.Deploy target resolution (nbk.6)" $ do
-    let t = DeployTarget "homelab" "gareth@nixos-box:2200" (Just "myapp") ["--port", "8080"] [("RUST_LOG", "info")]
-    it "resolves a named target to its host, service, args and env" $
+    let t = DeployTarget "homelab" "gareth@nixos-box:2200" (Just "myapp") ["--port", "8080"] [("RUST_LOG", "info")] (Just 8080)
+    it "resolves a named target to its host, service, args, env and socket" $
       resolveDeploy [t] "homelab" Nothing
-        `shouldBe` ResolvedDeploy (DeployHost (Just "gareth") "nixos-box" (Just 2200)) (Just "myapp") ["--port", "8080"] [("RUST_LOG", "info")]
+        `shouldBe` ResolvedDeploy (DeployHost (Just "gareth") "nixos-box" (Just 2200)) (Just "myapp") ["--port", "8080"] [("RUST_LOG", "info")] (Just 8080)
 
-    it "falls back to an ad-hoc user@host when no named target matches" $
+    it "falls back to an ad-hoc user@host (no socket) when no named target matches" $
       resolveDeploy [t] "deploy@other-box" Nothing
-        `shouldBe` ResolvedDeploy (DeployHost (Just "deploy") "other-box" Nothing) Nothing [] []
+        `shouldBe` ResolvedDeploy (DeployHost (Just "deploy") "other-box" Nothing) Nothing [] [] Nothing
 
     it "lets --service override the configured service" $
       rdService (resolveDeploy [t] "homelab" (Just "override")) `shouldBe` Just "override"
@@ -3951,6 +3960,32 @@ main = hspec $ do
       renderGenerations gens `shouldContain` "gen 2  0.3.1  2026-06-07 21:11:55  (current)"
       renderJson (generationsJson gens)
         `shouldBe` "{\"generations\":[{\"generation\":1,\"version\":\"0.3.0\",\"timestamp\":\"2026-06-07 21:11:52\",\"current\":false},{\"generation\":2,\"version\":\"0.3.1\",\"timestamp\":\"2026-06-07 21:11:55\",\"current\":true}]}"
+
+  describe "Zinc.Deploy blue/green socket activation (nbk.8)" $ do
+    it "names the persistent socket unit + per-color profiles" $ do
+      socketUnitFile "myapp" `shouldBe` "zinc-myapp.socket"
+      colorProfileName "myapp" "blue" `shouldBe` "zinc-myapp-blue"
+      colorProfileName "myapp" "green" `shouldBe` "zinc-myapp-green"
+
+    it "the socket unit owns the listening port" $ do
+      let s = socketUnit "myapp" 8080
+      all (`isInfixOf` s) ["[Socket]", "ListenStream=8080", "WantedBy=sockets.target"] `shouldBe` True
+
+    it "the cutover script swaps color, holds the socket open, health-checks, rolls back to the live color" $ do
+      let s = blueGreenScript "myapp" 8080 "0.4.0" ["--port", "8080"] [("LOG", "info")] "/nix/store/x-myapp"
+      all (`isInfixOf` s)
+        [ "if [ \"$active\" = blue ]; then target=green; else target=blue; fi" -- pick the inactive color
+        , "zinc-myapp-$target"            -- per-color profile
+        , "nix-env --profile \"$prof\" --set /nix/store/x-myapp"
+        , "0.4.0"                          -- version stamp (nbk.7 composes per color)
+        , "systemctl --user start \"$sock\"" -- hold the port (buffers the swap)
+        , "ExecStart=$prof/bin/myapp --port 8080"
+        , "Environment=LOG=info"
+        , "NRestarts"                      -- crash-loop guard
+        , "zinc-myapp-$active"             -- rollback repoints at the previous color
+        , "exit 1"
+        ]
+        `shouldBe` True
 
   describe "Zinc.Cabal reexported-modules (jdf)" $ do
     it "reads bare and renamed reexports from a library .cabal" $ do
