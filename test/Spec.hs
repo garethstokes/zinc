@@ -96,7 +96,7 @@ import Zinc.Manifest
   , parseWorkspace
   , renderWorkspace
   )
-import Zinc.Fetch (chooseLatestRef, gitFetchManifest, isHpackOnly, namedCabal, packageDirIn)
+import Zinc.Fetch (gitFetchManifest, isHpackOnly, namedCabal, packageDirIn)
 import Zinc.GC (GCRoot (..), gcStore, runGc)
 import Zinc.Add (enrichWithRepos, freezeClosure, lockEntry, runAdd, runUpdate, runVendor, splitNameVersion, vendoredSoftPins)
 import Zinc.Build (GhcInvocation (..), LibBuild (..), MemberBuild (..), PackageConf (..), archiveArgs, buildLib, buildMember, discoverModules, externalInterpFlags, ghcMakeArgs, initPackageDb, installedVersions, memberBuildDir, packageFlags, ppCommand, preprocessorFor, reactorLinkFlags, registeredExposedMatches, registerPackage, renderConf, replArgs, runPreprocessor, wasmSupported, writeFileIfChanged, zincBuiltUnitIds)
@@ -1633,21 +1633,6 @@ main = hspec $ do
     it "is empty with no [overrides] table, and tolerates an unparseable file" $ do
       parseOverrides "[workspace]\nmembers = []\n" `shouldBe` []
       parseOverrides "this is not + valid = = toml" `shouldBe` []
-
-  describe "chooseLatestRef — prefer a newer Hackage release over a stale tag (zinc-ngd)" $ do
-    it "prefers the Hackage release (vendored) when it is NEWER than the newest git tag" $
-      -- the cascade case: newest git tag 0.17 predates the toolchain; Hackage 0.18 builds.
-      chooseLatestRef (Just [0, 17]) (Just ([0, 18], "0.18")) `shouldBe` Vendored "0.18"
-
-    it "keeps Latest (git) when the newest git tag is newer-or-equal — never a downgrade" $ do
-      chooseLatestRef (Just [0, 19]) (Just ([0, 18], "0.18")) `shouldBe` Latest -- git ahead
-      chooseLatestRef (Just [0, 18]) (Just ([0, 18], "0.18")) `shouldBe` Latest -- equal
-
-    it "prefers Hackage when the repo has no usable release tag" $
-      chooseLatestRef Nothing (Just ([0, 18], "0.18")) `shouldBe` Vendored "0.18"
-
-    it "keeps Latest (git) when the package has no Hackage release" $
-      chooseLatestRef (Just [0, 17]) Nothing `shouldBe` Latest
 
   describe "newestNormalVersion — skip Hackage-deprecated releases (zinc-22z)" $ do
     it "picks the newest NON-deprecated version (network-uri: 2.6.4.2, not deprecated 2.7.0.0)" $

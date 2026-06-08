@@ -3,7 +3,6 @@
 module Zinc.Version
   ( newestTag
   , newestTagFor
-  , newestVersionFor
   , parseVersion
   ) where
 
@@ -39,14 +38,7 @@ newestTag = newestTagFor Nothing False
 newestTagFor :: Maybe String -> Bool -> [String] -> Maybe String
 newestTagFor mpkg isSubdir tags = snd <$> newestPairFor mpkg isSubdir tags
 
--- | The parsed VERSION of the tag 'newestTagFor' would pick (zinc-ngd): lets the
--- resolver compare a repo's newest release tag against Hackage's latest version
--- to prefer a build-compatible release.
-newestVersionFor :: Maybe String -> Bool -> [String] -> Maybe [Int]
-newestVersionFor mpkg isSubdir tags = fst <$> newestPairFor mpkg isSubdir tags
-
--- | The (version, tag) the selection picks — shared by 'newestTagFor' (snd) and
--- 'newestVersionFor' (fst).
+-- | The (version, tag) the selection picks.
 newestPairFor :: Maybe String -> Bool -> [String] -> Maybe ([Int], String)
 newestPairFor mpkg isSubdir tags
   | isSubdir  = maybePick (if null scoped then bare else scoped)
