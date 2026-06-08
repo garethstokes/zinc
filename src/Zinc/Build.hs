@@ -459,6 +459,13 @@ buildLibArtifactsFor target lb = runResult $ do
   _ <- liftIO $ writeFileIfChanged macrosHeader $
     emitCabalMacros [(lbName lb, versionInts (lbVersion lb))]
   let srcDirs = if null (compSourceDirs comp) then ["."] else compSourceDirs comp
+  -- The compile runs with cwd=lbMemberDir (below), so every package-relative path
+  -- (-i source dirs, -I include dirs, the preprocessor inputs) must be ABSOLUTE
+  -- or it would resolve against the wrong base. A non-root subdir member's dir is
+  -- relative to the workspace root, so a relative -i was doubled under the cwd —
+  -- GHC-82272 'module cannot be found locally' (zinc-9ac). Closure deps already
+  -- pass an absolute store path, so makeAbsolute is a no-op for them.
+  absMemberDir <- liftIO (makeAbsolute (lbMemberDir lb))
   -- A library's modules: the explicit list, or auto-discovered by walking its
   -- source dirs (spec §4 "no module hiding" — zinc-native packages list none;
   -- cabal deps carry their .cabal module list). Every discovered module is
@@ -469,7 +476,7 @@ buildLibArtifactsFor target lb = runResult $ do
   -- mistakenly compile Setup.hs (zinc-iaj.1).
   discovered <-
     if null (compModules comp) && not (compFromCabal comp)
-      then liftIO (discoverModules [lbMemberDir lb </> d | d <- srcDirs])
+      then liftIO (discoverModules [absMemberDir </> d | d <- srcDirs])
       else pure (compModules comp)
   -- nub so a package that already lists Paths_<pkg> doesn't collide with the
   -- Paths_ module zinc synthesizes.
@@ -481,11 +488,11 @@ buildLibArtifactsFor target lb = runResult $ do
       compileArgs =
         ["--make", "-j", "-hide-all-packages", "-package-db", absDb]
           ++ packageFlags zincBuilt (map fst installed) (compDepends comp)
-          ++ map (\d -> "-i" ++ (lbMemberDir lb </> d)) srcDirs
+          ++ map (\d -> "-i" ++ (absMemberDir </> d)) srcDirs
           ++ ["-i" ++ gen, "-i" ++ ppGen, "-optP-include", "-optP" ++ macrosHeader]
           -- C-header search dirs (cabal include-dirs) so CPP #include of the
           -- package's own headers (e.g. version-compatibility-macros.h) resolves.
-          ++ concatMap (\d -> let p = lbMemberDir lb </> d in ["-I" ++ p, "-optP-I" ++ p]) (compIncludeDirs comp)
+          ++ concatMap (\d -> let p = absMemberDir </> d in ["-I" ++ p, "-optP-I" ++ p]) (compIncludeDirs comp)
           ++ ["-this-unit-id", unitId, "-outputdir", lbDistDir lb]
           ++ externalInterpFlags target
           ++ map ("-X" ++) (compExtensions comp)
@@ -504,9 +511,9 @@ buildLibArtifactsFor target lb = runResult $ do
   let hscMacros = gen </> "hsc_macros.h"
   _ <- liftIO $ writeFileIfChanged hscMacros $
     emitCabalMacros [(d, depVersion d) | d <- nub ("base" : compDepends comp)]
-  orFail (runPreprocessorsTo target (["-I" ++ (lbMemberDir lb </> d) | d <- compIncludeDirs comp] ++ ["-include", hscMacros]) (if null (compModules comp) then Nothing else Just modules) ppGen (map (lbMemberDir lb </>) srcDirs))
+  orFail (runPreprocessorsTo target (["-I" ++ (absMemberDir </> d) | d <- compIncludeDirs comp] ++ ["-include", hscMacros]) (if null (compModules comp) then Nothing else Just modules) ppGen (map (absMemberDir </>) srcDirs))
   -- Run in the package source root so package-relative TH file splices resolve.
-  orFailE (runGhcInFor (Just (lbMemberDir lb)) target (lbName lb) compileArgs)
+  orFailE (runGhcInFor (Just absMemberDir) target (lbName lb) compileArgs)
   -- C sources (cabal c-sources, e.g. primitive's cbits/primitive-memops.c) are
   -- compiled in a SEPARATE `ghc -c` step into the dist dir, NOT via `ghc --make`:
   -- --make writes a C object next to its (absolute) source — outside -outputdir

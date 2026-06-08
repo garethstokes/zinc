@@ -2937,6 +2937,20 @@ main = hspec $ do
         Right [] -> expectationFailure "no executable built"
         Left err -> expectationFailure (renderError err)
 
+  describe "runBuild subdir member (zinc-9ac regression)" $
+    it "builds a member whose dir is NOT the workspace root (relative -i not doubled under cwd)" $ do
+      let dir = "/tmp/zinc-subdir-member"
+      stale <- doesDirectoryExist dir
+      when stale $ removeDirectoryRecursive dir
+      createDirectoryIfMissing True dir
+      writeFileIn (dir </> "zinc.toml") (unlines ["[workspace]", "members = [\"packages/lib1\"]", "ghc = \"9.6.5\"", "[dependencies]"])
+      writeFileIn (dir </> "packages/lib1/zinc.toml") (unlines ["[package]", "name = \"lib1\"", "version = \"0.1.0\"", "[build.lib]", "source-dirs = [\"src\"]", "depends = [\"base\"]"])
+      writeFileIn (dir </> "packages/lib1/src/Foo/Bar.hs") "module Foo.Bar (hi) where\nhi :: Int\nhi = 42\n"
+      r <- runBuild dir
+      -- a library member builds no exe (Right []); the regression made it Left
+      -- with GHC-82272 'module Foo.Bar cannot be found locally'.
+      either (expectationFailure . renderError) (const (pure ())) r
+
   describe "orderMembers" $
     it "orders a member after the siblings it depends on" $ do
       let comp deps =
