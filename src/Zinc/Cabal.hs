@@ -17,8 +17,8 @@ module Zinc.Cabal
 
 import qualified Data.ByteString.Char8 as BS
 import Data.Foldable (toList)
-import Data.List (intercalate, nub, stripPrefix)
-import Data.Maybe (fromMaybe, mapMaybe)
+import Data.List (intercalate, nub)
+import Data.Maybe (mapMaybe)
 import Distribution.Compiler
   ( AbiTag (NoAbiTag)
   , CompilerFlavor (GHC)
@@ -68,7 +68,7 @@ import Distribution.Types.UnqualComponentName (unUnqualComponentName)
 import Distribution.Utils.Path (getSymbolicPath)
 import Distribution.Version (mkVersion, withinRange)
 import Zinc.Manifest (Component (..), ComponentKind (..))
-import Zinc.SysLibs (toNixpkgs)
+import Zinc.SysLibs (pkgconfigLinkName, toNixpkgs)
 
 -- | Derive zinc 'Component's from @.cabal@ source, resolving conditionals
 -- against a recent default GHC. See 'parseCabalComponentsForGhc'.
@@ -310,9 +310,10 @@ fromBuildInfo kind name bi =
     , compSystemLibs = nub (mapMaybe toNixpkgs (extraLibs bi ++ pkgconfigNames bi))
     , -- C library LINK names for the conf's @extra-libraries:@ (zinc-389):
       -- cabal @extra-libraries@ are already link names; a @pkgconfig-depends@
-      -- module is normalized by dropping a leading @lib@ (@libpq@ -> @pq@), the
-      -- usual module-vs-link-name convention.
-      compExtraLibs = nub (extraLibs bi ++ map pkgconfigLink (pkgconfigNames bi))
+      -- MODULE is mapped to its link name via 'pkgconfigLinkName' — a module name
+      -- is not generally the lib name (pkgconfig @zlib@ -> @-lz@, not @-lzlib@),
+      -- which broke executable linking (zinc-mmx).
+      compExtraLibs = nub (extraLibs bi ++ map pkgconfigLinkName (pkgconfigNames bi))
     , compIncludeDirs = includeDirs bi
     , compCppOptions = cppOptions bi
     , compCSources = cSources bi
@@ -322,8 +323,6 @@ fromBuildInfo kind name bi =
     }
   where
     pkgconfigNames b = [unPkgconfigName n | PkgconfigDependency n _ <- pkgconfigDepends b]
-    -- A pkgconfig module's C link name: drop a leading @lib@ (@libpq@ -> @pq@).
-    pkgconfigLink m = fromMaybe m (stripPrefix "lib" m)
 
 -- | The declared @build-type@ of a @.cabal@ (e.g. @"Simple"@, @"Custom"@).
 -- zinc only builds Simple-ish packages directly; Custom (Setup.hs) deps are

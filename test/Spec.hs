@@ -112,7 +112,7 @@ import Zinc.Target (Target (..), ghcFor, ghcPkgFor, hsc2hsFor, isWasm, parseTarg
 import Zinc.Orchestrate (buildAndRun, lockDrift, orderMembers, parMapBounded, resolveTarget, runBuild, runBuildMember, runClean, runTests, runWarm)
 import Zinc.Paths (pathsModuleName, synthesizePaths)
 import Zinc.Report (BuildOutcome (..), CacheStats (..), PackageReport (..), PackageStatus (..), Timing (..), buildBreakdownLine, buildDataJson, buildSummaryLine, cacheStatsOf, fmtMs, packageReportJson, renderResolution, resolutionJson, statusText, timingJson)
-import Zinc.SysLibs (toNixpkgs)
+import Zinc.SysLibs (pkgconfigLinkName, toNixpkgs)
 import Zinc.Resolve (DepManifest (..), ResolvedDep (..), isBootLib, resolve, topoLevels, topoSort)
 import Zinc.Version (newestTag, newestTagFor)
 import Zinc.Lock (LockedPackage (..), Source (..), lockRepo, lockRev, parseLock, renderLock, srcKey)
@@ -2239,6 +2239,17 @@ main = hspec $ do
     it "maps libpq / pq to pkgs.postgresql (no pkgs.libpq in nixpkgs; zinc-389)" $ do
       toNixpkgs "libpq" `shouldBe` Just "postgresql"
       toNixpkgs "pq" `shouldBe` Just "postgresql"
+
+  describe "pkgconfigLinkName (zinc-mmx)" $ do
+    it "maps the zlib pkgconfig module to its real link name -lz (not -lzlib)" $
+      pkgconfigLinkName "zlib" `shouldBe` "z"
+
+    it "drops a leading lib for the common lib<name> convention (libpq -> pq)" $
+      pkgconfigLinkName "libpq" `shouldBe` "pq"
+
+    it "passes an already-bare link name through unchanged" $ do
+      pkgconfigLinkName "pq" `shouldBe` "pq"
+      pkgconfigLinkName "crypto" `shouldBe` "crypto"
 
   describe "freeze engine" $ do
     repo <- runIO setupDepRepo

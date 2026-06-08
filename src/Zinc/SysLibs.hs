@@ -3,8 +3,11 @@
 -- package's @.cabal@ flow into the generated flake's @system-libs@.
 module Zinc.SysLibs
   ( toNixpkgs
+  , pkgconfigLinkName
   ) where
 
+import Data.List (stripPrefix)
+import Data.Maybe (fromMaybe)
 import qualified Data.Map as Map
 
 -- | Translate a C library name to a nixpkgs attr. 'Nothing' for libc-provided
@@ -28,3 +31,15 @@ toNixpkgs lib
           ("pq", "postgresql")
         , ("libpq", "postgresql")
         ]
+
+-- | The C link name (@-l\<name\>@) for a @pkgconfig-depends@ MODULE name
+-- (zinc-mmx). A pkgconfig module name is NOT generally the library link name:
+-- @pkg-config --libs zlib@ is @-lz@ (the lib is @libz@), not @-lzlib@. Map the
+-- known mismatches; otherwise fall back to stripping a leading @lib@
+-- (@libpq@ -> @pq@), which is correct for the common @lib\<name\>@ convention.
+-- (The robust general answer is @pkg-config --libs@ at build time — a future
+-- refinement; this curated map mirrors 'toNixpkgs' and fixes the cases zinc hits.)
+pkgconfigLinkName :: String -> String
+pkgconfigLinkName m = Map.findWithDefault (fromMaybe m (stripPrefix "lib" m)) m known
+  where
+    known = Map.fromList [("zlib", "z")]
