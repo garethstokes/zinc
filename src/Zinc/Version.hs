@@ -5,10 +5,11 @@ module Zinc.Version
   , newestTagFor
   , parseVersion
   , gitVersion
+  , baseFromTag
   ) where
 
 import Control.Applicative ((<|>))
-import Data.List (maximumBy, stripPrefix)
+import Data.List (intercalate, maximumBy, stripPrefix)
 import Data.Ord (comparing)
 import Text.Read (readMaybe)
 
@@ -51,9 +52,20 @@ newestPairFor mpkg isSubdir tags
     scoped = case mpkg of
       Nothing  -> []
       Just pkg -> [(v, t) | t <- tags, Just rest <- [stripScope pkg t], Just v <- [parseVersion rest]]
-    -- The version part after a "<pkg>" + separator scope prefix.
-    stripScope pkg t =
-      stripPrefix (pkg ++ "-") t <|> stripPrefix (pkg ++ "/") t <|> stripPrefix (pkg ++ "_") t
+
+-- | The version part after a @\<pkg\>@ + separator scope prefix (@-@, @\/@,
+-- or @_@), e.g. @stripScope "vector" "vector-0.13.1" == Just "0.13.1"@.
+stripScope :: String -> String -> Maybe String
+stripScope pkg t =
+  stripPrefix (pkg ++ "-") t <|> stripPrefix (pkg ++ "/") t <|> stripPrefix (pkg ++ "_") t
+
+-- | The base version embedded in a git tag (zinc-7z7): the dotted version with
+-- a leading @v@ and/or a @\<pkg\>@ scope prefix stripped, re-rendered
+-- canonically — so @v1.2.0@ and @myapp\/1.2.0@ both yield @"1.2.0"@. 'Nothing'
+-- when the tag carries no parseable version (e.g. @"nightly"@).
+baseFromTag :: String -> String -> Maybe String
+baseFromTag pkg tag = renderVersion <$> (parseVersion tag <|> (stripScope pkg tag >>= parseVersion))
+  where renderVersion = intercalate "." . map show
 
 -- | A git-derived full version string (zinc-b3z): the base version, plus
 -- @+\<commitCount\>.g\<shortHash\>@ when a commit hash is known, plus @.dirty@

@@ -69,7 +69,7 @@ import Zinc.Doctor (doctorJson, doctorOk, flakesOffDiagnostic, lockDriftDiagnost
 import Zinc.Introspect (DepStatus (..), explainJson, graphJson, runStatus, statusJson)
 import Zinc.Prime (onboardText, primeText)
 import Zinc.Json (Json (..), parseJson, renderJson)
-import Zinc.Git (GitMeta (..), cloneAt, gitEnv, gitInitIfNeeded, isInsideRepo, listTags, noGitMeta, splitRepoSubdir)
+import Zinc.Git (GitMeta (..), cloneAt, gitEnv, gitInitIfNeeded, isInsideRepo, listTags, nearestTag, noGitMeta, splitRepoSubdir)
 import Zinc.Hackage (hackageCabalUrl, hackageTarballUrl, newestNormalVersion, sourceRepoOf)
 import Zinc.Outdated (OutdatedDep (..), Status (..), classify)
 import Zinc.Quirks (quirkGhcOptions)
@@ -114,7 +114,7 @@ import Zinc.Paths (pathsModuleName, synthesizePaths)
 import Zinc.Report (BuildOutcome (..), CacheStats (..), PackageReport (..), PackageStatus (..), Timing (..), buildBreakdownLine, buildDataJson, buildSummaryLine, cacheStatsOf, fmtMs, packageReportJson, renderResolution, resolutionJson, statusText, timingJson)
 import Zinc.SysLibs (pkgconfigLinkName, toNixpkgs)
 import Zinc.Resolve (DepManifest (..), ResolvedDep (..), isBootLib, resolve, topoLevels, topoSort)
-import Zinc.Version (gitVersion, newestTag, newestTagFor)
+import Zinc.Version (baseFromTag, gitVersion, newestTag, newestTagFor)
 import Zinc.Lock (LockedPackage (..), Source (..), lockRepo, lockRev, parseLock, renderLock, srcKey)
 import Zinc.Skill (LockedSkill (..), SkillDep (..), parseSkillLock, parseSkills, readSkillFrontmatter, renderSkillLock)
 import Zinc.SkillCmd (renderSkillList, runSkillAdd, runSkillList, runSkillRemove, runSkillSync, skillRepoName, writeSkillLockEntry)
@@ -940,6 +940,14 @@ main = hspec $ do
       gitVersion "0.1.0.0" "abc1234def" 267 True `shouldBe` "0.1.0.0+267.gabc1234.dirty"
       gitVersion "0.1.0.0" "" 0 False `shouldBe` "0.1.0.0" -- non-git build: bare base
 
+    it "baseFromTag pulls the dotted version out of a git tag, stripping v/scope (zinc-7z7)" $ do
+      baseFromTag "myapp" "v1.2.0" `shouldBe` Just "1.2.0" -- leading v
+      baseFromTag "myapp" "1.2.0" `shouldBe` Just "1.2.0" -- bare
+      baseFromTag "myapp" "myapp-3.1.0" `shouldBe` Just "3.1.0" -- <pkg>- scope
+      baseFromTag "myapp" "myapp/4.5.6" `shouldBe` Just "4.5.6" -- <pkg>/ scope
+      baseFromTag "myapp" "v1.10.0" `shouldBe` Just "1.10.0" -- canonicalised (numeric, not lexical)
+      baseFromTag "myapp" "nightly" `shouldBe` Nothing -- no parseable version
+
     it "zinc's version is consistent across zinc.toml, zincVersion, and flake.nix (zinc-b3z drift guard)" $ do
       -- zinc's base version is hand-written in three places; this guards them
       -- against drift instead of plumbing them through one source (which would
@@ -1243,6 +1251,15 @@ main = hspec $ do
     it "fails on an unknown ref" $ do
       r <- cloneAt repo "no-such-ref" "/tmp/zinc-git-fixture/co-bad"
       r `shouldSatisfy` isLeft
+
+    it "nearestTag finds the tag reachable from HEAD; Nothing outside a repo (zinc-7z7)" $ do
+      -- repo's HEAD is c2 (untagged), whose ancestor c1 carries v1.0.
+      tag <- nearestTag repo
+      tag `shouldBe` Just "v1.0"
+      -- a plain directory (not a git repo) describes to Nothing, not a crash.
+      createDirectoryIfMissing True "/tmp/zinc-git-fixture/not-a-repo"
+      none <- nearestTag "/tmp/zinc-git-fixture/not-a-repo"
+      none `shouldBe` Nothing
 
   describe "Zinc.Store" $ do
     let base = "/tmp/zinc-store-test"

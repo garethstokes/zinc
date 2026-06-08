@@ -54,7 +54,7 @@ import Distribution.System (Arch (Wasm32), OS (Wasi), Platform (Platform), build
 import Zinc.CacheBackend (CacheBackend (cbPull, cbPush), CacheConfig (ccReadUrls, ccWriteUrl), PullOutcome (Pulled), httpBackend, resolveCacheConfig)
 import Zinc.Quirks (quirkGhcOptions)
 import Zinc.Fetch (packageDirIn)
-import Zinc.Git (cloneAt, splitRepoSubdir)
+import Zinc.Git (cloneAt, nearestTag, splitRepoSubdir)
 import Zinc.Override (loadOverrides, overrideLocalFile)
 import Zinc.Hackage (fetchHackageTarball)
 import Zinc.Lock (LockedPackage (..), Source (..), lockRepo, lockRev, parseLock, srcKey)
@@ -77,6 +77,7 @@ import Zinc.Output (OutputEvent (..), Sink, emit, nullSink)
 import Zinc.Report (BuildOutcome (..), PackageReport (..), PackageStatus (..), Timing (..), cacheStatsOf)
 import Zinc.Resolve (ResolvedDep (..), isBootLib, topoLevels)
 import Zinc.Store (contentHash, resolveStoreRoot, storeSrcPath, withStoreLock)
+import Zinc.Version (baseFromTag)
 
 -- | Build a workspace: each member's library (so siblings can link) plus every
 -- component whose kind satisfies @keep@, returned as built executable paths.
@@ -138,7 +139,8 @@ buildWorkspaceReport sink target wsDir member ghcOverride keep = runResult $ do
       let dir = wsDir </> member
       src <- liftIO $ readFile (dir </> "zinc.toml")
       mem <- liftEitherE (first (ManifestParse (dir </> "zinc.toml")) (parseMember src))
-      pure (dir, mem)
+      ver <- liftIO (resolvePkgVersion dir (pkgName mem) (pkgVersion mem))
+      pure (dir, mem {pkgVersion = ver})
 
     -- Build a member's library (so siblings/exes can link it), then every
     -- @keep@-selected component, returning the executable paths. Brackets the
@@ -327,6 +329,20 @@ runTests wsDir = runResult $ do
       case code of
         ExitSuccess   -> pure ()
         ExitFailure _ -> failWith (exe ++ ": test suite failed")
+
+-- | Resolve a manifest @[package] version@ to a concrete version string. The
+-- literal @"git"@ (zinc-7z7) opts a package into git-derived versioning: the
+-- base comes from the nearest tag reachable from @dir@'s HEAD (setuptools_scm
+-- style), with leading @v@ / @\<pkg\>@ scope stripped; @Paths_<pkg>@ then
+-- appends the commit metadata. An untagged git-mode checkout falls back to
+-- @"0"@ (honest: no release yet, but the commit still rides along in
+-- fullVersion). Any other value is a literal and is returned unchanged.
+resolvePkgVersion :: FilePath -> String -> String -> IO String
+resolvePkgVersion dir pkg raw
+  | raw /= "git" = pure raw
+  | otherwise = do
+      mtag <- nearestTag dir
+      pure (fromMaybe "0" (mtag >>= baseFromTag pkg))
 
 -- | Topologically order members so a member is preceded by the sibling
 -- members it depends on (so their libraries are registered first).
@@ -657,9 +673,11 @@ buildClosure sink target wsDir storeRoot wsDb ghcVersion buildOpts depFlagsMap o
       if hasZinc
         then do
           src <- readFile (dest </> "zinc.toml")
-          pure $ case parseMember src of
-            Left err  -> Left err
-            Right mem -> Right (pkgVersion mem, pkgComponents mem)
+          case parseMember src of
+            Left err  -> pure (Left err)
+            Right mem -> do
+              ver <- resolvePkgVersion dest (pkgName mem) (pkgVersion mem)
+              pure (Right (ver, pkgComponents mem))
         else do
           entries <- listDirectory dest
           case filter ((== ".cabal") . takeExtension) entries of

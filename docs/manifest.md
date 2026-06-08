@@ -70,6 +70,27 @@ main        = "Spec.hs"
 depends     = ["myapp", "hspec"]
 ```
 
+### Git-derived versions
+
+`version` is normally a literal (`"0.1.0"`). Setting it to the sentinel
+`"git"` opts the package into git-derived versioning instead:
+
+```toml
+[package]
+name = "myapp"
+version = "git"
+```
+
+The base version is then read from the nearest git tag reachable from `HEAD`
+(`git describe`-style — a leading `v` and any `<pkg>-`/`<pkg>/` scope prefix are
+stripped, so `v1.2.0` and `myapp-1.2.0` both yield `1.2.0`). The synthesized
+`Paths_<pkg>` module appends the commit metadata, so `Paths_<pkg>.fullVersion`
+reads e.g. `1.2.0+12.gabc1234` (base + commit count + short hash, `.dirty` when
+the tree has uncommitted changes) — the same format `zinc version` reports for
+zinc itself. An untagged checkout falls back to base `0` (the commit still rides
+along in `fullVersion`). A dependency built from source picks up its version the
+same way, derived from its locked commit.
+
 ## Examples
 
 A minimal single-package executable:

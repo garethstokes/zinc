@@ -4,6 +4,7 @@
 module Zinc.Git
   ( cloneAt
   , listTags
+  , nearestTag
   , splitRepoSubdir
   , gitEnv
   , isInsideRepo
@@ -48,6 +49,20 @@ listTags repo = fmap (fmap parseTags) (run "git" ["ls-remote", "--tags", "--refs
   where
     parseTags out =
       [t | line <- lines out, (_ : ref : _) <- [words line], Just t <- [stripPrefix "refs/tags/" ref]]
+
+-- | The nearest version tag reachable from @dir@'s HEAD (@git describe --tags
+-- --abbrev=0@), or 'Nothing' if the checkout has no tags / isn't a repo / git
+-- is absent. Unlike 'listTags' (the globally-highest tag, possibly on an
+-- unrelated branch), this is the tag an ANCESTOR commit carries — the
+-- setuptools_scm semantics git-mode versioning wants (zinc-7z7). For a
+-- dependency the checkout is pinned at its locked commit, so this derives from
+-- that rev.
+nearestTag :: FilePath -> IO (Maybe String)
+nearestTag dir = do
+  r <- run "git" ["-C", dir, "describe", "--tags", "--abbrev=0"]
+  pure $ case r of
+    Right out | t <- trim out, not (null t) -> Just t
+    _                                        -> Nothing
 
 -- | Whether @dir@ is already inside a git work tree (a parent repo counts), so
 -- @zinc new@ won't nest a fresh repo inside an existing one (zinc-6hf.3).

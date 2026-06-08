@@ -76,6 +76,14 @@ The first self-hosting, agent-first release.
   terminal prompts disabled so missing auth fails fast.
 - `zinc run [TARGET] [-- ARGS]` selects an executable target and execs it with
   inherited stdio + exit-code propagation.
+- Git-derived versioning: the synthesized `Paths_<pkg>` module (emitted for both
+  libraries *and* executables, so an app can `import Paths_<app> (version,
+  fullVersion)`) carries the commit metadata baked in at build time, so an
+  installed binary with no `.git` still reports the exact commit it was built
+  from. `Paths_<pkg>.fullVersion` and `zinc version` share one format —
+  `<base>+<commitCount>.g<shortHash>[.dirty]`. Setting `[package] version =
+  "git"` derives the base from the nearest git tag (`v`/scope-prefix stripped)
+  instead of a literal; deps derive from their locked commit.
 
 ### Performance tracking
 
