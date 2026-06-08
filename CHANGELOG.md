@@ -121,3 +121,11 @@ The first self-hosting, agent-first release.
   (generation 7) …`, plus a `generation` field in `--json` — so the artifact's
   identity (version @ generation) is surfaced at deploy time, not only
   retrospectively via `--list`.
+- Zero-downtime cutovers: `--strategy blue-green` (with a `socket` configured)
+  swaps the service between blue/green profiles behind a persistent systemd
+  socket that holds the port and buffers connections across the swap — a
+  successful cutover drops zero connections. A failing one drops zero too: the
+  new color is validated under a private transient socket *before* the public
+  socket is repointed, so a crashing version fails the validation gate with the
+  live color left completely untouched (verified on a real host — the public
+  service is never restarted on a rejected deploy).

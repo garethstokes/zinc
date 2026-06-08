@@ -58,6 +58,9 @@ import Zinc.Deploy
   , socketUnitFile
   , colorProfileName
   , blueGreenScript
+  , validateSocketFile
+  , validateUnitFile
+  , validateSocketUnit
   , parseDeployGen
   , parseDeployHost
   , parseProbeOutput
@@ -4122,6 +4125,35 @@ main = hspec $ do
         , "exit 1"
         ]
         `shouldBe` True
+
+    it "the validation socket is a private UNIX socket (no port collision) (zinc-haw)" $ do
+      validateSocketFile "myapp" `shouldBe` "zinc-myapp-validate.socket"
+      validateUnitFile "myapp" `shouldBe` "zinc-myapp-validate.service"
+      let s = validateSocketUnit "myapp"
+      ("ListenStream=%t/zinc-myapp-validate.sock" `isInfixOf` s) `shouldBe` True
+      -- it must NOT bind a TCP port (that's the live color's job)
+      any (`isInfixOf` s) ["ListenStream=8080", "ListenStream=0"] `shouldBe` False
+
+    it "validates the new color on the private socket BEFORE touching the public socket (zinc-haw)" $ do
+      let s = blueGreenScript "myapp" 8080 "0.4.0" ["--port", "8080"] [("LOG", "info")] "/nix/store/x-myapp"
+      all (`isInfixOf` s)
+        [ "$unitdir/$vunit"                 -- the transient validation service
+        , "Description=zinc validation myapp" -- brought up under its own unit
+        , "ZINC_VALIDATION_FAILED"          -- the gate's failure marker
+        ]
+        `shouldBe` True
+      -- THE invariant: the validation gate (exit on failure) precedes the public
+      -- socket write, so a bad binary never reaches the public port → zero drop.
+      let occursBefore a b = go
+            where
+              go [] = False
+              go cs@(_ : rest)
+                | a `isPrefixOf` cs = True
+                | b `isPrefixOf` cs = False
+                | otherwise = go rest
+      occursBefore "ZINC_VALIDATION_FAILED" "cat > \"$unitdir/$sock\"" s `shouldBe` True
+      -- the validation instance is always torn down (no orphan units)
+      ("rm -f \"$unitdir/$vunit\" \"$unitdir/$vsock\"" `isInfixOf` s) `shouldBe` True
 
   describe "Zinc.Cabal reexported-modules (jdf)" $ do
     it "reads bare and renamed reexports from a library .cabal" $ do

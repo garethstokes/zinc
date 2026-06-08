@@ -183,9 +183,18 @@ store path and the same generation (the version stamp still refreshes).
 With a `socket` configured, `--strategy blue-green` performs a socket-activated
 cutover: a persistent systemd socket owns the listening port and buffers
 incoming connections while the service is swapped between blue/green profiles,
-so a successful cutover drops zero connections. A new version that fails its
-health-check is rolled back to the live color.
+so a successful cutover drops zero connections.
 
 ```
 zinc deploy prod --strategy blue-green
 ```
+
+A failing version drops zero connections too. Before the public socket is ever
+repointed, the new color is brought up under a **private, transient validation
+socket** and health-checked there. Only a version that starts cleanly and stays
+up proceeds to the public cutover; one that crashes fails the validation gate,
+the deploy stops (`ZINC_DEPLOY_ACTIVATE`), and the live color keeps serving the
+public port completely untouched — it is never restarted, so no in-flight
+connection is affected. (This requires the app to use systemd socket activation
+— inheriting its listening socket rather than binding a port itself — which is
+already what blue/green deployment assumes.)

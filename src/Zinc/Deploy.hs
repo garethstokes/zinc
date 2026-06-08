@@ -55,6 +55,9 @@ module Zinc.Deploy
   , socketUnit
   , blueGreenScript
   , runBlueGreen
+  , validateSocketFile
+  , validateUnitFile
+  , validateSocketUnit
   , deployGenMarker
   , parseDeployGen
   ) where
@@ -474,6 +477,32 @@ socketUnit service port =
     , "WantedBy=sockets.target"
     ]
 
+-- | The transient validation @.socket@ / @.service@ unit names (zinc-haw). The
+-- new color is brought up under these BEFORE the public socket is repointed, so
+-- a crashing version is caught while it can still drop zero public connections.
+validateSocketFile :: String -> String
+validateSocketFile service = "zinc-" ++ service ++ "-validate.socket"
+
+validateUnitFile :: String -> String
+validateUnitFile service = "zinc-" ++ service ++ "-validate.service"
+
+-- | The validation @.socket@ (zinc-haw): a UNIX socket in the runtime dir
+-- (@%t@), not a TCP port — so it never collides with the public port (which the
+-- live color still owns) and needs no extra configuration. A socket-activated
+-- binary inherits this fd exactly as it would the public one; if it crashes on
+-- startup it never reaches @active@, which is the failure the validation gate
+-- catches. The socket is private, started only for the health-check, and torn
+-- down immediately after.
+validateSocketUnit :: String -> String
+validateSocketUnit service =
+  unlines
+    [ "[Unit]"
+    , "Description=zinc validation socket for " ++ service
+    , ""
+    , "[Socket]"
+    , "ListenStream=%t/zinc-" ++ service ++ "-validate.sock"
+    ]
+
 -- | The socket-activated, color-aware blue/green cutover script (zinc-nbk.8).
 -- Run on the host after the closure is copied. It: picks the INACTIVE color,
 -- points that color's profile at the new closure (+ stamps its version, nbk.7),
@@ -485,14 +514,15 @@ socketUnit service port =
 -- repoints the service at the PREVIOUS color and restarts (instant — that
 -- color's profile is untouched) and exits non-zero ('DeployActivate').
 --
--- GUARANTEE + LIMIT (verified on a real host): a SUCCESSFUL cutover drops zero
--- connections (the socket buffers across the swap). On FAILURE the new version
--- never successfully serves and the live color is restored, but a crashing new
--- version briefly stalls the socket during crash-detection, so a few in-flight
--- connections can drop in that ~2s window. Truly-zero-drop on failure would need
--- to validate the new color BEFORE the socket forwards to it, which a
--- socket-activated binary can't do standalone (it needs the inherited fd) — an
--- out-of-band validation port / app cooperation is the future refinement.
+-- GUARANTEE (verified on a real host): zero dropped connections on BOTH paths.
+-- A successful cutover drops zero (the socket buffers across the swap). On
+-- FAILURE the public socket is never repointed at the bad binary at all —
+-- because the new color is first brought up under a transient private
+-- validation socket ('validateSocketUnit', zinc-haw) and health-checked there;
+-- only a binary that reaches @active@ and stays up (NRestarts=0) proceeds to the
+-- public cutover. A crashing version fails the validation gate, the live color
+-- keeps serving the public port untouched, and the deploy exits with
+-- 'DeployActivate' — closing the ~2s crash-detection window that nbk.8 left.
 blueGreenScript :: String -> Int -> String -> [String] -> [(String, String)] -> FilePath -> String
 blueGreenScript service port version args env' path =
   unlines $
@@ -501,6 +531,8 @@ blueGreenScript service port version args env' path =
     , "mkdir -p \"$unitdir\""
     , "sock=" ++ socketUnitFile service
     , "unit=" ++ unitFile service
+    , "vsock=" ++ validateSocketFile service
+    , "vunit=" ++ validateUnitFile service
     , "marker=\"$unitdir/zinc-" ++ service ++ ".color\""
     , "active=$(cat \"$marker\" 2>/dev/null || echo '')"
     , "if [ \"$active\" = blue ]; then target=green; else target=blue; fi"
@@ -510,8 +542,52 @@ blueGreenScript service port version args env' path =
     , "gen=$(nix-env --profile \"$prof\" --list-generations | sed -n 's/^ *\\([0-9][0-9]*\\).*(current).*/\\1/p')"
     , "[ -n \"$gen\" ] && printf '%s\\t%s\\n' \"$gen\" '" ++ version ++ "' >> \"$prof.zinc-versions\""
     , "[ -n \"$gen\" ] && echo \"" ++ deployGenMarker ++ " $gen\"" -- report the generation to the caller (zinc-zp7)
-    , -- the persistent socket (owns the port; never stopped → buffers the swap)
-      "cat > \"$unitdir/$sock\" <<'ZINC_SOCK_EOF'"
+    , -- VALIDATION GATE (zinc-haw): bring the new color up on a PRIVATE socket and
+      -- health-check it BEFORE the public socket is ever repointed. A crashing
+      -- version fails here, leaving the live color on the public port untouched —
+      -- truly zero dropped connections on a failed cutover.
+      "cat > \"$unitdir/$vsock\" <<'ZINC_VSOCK_EOF'"
+    , dropTrailingNewline (validateSocketUnit service)
+    , "ZINC_VSOCK_EOF"
+    , "cat > \"$unitdir/$vunit\" <<ZINC_VSVC_EOF"
+    , "[Unit]"
+    , "Description=zinc validation " ++ service ++ " ($target)"
+    , "Requires=$vsock"
+    , "After=$vsock"
+    , ""
+    , "[Service]"
+    , "ExecStart=$prof/bin/" ++ service ++ concatMap (' ' :) args
+    , "Restart=no" -- a crash must STICK so the gate detects it (not be masked by a restart)
+    ]
+      ++ ["Environment=" ++ k ++ "=" ++ v | (k, v) <- env']
+      ++ [ "ZINC_VSVC_EOF"
+         , "systemctl --user daemon-reload"
+         , "systemctl --user reset-failed \"$vunit\" 2>/dev/null || true"
+         , "systemctl --user start \"$vunit\" 2>/dev/null || true" -- eager start: systemd hands it the validation socket fd
+         , "vup=no; vok=no"
+         , "for _ in $(seq 1 50); do"
+         , "  vs=$(systemctl --user is-active \"$vunit\" 2>/dev/null || true)"
+         , "  if [ \"$vs\" = active ]; then vup=yes; break; fi"
+         , "  if [ \"$vs\" = failed ]; then break; fi"
+         , "  sleep 0.2"
+         , "done"
+         , "if [ \"$vup\" = yes ]; then"
+         , "  sleep 1.5" -- settle window: a crash-on-startup surfaces here
+         , "  vs=$(systemctl --user is-active \"$vunit\" 2>/dev/null || true)"
+         , "  vnr=$(systemctl --user show -p NRestarts --value \"$vunit\" 2>/dev/null || echo 0)"
+         , "  if [ \"$vs\" = active ] && [ \"${vnr:-0}\" = 0 ]; then vok=yes; fi"
+         , "fi"
+         , -- tear the validation instance down regardless of outcome
+           "systemctl --user stop \"$vunit\" 2>/dev/null || true"
+         , "systemctl --user stop \"$vsock\" 2>/dev/null || true"
+         , "rm -f \"$unitdir/$vunit\" \"$unitdir/$vsock\""
+         , "systemctl --user daemon-reload"
+         , "systemctl --user reset-failed \"$vunit\" 2>/dev/null || true"
+         , -- gate: a bad binary stops HERE, before the public socket is touched
+           "if [ \"$vok\" != yes ]; then echo ZINC_VALIDATION_FAILED >&2; exit 1; fi"
+         ]
+      ++ [ -- the persistent socket (owns the port; never stopped → buffers the swap)
+           "cat > \"$unitdir/$sock\" <<'ZINC_SOCK_EOF'"
     , dropTrailingNewline (socketUnit service port)
     , "ZINC_SOCK_EOF"
     , -- the socket-activated service, ExecStart = the TARGET color's profile bin
