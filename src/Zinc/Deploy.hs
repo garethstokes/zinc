@@ -55,6 +55,8 @@ module Zinc.Deploy
   , socketUnit
   , blueGreenScript
   , runBlueGreen
+  , deployGenMarker
+  , parseDeployGen
   ) where
 
 import Data.Char (isDigit)
@@ -301,6 +303,10 @@ profileInstallScript service version path =
       -- (the timestamp comes from nix-env --list-generations itself).
       "gen=$(nix-env --profile \"$prof\" --list-generations | sed -n 's/^ *\\([0-9][0-9]*\\).*(current).*/\\1/p')"
     , "[ -n \"$gen\" ] && printf '%s\\t%s\\n' \"$gen\" '" ++ version ++ "' >> \"$prof.zinc-versions\""
+    , -- Report the assigned generation back to the deploy caller (zinc-zp7) so
+      -- the release's identity (version @ generation N) is surfaced at deploy
+      -- time, not only retrospectively via `deploy --list`.
+      "[ -n \"$gen\" ] && echo \"" ++ deployGenMarker ++ " $gen\""
     ]
 
 -- | Push a built store closure to the host with @nix copy@ (deploy sequence
@@ -318,14 +324,16 @@ runNixCopy h path = do
     ExitFailure _ -> Left (DeployCopy (dhHost h) (firstLine err))
 
 -- | Install a copied store path into the service's user profile over SSH
--- (deploy sequence step 4). NOTE (nbk.2): unit-tested command construction; the
+-- (deploy sequence step 4). On success returns the generation number the
+-- release became (zinc-zp7; 'Nothing' on a pre-zp7 host or if the profile had
+-- no current generation). NOTE (nbk.2): unit-tested command construction; the
 -- IO path is UNVERIFIED without a real NixOS host.
-runProfileInstall :: DeployHost -> String -> String -> FilePath -> IO (Either ZincError ())
+runProfileInstall :: DeployHost -> String -> String -> FilePath -> IO (Either ZincError (Maybe Int))
 runProfileInstall h service version path = do
-  (code, _out, err) <-
+  (code, out, err) <-
     readProcessWithExitCode "ssh" (sshArgs h ["sh", "-s"]) (profileInstallScript service version path)
   pure $ case code of
-    ExitSuccess   -> Right ()
+    ExitSuccess   -> Right (parseDeployGen out)
     ExitFailure _ -> Left (DeployCopy (dhHost h) (firstLine err))
 
 -- | The user-systemd unit file name for a service: @zinc-\<service\>.service@
@@ -501,6 +509,7 @@ blueGreenScript service port version args env' path =
     , "nix-env --profile \"$prof\" --set " ++ path
     , "gen=$(nix-env --profile \"$prof\" --list-generations | sed -n 's/^ *\\([0-9][0-9]*\\).*(current).*/\\1/p')"
     , "[ -n \"$gen\" ] && printf '%s\\t%s\\n' \"$gen\" '" ++ version ++ "' >> \"$prof.zinc-versions\""
+    , "[ -n \"$gen\" ] && echo \"" ++ deployGenMarker ++ " $gen\"" -- report the generation to the caller (zinc-zp7)
     , -- the persistent socket (owns the port; never stopped → buffers the swap)
       "cat > \"$unitdir/$sock\" <<'ZINC_SOCK_EOF'"
     , dropTrailingNewline (socketUnit service port)
@@ -554,13 +563,27 @@ blueGreenScript service port version args env' path =
 -- | @zinc deploy --strategy blue-green@ (zinc-nbk.8): the socket-activated,
 -- color-swapping, zero-dropped-connection cutover over SSH. A failed health-check
 -- has already been rolled back on the host by 'blueGreenScript'.
-runBlueGreen :: DeployHost -> String -> Int -> String -> [String] -> [(String, String)] -> FilePath -> IO (Either ZincError ())
+runBlueGreen :: DeployHost -> String -> Int -> String -> [String] -> [(String, String)] -> FilePath -> IO (Either ZincError (Maybe Int))
 runBlueGreen h service port version args env' path = do
-  (code, _out, err) <-
+  (code, out, err) <-
     readProcessWithExitCode "ssh" (sshArgs h ["sh", "-s"]) (blueGreenScript service port version args env' path)
   pure $ case code of
-    ExitSuccess   -> Right ()
+    ExitSuccess   -> Right (parseDeployGen out)
     ExitFailure _ -> Left (DeployActivate (dhHost h) (firstLine err))
+
+-- | The marker line a deploy script prints to report the generation it created,
+-- so 'runProfileInstall' / 'runBlueGreen' can return it (zinc-zp7).
+deployGenMarker :: String
+deployGenMarker = "ZINC_GEN"
+
+-- | The generation number a deploy script reported via 'deployGenMarker', taken
+-- from the LAST such line (a no-op redeploy may print several). 'Nothing' if no
+-- well-formed marker is present (e.g. a pre-zp7 host).
+parseDeployGen :: String -> Maybe Int
+parseDeployGen out =
+  case [n | l <- lines out, [m, g] <- [words l], m == deployGenMarker, [(n, "")] <- [reads g]] of
+    [] -> Nothing
+    ns -> Just (last ns)
 
 -- | One deployed release: a profile generation, its app version (from the
 -- version sidecar, 'Nothing' for a pre-nbk.7 deploy), its timestamp, and whether

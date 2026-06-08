@@ -369,30 +369,35 @@ dispatch mode (Deploy arg service initFlag rollback _dryRun listFlag rollbackTo 
                       -- socket-activated zero-downtime cutover (nbk.8): the socket
                       -- buffers connections across the color swap; a crashing new
                       -- version is rolled back to the live color by the health-check.
-                      steps <- chainE [runNixCopy h path, runBlueGreen h svc port version (rdArgs resolved) (rdEnv resolved) path]
-                      case steps of
-                        Left e   -> failDeploy e
-                        Right () ->
-                          deployOk
-                            (JObject [("host", JString (dhHost h)), ("service", JString svc), ("version", JString version), ("strategy", JString "blue-green"), ("port", JInt port), ("activated", JBool True)])
-                            ("Deployed " ++ svc ++ " " ++ version ++ " to " ++ dhHost h ++ " (blue-green, zero-downtime on port " ++ show port ++ ") — " ++ path)
+                      copy <- runNixCopy h path
+                      case copy of
+                        Left e -> failDeploy e
+                        Right () -> runBlueGreen h svc port version (rdArgs resolved) (rdEnv resolved) path >>= \bg -> case bg of
+                          Left e     -> failDeploy e
+                          Right mgen ->
+                            deployOk
+                              (JObject ([("host", JString (dhHost h)), ("service", JString svc), ("version", JString version), ("strategy", JString "blue-green"), ("port", JInt port), ("activated", JBool True)] ++ genField mgen))
+                              ("Deployed " ++ svc ++ " " ++ version ++ genSuffix mgen ++ " to " ++ dhHost h ++ " (blue-green, zero-downtime on port " ++ show port ++ ") — " ++ path)
                   else do
-                    steps <-
-                      chainE
-                        [ runNixCopy h path
-                        , runProfileInstall h svc version path
-                        , runActivate h svc (rdArgs resolved) (rdEnv resolved)
-                        ]
-                    case steps of
-                      Left e   -> failDeploy e
-                      Right () ->
-                        deployOk
-                          (JObject [("host", JString (dhHost h)), ("service", JString svc), ("version", JString version), ("storePath", JString path), ("activated", JBool True)])
-                          ("Deployed " ++ svc ++ " " ++ version ++ " to " ++ dhHost h ++ " — " ++ path ++ "\n  systemd unit " ++ profileName svc ++ " is active.")
+                    copy <- runNixCopy h path
+                    case copy of
+                      Left e -> failDeploy e
+                      Right () -> runProfileInstall h svc version path >>= \inst -> case inst of
+                        Left e     -> failDeploy e
+                        Right mgen -> runActivate h svc (rdArgs resolved) (rdEnv resolved) >>= \act -> case act of
+                          Left e   -> failDeploy e
+                          Right () ->
+                            deployOk
+                              (JObject ([("host", JString (dhHost h)), ("service", JString svc), ("version", JString version), ("storePath", JString path), ("activated", JBool True)] ++ genField mgen))
+                              ("Deployed " ++ svc ++ " " ++ version ++ genSuffix mgen ++ " to " ++ dhHost h ++ " — " ++ path ++ "\n  systemd unit " ++ profileName svc ++ " is active.")
       where h = rdHost resolved
     -- Run Either-returning IO steps in order, stopping at the first Left.
     chainE [] = pure (Right ())
     chainE (a : as) = a >>= either (pure . Left) (const (chainE as))
+    -- Surface the generation a release became (zinc-zp7): " (generation N)" in
+    -- the human line, a "generation" field in --json. Omitted on a pre-zp7 host.
+    genSuffix = maybe "" (\n -> " (generation " ++ show n ++ ")")
+    genField = maybe [] (\n -> [("generation", JInt n)])
 dispatch mode (SkillAdd repo ref) =
   runSkillAdd repo ref "." >>= either (failCmd mode) putStrLn
 dispatch mode SkillList =

@@ -58,6 +58,7 @@ import Zinc.Deploy
   , socketUnitFile
   , colorProfileName
   , blueGreenScript
+  , parseDeployGen
   , parseDeployHost
   , parseProbeOutput
   , probeScript
@@ -4009,8 +4010,21 @@ main = hspec $ do
         , "--set /nix/store/abc-app"
         , "0.3.1" -- stamps the app version against the new generation (nbk.7)
         , ".zinc-versions"
+        , "echo \"ZINC_GEN $gen\"" -- reports the generation to the caller (zinc-zp7)
         ]
         `shouldBe` True
+
+    it "parseDeployGen reads the generation a deploy script reported (zinc-zp7)" $ do
+      parseDeployGen "ZINC_GEN 7\n" `shouldBe` Just 7
+      -- a no-op redeploy can print several; take the latest
+      parseDeployGen (unlines ["ZINC_GEN 4", "ZINC_GEN 5"]) `shouldBe` Just 5
+      -- mixed with other script output, picks out the marker line
+      parseDeployGen (unlines ["building...", "ZINC_GEN 12", "done"]) `shouldBe` Just 12
+      parseDeployGen "no marker here\n" `shouldBe` Nothing -- pre-zp7 host
+      parseDeployGen "ZINC_GEN notanumber\n" `shouldBe` Nothing -- malformed
+
+    it "the blue/green cutover also reports its generation to the caller (zinc-zp7)" $
+      (blueGreenScript "myapp" 8080 "0.3.1" [] [] "/nix/store/abc-app" `shouldContain` "echo \"ZINC_GEN $gen\"")
 
   describe "Zinc.Deploy unit + activate + rollback (nbk.3/.4)" $ do
     it "names the user-systemd unit zinc-<service>.service" $

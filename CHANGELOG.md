@@ -113,3 +113,11 @@ The first self-hosting, agent-first release.
   `zinc deploy <name>` resolves the configured target; an ad-hoc `user@host`
   still works, and `--service` overrides the configured unit name. `zinc fmt`
   preserves the `[deploy.*]` tables.
+- Release history: each deploy is a nix-profile generation stamped with its app
+  version, so `zinc deploy --list <host>` shows the release timeline (generation
+  → version → timestamp → current) and `--rollback-to <N>` switches to any past
+  generation (health-checked, auto-rolling-back on failure). A successful deploy
+  now reports the generation the release became — `Deployed myapp 0.3.1
+  (generation 7) …`, plus a `generation` field in `--json` — so the artifact's
+  identity (version @ generation) is surfaced at deploy time, not only
+  retrospectively via `--list`.
