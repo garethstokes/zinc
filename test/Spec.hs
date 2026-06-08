@@ -99,7 +99,7 @@ import Zinc.Manifest
 import Zinc.Fetch (gitFetchManifest, isHpackOnly, namedCabal, packageDirIn)
 import Zinc.GC (GCRoot (..), gcStore, runGc)
 import Zinc.Add (enrichWithRepos, freezeClosure, lockEntry, runAdd, runUpdate, runVendor, splitNameVersion, vendoredSoftPins)
-import Zinc.Build (GhcInvocation (..), LibBuild (..), MemberBuild (..), PackageConf (..), archiveArgs, buildLib, buildMember, discoverModules, externalInterpFlags, ghcMakeArgs, initPackageDb, installedVersions, memberBuildDir, packageFlags, ppCommand, preprocessorFor, reactorLinkFlags, registeredExposedMatches, registerPackage, renderConf, replArgs, runPreprocessor, wasmSupported, writeFileIfChanged, zincBuiltUnitIds)
+import Zinc.Build (GhcInvocation (..), LibBuild (..), MemberBuild (..), PackageConf (..), archiveArgs, buildLib, buildMember, discoverModules, externalInterpFlags, ghcMakeArgs, initPackageDb, installedVersions, memberBuildDir, packageFlags, parsePkgconfigLibs, ppCommand, preprocessorFor, reactorLinkFlags, registeredExposedMatches, registerPackage, renderConf, replArgs, runPreprocessor, wasmSupported, writeFileIfChanged, zincBuiltUnitIds)
 import Zinc.Cache (BuildKey (..), buildCacheKey, buildCacheKeyFor, cacheHit, cacheKeyPayload, confCodegenEpoch, storeConfPath, storePkgPath, writeCachedConf)
 import Zinc.Cabal (bootConflicts, cabalBuildType, cabalJsSources, cabalVersion, parseCabalComponents, parseCabalComponentsForGhc, parseCabalComponentsForPlatform)
 import Zinc.Configure (configureIncludeDirs)
@@ -1322,6 +1322,7 @@ main = hspec $ do
             , compDepends = ["aeson"]
             , compSystemLibs = ["zlib"]
             , compExtraLibs = []
+            , compPkgconfig = []
             , compIncludeDirs = []
             , compCppOptions = []
             , compCSources = []
@@ -1861,6 +1862,10 @@ main = hspec $ do
     it "works with no system libraries" $
       ("haskell.compiler.ghc965" `isInfixOf` generateFlake "9.6.5" []) `shouldBe` True
 
+    it "provisions pkg-config when (and only when) system libraries are present (zinc-mmx)" $ do
+      ("pkgs.pkg-config" `isInfixOf` flake) `shouldBe` True -- has zlib/pcre
+      ("pkg-config" `isInfixOf` generateFlake "9.6.5" []) `shouldBe` False -- none needed
+
   describe "Zinc.Target (9po.1)" $ do
     it "parses native + wasm targets (with a wasm alias), rejects unknown" $ do
       map parseTarget ["native", "wasm32-wasi", "wasm"] `shouldBe` map Right [Native, Wasm32Wasi, Wasm32Wasi]
@@ -2041,6 +2046,7 @@ main = hspec $ do
             , compDepends = ["aeson", "base"] -- finalizePD normalizes build-depends order
             , compSystemLibs = ["zlib"]
             , compExtraLibs = ["z", "pthread"]
+            , compPkgconfig = []
             , compIncludeDirs = []
             , compCppOptions = []
             , compCSources = []
@@ -2240,16 +2246,17 @@ main = hspec $ do
       toNixpkgs "libpq" `shouldBe` Just "postgresql"
       toNixpkgs "pq" `shouldBe` Just "postgresql"
 
-  describe "pkgconfigLinkName (zinc-mmx)" $ do
-    it "maps the zlib pkgconfig module to its real link name -lz (not -lzlib)" $
-      pkgconfigLinkName "zlib" `shouldBe` "z"
+  describe "pkgconfig link resolution (zinc-mmx)" $ do
+    it "parses pkg-config --libs-only-l output into link names (the general, correct source)" $ do
+      parsePkgconfigLibs "-lz" `shouldBe` ["z"]
+      parsePkgconfigLibs "-lpq" `shouldBe` ["pq"]
+      parsePkgconfigLibs "-lssl -lcrypto" `shouldBe` ["ssl", "crypto"] -- a module needing several libs
+      parsePkgconfigLibs "" `shouldBe` []
 
-    it "drops a leading lib for the common lib<name> convention (libpq -> pq)" $
-      pkgconfigLinkName "libpq" `shouldBe` "pq"
-
-    it "passes an already-bare link name through unchanged" $ do
-      pkgconfigLinkName "pq" `shouldBe` "pq"
-      pkgconfigLinkName "crypto" `shouldBe` "crypto"
+    it "pkgconfigLinkName is the offline fallback (curated map + drop-lib heuristic)" $ do
+      pkgconfigLinkName "zlib" `shouldBe` "z" -- module name is not the lib name
+      pkgconfigLinkName "libpq" `shouldBe` "pq" -- drop a leading lib
+      pkgconfigLinkName "pq" `shouldBe` "pq" -- already bare
 
   describe "freeze engine" $ do
     repo <- runIO setupDepRepo
@@ -2900,6 +2907,7 @@ main = hspec $ do
               , compDepends = []
               , compSystemLibs = []
               , compExtraLibs = []
+              , compPkgconfig = []
               , compIncludeDirs = []
               , compCppOptions = []
               , compCSources = []
@@ -2932,7 +2940,7 @@ main = hspec $ do
   describe "orderMembers" $
     it "orders a member after the siblings it depends on" $ do
       let comp deps =
-            Component Library "x" [] [] Nothing [] [] deps [] [] [] [] [] [] [] False
+            Component Library "x" [] [] Nothing [] [] deps [] [] [] [] [] [] [] [] False
           core = ("packages/core", MemberManifest "core" "1.0" [comp []])
           app = ("packages/app", MemberManifest "app" "1.0" [comp ["core"]])
       map (pkgName . snd) (orderMembers [app, core]) `shouldBe` ["core", "app"]
@@ -2966,7 +2974,7 @@ main = hspec $ do
     it "builds + runs a consumer that declares only the umbrella, importing a re-exported symbol" $ do
       let base = "/tmp/zinc-umbrella-consumer"
           db = base ++ "/db/pkg.db"
-          lib nm = Component Library nm ["src"] [] Nothing [] [] ["base"] [] [] [] [] [] [] [] False
+          lib nm = Component Library nm ["src"] [] Nothing [] [] ["base"] [] [] [] [] [] [] [] [] False
       stale <- doesDirectoryExist base
       when stale $ removeDirectoryRecursive base
       _ <- initPackageDb db
@@ -3104,7 +3112,7 @@ main = hspec $ do
 
   describe "replArgs" $ do
     let exeComp =
-          Component Executable "app" ["app"] [] (Just "Main.hs") [] [] [] [] [] [] [] [] [] [] False
+          Component Executable "app" ["app"] [] (Just "Main.hs") [] [] [] [] [] [] [] [] [] [] [] False
 
     it "builds ghci args loading the member's main" $
       replArgs (Just "/db") "/m" exeComp
@@ -3118,7 +3126,7 @@ main = hspec $ do
       materialize dir (scaffoldNew "demo")
       -- flat scaffold: the member is the repo root itself (member "."), source at app/
       let memberDir = dir
-          comp = Component Executable "demo" ["app"] [] (Just "Main.hs") [] [] [] [] [] [] [] [] [] [] False
+          comp = Component Executable "demo" ["app"] [] (Just "Main.hs") [] [] [] [] [] [] [] [] [] [] [] False
       out <- readProcess "ghci" (replArgs Nothing memberDir comp ++ ["-e", "main"]) ""
       out `shouldBe` "Hello from demo!\n"
 
@@ -4162,6 +4170,7 @@ main = hspec $ do
             , compDepends = ["base"]
             , compSystemLibs = []
             , compExtraLibs = []
+            , compPkgconfig = []
             , compIncludeDirs = []
             , compCppOptions = []
             , compCSources = []

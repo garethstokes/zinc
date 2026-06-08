@@ -68,7 +68,7 @@ import Distribution.Types.UnqualComponentName (unUnqualComponentName)
 import Distribution.Utils.Path (getSymbolicPath)
 import Distribution.Version (mkVersion, withinRange)
 import Zinc.Manifest (Component (..), ComponentKind (..))
-import Zinc.SysLibs (pkgconfigLinkName, toNixpkgs)
+import Zinc.SysLibs (toNixpkgs)
 
 -- | Derive zinc 'Component's from @.cabal@ source, resolving conditionals
 -- against a recent default GHC. See 'parseCabalComponentsForGhc'.
@@ -249,6 +249,7 @@ mergeLib sub acc =
     , compCSources    = nub (compCSources acc ++ compCSources sub)
     , compSystemLibs  = nub (compSystemLibs acc ++ compSystemLibs sub)
     , compExtraLibs   = nub (compExtraLibs acc ++ compExtraLibs sub)
+    , compPkgconfig   = nub (compPkgconfig acc ++ compPkgconfig sub)
     , compReexports   = nub (compReexports acc ++ compReexports sub)
     , compWasmExports = nub (compWasmExports acc ++ compWasmExports sub)
     }
@@ -308,12 +309,13 @@ fromBuildInfo kind name bi =
     , compGhcOptions = hcOptions GHC bi
     , compDepends = map (unPackageName . depPkgName) (targetBuildDepends bi)
     , compSystemLibs = nub (mapMaybe toNixpkgs (extraLibs bi ++ pkgconfigNames bi))
-    , -- C library LINK names for the conf's @extra-libraries:@ (zinc-389):
-      -- cabal @extra-libraries@ are already link names; a @pkgconfig-depends@
-      -- MODULE is mapped to its link name via 'pkgconfigLinkName' — a module name
-      -- is not generally the lib name (pkgconfig @zlib@ -> @-lz@, not @-lzlib@),
-      -- which broke executable linking (zinc-mmx).
-      compExtraLibs = nub (extraLibs bi ++ map pkgconfigLinkName (pkgconfigNames bi))
+    , -- C library LINK names for the conf's @extra-libraries:@ (zinc-389): cabal
+      -- @extra-libraries@ are already link names. @pkgconfig-depends@ MODULES are
+      -- kept separate ('compPkgconfig') and resolved to link names via
+      -- @pkg-config --libs@ at build time, because a module name is not the lib
+      -- name (pkgconfig @zlib@ -> @-lz@, not @-lzlib@; zinc-mmx).
+      compExtraLibs = nub (extraLibs bi)
+    , compPkgconfig = nub (pkgconfigNames bi)
     , compIncludeDirs = includeDirs bi
     , compCppOptions = cppOptions bi
     , compCSources = cSources bi

@@ -112,7 +112,8 @@ data Component = Component
   , compGhcOptions     :: [String]
   , compDepends        :: [String]
   , compSystemLibs     :: [String]     -- ^ nixpkgs attr names (for the env flake's @system-libs@)
-  , compExtraLibs      :: [String]     -- ^ external C library LINK names (cabal @extra-libraries@ + @pkgconfig-depends@ normalized, e.g. @libpq@ -> @pq@); emitted as the conf's @extra-libraries:@ so GHC auto-adds @-l<name>@ for dependents (zinc-389)
+  , compExtraLibs      :: [String]     -- ^ external C library LINK names (cabal @extra-libraries@); emitted as the conf's @extra-libraries:@ so GHC auto-adds @-l<name>@ for dependents (zinc-389)
+  , compPkgconfig      :: [String]     -- ^ @pkgconfig-depends@ MODULE names; resolved to link names via @pkg-config --libs@ at build time, NOT by a string heuristic — a module name is not the lib name (@zlib@ -> @-lz@, zinc-mmx)
   , compIncludeDirs    :: [String]     -- ^ C-header search dirs for CPP, relative to the package
   , compCppOptions     :: [String]     -- ^ CPP @-D@ defines (cabal cpp-options), passed via @-optP@
   , compCSources       :: [String]     -- ^ C sources to compile + archive (cabal c-sources), relative to the package
@@ -169,6 +170,7 @@ mkComponent kind name t =
     , compDepends = strs "depends"
     , compSystemLibs = strs "system-libs"
     , compExtraLibs = strs "extra-libraries"
+    , compPkgconfig = strs "pkgconfig-depends"
     , compIncludeDirs = strs "include-dirs"
     , compCppOptions = strs "cpp-options"
     , compCSources = strs "c-sources"

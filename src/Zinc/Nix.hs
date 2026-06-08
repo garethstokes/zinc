@@ -38,6 +38,10 @@ generateFlakeFor Native ghcVersion systemLibs =
         -- must be on PATH — like alex/happy, a host code generator (zinc-x6b).
         "pkgs.haskellPackages.hspec-discover"
       ]
+        -- pkg-config resolves a package's pkgconfig-depends MODULES to real C
+        -- link names at build time (zinc-mmx), e.g. zlib -> -lz; provided
+        -- whenever the build pulls in system libraries.
+        ++ ["pkgs.pkg-config" | not (null systemLibs)]
         ++ map ("pkgs." ++) systemLibs
 
     preamble =

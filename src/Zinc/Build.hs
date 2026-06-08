@@ -8,6 +8,7 @@ module Zinc.Build
   , zincBuiltUnitIds
   , PackageConf (..)
   , renderConf
+  , parsePkgconfigLibs
   , archiveArgs
   , registerPackage
   , registerPackageFor
@@ -40,16 +41,18 @@ module Zinc.Build
 
 import Data.Maybe (fromMaybe, isJust, listToMaybe, mapMaybe)
 import Control.Monad (unless, when)
-import Data.List (find, intercalate, isInfixOf, isPrefixOf, nub, sort)
+import Data.List (find, intercalate, isInfixOf, isPrefixOf, nub, sort, stripPrefix)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getModificationTime, listDirectory, makeAbsolute)
 import System.Exit (ExitCode (..))
 import System.FilePath (dropExtension, makeRelative, normalise, splitDirectories, takeDirectory, takeExtension, (-<.>), (<.>), (</>))
 import System.IO (readFile')
+import System.IO.Error (tryIOError)
 import System.Process (CreateProcess (cwd), proc, readCreateProcessWithExitCode, readProcessWithExitCode)
 import Zinc.Diagnostic (ZincError (GhcCompile, OtherError, WasmUnsupported))
 import Zinc.Except (liftIO, orFail, orFailE, runResult)
 import Zinc.Macros (emitCabalMacros)
 import Zinc.Manifest (Component (..))
+import Zinc.SysLibs (pkgconfigLinkName)
 import Zinc.Paths (pathsModuleName, synthesizePaths)
 import Zinc.Resolve (isBootLib)
 import Zinc.Target (Target (Native), ghcFor, ghcPkgFor, hsc2hsFor, isWasm)
@@ -523,6 +526,9 @@ buildLibArtifactsFor target lb = runResult $ do
   -- so the conf can carry `New from unit:Orig` and a consumer importing the
   -- re-exported module needs only this package on its -package list.
   reexports <- liftIO (resolveReexports target (lbPackageDb lb) (nub (compDepends comp)) (compReexports comp))
+  -- Resolve pkgconfig-depends MODULE names to real C link names via pkg-config
+  -- (zinc-mmx), merged with the cabal extra-libraries for the conf.
+  pcLinks <- liftIO (resolvePkgconfigLinks (compPkgconfig comp))
   let confText =
         renderConf
           PackageConf
@@ -537,13 +543,36 @@ buildLibArtifactsFor target lb = runResult $ do
               -- zinc deps by bare name, non-base boot libs by real id.
               confDepends = [depConfId d | d <- nub (compDepends comp), d /= "base"]
             , confReexports = reexports
-            , confExtraLibraries = compExtraLibs comp
+            , confExtraLibraries = nub (compExtraLibs comp ++ pcLinks)
             }
   -- Persist the conf alongside the build (the artifact cache re-registers it
   -- without recompiling); report whether it changed so a sibling lib can skip
   -- re-registration on the persisted db.
   confChanged <- liftIO (writeFileIfChanged (lbDistDir lb </> "package.conf") confText)
   pure (confText, confChanged)
+
+-- | Resolve @pkgconfig-depends@ MODULE names to their C link names via
+-- @pkg-config --libs-only-l@ (zinc-mmx) — the authoritative answer for the
+-- provisioned toolchain, e.g. @zlib@ -> @z@ (libz, @-lz@), @libpq@ -> @pq@,
+-- handling modules that need several @-l@ flags. Per module, fall back to the
+-- curated/heuristic 'pkgconfigLinkName' when @pkg-config@ is absent or doesn't
+-- know it, so a build is never worse off than the old string heuristic.
+resolvePkgconfigLinks :: [String] -> IO [String]
+resolvePkgconfigLinks = fmap (nub . concat) . mapM one
+  where
+    one m = do
+      -- tryIOError: a missing pkg-config binary THROWS (posix_spawnp), it doesn't
+      -- return ExitFailure — so a build without pkg-config must not crash; it
+      -- falls back to the curated/heuristic link name.
+      res <- tryIOError (readProcessWithExitCode "pkg-config" ["--libs-only-l", m] "")
+      pure $ case res of
+        Right (ExitSuccess, out, _) | ls@(_ : _) <- parsePkgconfigLibs out -> ls
+        _                                                                  -> [pkgconfigLinkName m]
+
+-- | Extract C link names from @pkg-config --libs-only-l@ output: each @-l\<name\>@
+-- token becomes @\<name\>@ (zinc-mmx). e.g. @"-lz"@ -> @["z"]@, multiple handled.
+parsePkgconfigLibs :: String -> [String]
+parsePkgconfigLibs = mapMaybe (stripPrefix "-l") . words
 
 -- | Discover a library's modules by walking its source dirs: every
 -- @.hs\/.lhs\/.hsc\/.x\/.y@ file becomes a dotted module name (its path under the
