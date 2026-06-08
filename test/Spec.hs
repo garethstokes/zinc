@@ -2183,7 +2183,7 @@ main = hspec $ do
         , "gitHash = \"abc1234def5678\""
         , "gitCommitCount = 42"
         , "gitDirty = True"
-        , "fullVersion = \"0.1.0-gabc1234d-dirty\"" -- version + short hash + dirty
+        , "fullVersion = \"0.1.0+42.gabc1234.dirty\"" -- shared gitVersion format (zinc-b3z)
         ]
         `shouldBe` True
 
@@ -2945,7 +2945,7 @@ main = hspec $ do
               , compWasmExports = []
               , compFromCabal = False
               }
-      r <- buildMember (MemberBuild dir (dir ++ "/build") Nothing comp)
+      r <- buildMember (MemberBuild dir (dir ++ "/build") Nothing comp "hello" "0.1.0")
       case r of
         Right exe -> do
           out <- readProcess exe [] ""
@@ -3051,7 +3051,7 @@ main = hspec $ do
       createDirectoryIfMissing True (base ++ "/app/app")
       writeFile (base ++ "/app/app/Main.hs") "module Main where\nimport Origin (secret)\nmain :: IO ()\nmain = print secret\n"
       let consumer = (lib "app") {compKind = Executable, compName = "app", compSourceDirs = ["app"], compMain = Just "Main.hs", compDepends = ["umbrella"]}
-      r <- buildMember (MemberBuild (base ++ "/app") (base ++ "/app/build") (Just db) consumer)
+      r <- buildMember (MemberBuild (base ++ "/app") (base ++ "/app/build") (Just db) consumer "app" "0.1.0")
       (origR, umbR) `shouldBe` (Right (), Right ())
       case r of
         Right exe -> do

@@ -261,6 +261,8 @@ data MemberBuild = MemberBuild
   , mbBuildDir  :: FilePath
   , mbPackageDb :: Maybe FilePath
   , mbComponent :: Component
+  , mbPackageName    :: String -- ^ the PACKAGE name (for Paths_<pkg>; the component may be a differently-named exe)
+  , mbPackageVersion :: String
   }
 
 -- | A member's build-output directory: @\<memberDir\>\/.zinc\/build@. The path
@@ -306,6 +308,14 @@ buildMemberFor target mb = runResult $ do
   let comp = mbComponent mb
   orFailE (pure (wasmSupported target comp))
   liftIO (createDirectoryIfMissing True (mbBuildDir mb))
+  -- Synthesize Paths_<pkg> for the executable too (zinc-ij5), so an app can
+  -- `import Paths_<pkg> (version, fullVersion, ...)` — Cabal generates it
+  -- per-component. The library's Paths_ is NOT exposed to dependents
+  -- (confExposedModules omits it), so there's no clash with this local copy.
+  let pathsGen = mbBuildDir mb </> "zinc-gen"
+  liftIO (createDirectoryIfMissing True pathsGen)
+  pathsMeta <- liftIO (gitMetaOf (mbMemberDir mb))
+  _ <- liftIO $ writeFileIfChanged (pathsGen </> pathsModuleName (mbPackageName mb) <.> "hs") (synthesizePaths (mbPackageName mb) (versionInts (mbPackageVersion mb)) pathsMeta)
   -- Toolchain-provided packages (boot + bundled, e.g. the wasm GHC's
   -- ghc-experimental) resolve by name; a dep zinc itself built (registered in the
   -- member's package db) takes -package-id, even if the same name also lives in
@@ -326,6 +336,7 @@ buildMemberFor target mb = runResult $ do
           ++ ["-hide-all-packages"]
           ++ packageFlags zincBuilt (map fst installed) (compDepends comp)
           ++ map (\d -> "-i" ++ (mbMemberDir mb </> d)) srcDirs
+          ++ ["-i" ++ pathsGen] -- the synthesized Paths_<pkg> (zinc-ij5)
           ++ externalInterpFlags target
           ++ map ("-X" ++) (compExtensions comp)
           ++ compGhcOptions comp

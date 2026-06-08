@@ -157,7 +157,7 @@ buildWorkspaceReport sink target wsDir member ghcOverride keep = runResult $ do
           -- entry can't be cleanly re-registered across builds.
           libDir <- liftIO (makeAbsolute (dir </> ".zinc" </> "lib"))
           orFailE (accuminto acc "compile" (buildLibFor target (LibBuild dir libDir wsDb (pkgName mem) (pkgVersion mem) lib)))
-      exes <- traverse (\comp -> orFailE (accuminto acc "link" (buildMemberFor target (MemberBuild dir (memberBuildDir dir) (Just wsDb) comp)))) (wanted mem)
+      exes <- traverse (\comp -> orFailE (accuminto acc "link" (buildMemberFor target (MemberBuild dir (memberBuildDir dir) (Just wsDb) comp (pkgName mem) (pkgVersion mem))))) (wanted mem)
       t1 <- liftIO getMonotonicTime
       liftIO (emit sink (CompileDone (pkgName mem) (round ((t1 - t0) * 1000) :: Int) False))
       pure exes
