@@ -8,12 +8,13 @@ module Zinc.Fmt
   ( canonicalizeManifest
   , setManifestDependencies
   , mergeManifestDependencies
+  , reflowArrays
   , runFmt
   ) where
 
 import Control.Monad (when)
-import Data.Char (isSpace)
-import Data.List (isPrefixOf, sort)
+import Data.Char (isAlphaNum, isSpace)
+import Data.List (dropWhileEnd, intercalate, isPrefixOf, sort)
 import System.Directory (doesFileExist)
 import System.FilePath ((</>))
 import Zinc.Diagnostic (ZincError (NoZincToml))
@@ -122,7 +123,129 @@ stripTrailingBlank = reverse . dropWhile (all isSpace) . reverse
 canonicalizeManifest :: String -> Either String String
 canonicalizeManifest src = do
   ws <- parseWorkspace src
-  setManifestDependencies src (wsDependencies ws)
+  out <- setManifestDependencies src (wsDependencies ws)
+  -- Reflow multi-item arrays one-per-line across the whole manifest (the build
+  -- sections kept verbatim AND the rendered [dependencies]) so fmt gives a
+  -- single canonical array layout.
+  pure (reflowArrays out)
+
+-- | Reflow every @key = [ ... ]@ array to ONE ITEM PER LINE — the canonical
+-- @zinc fmt@ array layout. A multi-item array becomes:
+--
+-- > key = [
+-- >   "a",
+-- >   "b",
+-- > ]
+--
+-- A single-item or empty array stays inline (@key = ["a"]@ / @key = []@). Inline
+-- comments on an item and standalone comment lines inside the array are
+-- preserved. Conservative + non-destructive: an array it can't cleanly parse
+-- (nested arrays/inline tables, an unterminated bracket) is left exactly as-is,
+-- and the transform is idempotent — fmt rewrites the file in place, so it must
+-- never mangle a hand-curated manifest.
+reflowArrays :: String -> String
+reflowArrays = unlines . go . lines
+  where
+    go [] = []
+    go (l : ls) = case arrayOpen l of
+      Nothing -> l : go ls
+      Just (indent, keyPart, afterBr) ->
+        case collect afterBr ls of
+          Nothing -> l : go ls -- no matching close found: leave untouched
+          Just (body, trailer, rest) -> case parseParts body of
+            Nothing    -> l : go ls -- nested/odd content: leave untouched
+            Just parts -> emit indent keyPart parts trailer ++ go rest
+
+    -- A line that opens an array: @<indent><barekey> = [<rest>@. Inline tables
+    -- (@{@) and scalar values are not matched.
+    arrayOpen l =
+      let (indent, rest) = span isSpace l
+          (k, eqRest) = break (== '=') rest
+          key = dropWhileEnd isSpace k
+       in case eqRest of
+            ('=' : afterEq) | validKey key -> case dropWhile (== ' ') afterEq of
+              ('[' : afterBr) -> Just (indent, key ++ " = [", afterBr)
+              _               -> Nothing
+            _ -> Nothing
+    validKey s = not (null s) && all (\c -> isAlphaNum c || c == '-' || c == '_') s
+
+    -- Gather the array body (from just after @[@ to the matching top-level @]@),
+    -- the trailer after @]@, and the remaining lines. 'Nothing' if no clean
+    -- close (or a nested @[@/@{@) is found.
+    collect afterBr ls =
+      case breakClose (intercalate "\n" (afterBr : ls)) of
+        Nothing -> Nothing
+        Just (body, after) ->
+          let (trailer, restPart) = break (== '\n') after
+              rest = case restPart of ('\n' : r) -> splitNL r; _ -> []
+           in Just (body, trailer, rest)
+
+    -- Scan to the top-level @]@: track string literals (with escapes) and skip
+    -- @#@-comments; bail (Nothing) on a nested @[@/@{@ at the top level.
+    breakClose = goC "" False
+      where
+        goC _ _ [] = Nothing
+        goC acc True (c : cs) = case c of
+          '\\' -> case cs of (d : ds) -> goC (d : '\\' : acc) True ds; [] -> Nothing
+          '"'  -> goC ('"' : acc) False cs
+          _    -> goC (c : acc) True cs
+        goC acc False (c : cs) = case c of
+          '"' -> goC ('"' : acc) True cs
+          '#' -> let (cmt, r) = break (== '\n') cs in goC (reverse cmt ++ ('#' : acc)) False r
+          ']' -> Just (reverse acc, cs)
+          '[' -> Nothing
+          '{' -> Nothing
+          _   -> goC (c : acc) False cs
+
+    -- Parse a body into value/comment parts; 'Nothing' on a nested bracket/table.
+    parseParts = part . skip
+      where
+        skip = dropWhile (\c -> isSpace c || c == ',')
+        part [] = Just []
+        part s@(c : _)
+          | c == '#'  = let (cmt, r) = break (== '\n') s in (ACmt (dropWhileEnd isSpace cmt) :) <$> part (skip r)
+          | c == '"'  = do (v, r) <- readStr s; let (mc, r') = inlineComment r in (AVal v mc :) <$> part (skip r')
+          | c == '['  = Nothing
+          | c == '{'  = Nothing
+          | otherwise = do (v, r) <- readBare s; let (mc, r') = inlineComment r in (AVal v mc :) <$> part (skip r')
+        readStr ('"' : cs) = goS ['"'] cs
+          where
+            goS _ [] = Nothing
+            goS acc ('\\' : d : ds) = goS (d : '\\' : acc) ds
+            goS acc ('"' : ds) = Just (reverse ('"' : acc), ds)
+            goS acc (x : xs) = goS (x : acc) xs
+        readStr _ = Nothing
+        readBare s = case break (\c -> c == ',' || c == '#' || isSpace c) s of
+          ("", _)    -> Nothing
+          (tok, r)   -> Just (tok, r)
+        -- An inline comment is on the SAME line as the value (after optional
+        -- spaces + a comma). No comment → return the input unchanged.
+        inlineComment s =
+          let s1 = dropWhile (`elem` " \t") s
+              s2 = case s1 of (',' : r) -> dropWhile (`elem` " \t") r; _ -> s1
+           in case s2 of
+                ('#' : _) -> let (cmt, r) = break (== '\n') s2 in (Just (dropWhileEnd isSpace cmt), r)
+                _         -> (Nothing, s)
+
+    emit indent keyPart parts trailer
+      | length vals <= 1 && null cmts && all noInline parts =
+          [indent ++ keyPart ++ intercalate ", " vals ++ "]" ++ rtrailer]
+      | otherwise =
+          [indent ++ keyPart] ++ map (itemLine indent) parts ++ [indent ++ "]" ++ rtrailer]
+      where
+        vals = [v | AVal v _ <- parts]
+        cmts = [c | ACmt c <- parts]
+        noInline (AVal _ (Just _)) = False
+        noInline _ = True
+        rtrailer = case dropWhile isSpace trailer of "" -> ""; t -> "  " ++ t
+        itemLine ind (AVal v mc) = ind ++ "  " ++ v ++ "," ++ maybe "" ("  " ++) mc
+        itemLine ind (ACmt c)    = ind ++ "  " ++ c
+
+    splitNL s = case break (== '\n') s of (a, '\n' : r) -> a : splitNL r; (a, _) -> [a]
+
+-- | A parsed array element for 'reflowArrays': a value (with an optional inline
+-- comment) or a standalone comment line.
+data ArrPart = AVal String (Maybe String) | ACmt String
 
 -- | Drop every dependency-related section (header line through to the next
 -- top-level header), keeping all other lines in order.

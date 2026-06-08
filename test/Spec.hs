@@ -64,7 +64,7 @@ import Zinc.Deploy
   , resolveDeploy
   , sshArgs
   )
-import Zinc.Fmt (canonicalizeManifest, mergeManifestDependencies, setManifestDependencies)
+import Zinc.Fmt (canonicalizeManifest, mergeManifestDependencies, reflowArrays, setManifestDependencies)
 import Zinc.Doctor (doctorJson, doctorOk, flakesOffDiagnostic, lockDriftDiagnostic, renderDoctor, runDoctor)
 import Zinc.Introspect (DepStatus (..), explainJson, graphJson, runStatus, statusJson)
 import Zinc.Prime (onboardText, primeText)
@@ -567,6 +567,32 @@ main = hspec $ do
                    , Dependency "pp" Latest (Just "r/mono#pp") [] []      -- override kept (not clobbered by "r/mono")
                    , Dependency "scientific" Latest (Just "r/sci") [] []  -- discovered
                    ]
+
+  describe "zinc fmt array reflow (one item per line)" $ do
+    it "expands a multi-item array to one item per line with trailing commas" $
+      reflowArrays "depends = [\"base\", \"text\", \"stm\"]\n"
+        `shouldBe` unlines ["depends = [", "  \"base\",", "  \"text\",", "  \"stm\",", "]"]
+
+    it "keeps a single-item or empty array inline" $ do
+      reflowArrays "source-dirs = [\"src\"]\n" `shouldBe` "source-dirs = [\"src\"]\n"
+      reflowArrays "members = []\n" `shouldBe` "members = []\n"
+
+    it "collapses an already-wrapped array and is idempotent" $ do
+      let wrapped = unlines ["ghc-options = [", "  \"-Wall\", \"-XLambdaCase\",", "  \"-XTupleSections\"", "]"]
+          once = reflowArrays wrapped
+      once `shouldBe` unlines ["ghc-options = [", "  \"-Wall\",", "  \"-XLambdaCase\",", "  \"-XTupleSections\",", "]"]
+      reflowArrays once `shouldBe` once -- idempotent
+
+    it "preserves an inline comment on an item and a standalone comment line" $
+      reflowArrays (unlines ["ghc-options = [", "  \"-Wall\",", "  # a note", "  \"-lpq\"  # link libpq", "]"])
+        `shouldBe` unlines ["ghc-options = [", "  \"-Wall\",", "  # a note", "  \"-lpq\",  # link libpq", "]"]
+
+    it "leaves non-array lines and inline tables untouched" $ do
+      reflowArrays "flags = { use-pkg-config = true }\n" `shouldBe` "flags = { use-pkg-config = true }\n"
+      reflowArrays "name = \"manifest\"\n" `shouldBe` "name = \"manifest\"\n"
+
+    it "leaves a nested array unchanged (conservative, never mangles)" $
+      reflowArrays "matrix = [[1, 2], [3, 4]]\n" `shouldBe` "matrix = [[1, 2], [3, 4]]\n"
 
   describe "zinc fmt (8n6.3)" $ do
     it "parses fmt and fmt --check" $ do
