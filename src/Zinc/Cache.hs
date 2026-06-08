@@ -51,7 +51,7 @@ data BuildKey = BuildKey
 -- cost on upgrade buys correctness without a per-build source re-parse (the
 -- finer split is a future optimization, see zinc-bie option 2).
 confCodegenEpoch :: String
-confCodegenEpoch = "3" -- bumped: pkgconfig link names now resolved via pkg-config at build time
+confCodegenEpoch = "4" -- bumped: Paths_<pkg> now emits git version metadata (zinc-3x4)
 
 -- | A stable cache key (sha256 hex) over the build inputs. The package name is
 -- part of the key: a monorepo's sub-packages share one commit (and often the

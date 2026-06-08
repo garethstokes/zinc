@@ -51,6 +51,7 @@ import System.Process (CreateProcess (cwd), proc, readCreateProcessWithExitCode,
 import Zinc.Diagnostic (ZincError (GhcCompile, OtherError, WasmUnsupported))
 import Zinc.Except (liftIO, orFail, orFailE, runResult)
 import Zinc.Macros (emitCabalMacros)
+import Zinc.Git (gitMetaOf)
 import Zinc.Manifest (Component (..))
 import Zinc.SysLibs (pkgconfigLinkName)
 import Zinc.Paths (pathsModuleName, synthesizePaths)
@@ -431,7 +432,11 @@ buildLibArtifactsFor target lb = runResult $ do
       unitId = lbName lb
       pathsMod = pathsModuleName (lbName lb)
       macrosHeader = gen </> "cabal_macros.h"
-  _ <- liftIO $ writeFileIfChanged (gen </> pathsMod <.> "hs") (synthesizePaths (lbName lb) (versionInts (lbVersion lb)))
+  -- Git version metadata for Paths_<pkg> (zinc-3x4): a member's working tree, or
+  -- a dep's store clone pinned at the locked commit (deterministic per rev, so
+  -- the commit-keyed cache is not churned). Best-effort for non-git checkouts.
+  gitMeta <- liftIO (gitMetaOf (lbMemberDir lb))
+  _ <- liftIO $ writeFileIfChanged (gen </> pathsMod <.> "hs") (synthesizePaths (lbName lb) (versionInts (lbVersion lb)) gitMeta)
   installed <- liftIO (installedVersionsFor target)
   bootUnitIds <- liftIO (installedUnitIdsFor target)
   zincBuilt <- liftIO (zincBuiltUnitIds (lbPackageDb lb))

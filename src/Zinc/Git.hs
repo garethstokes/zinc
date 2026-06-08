@@ -8,6 +8,9 @@ module Zinc.Git
   , gitEnv
   , isInsideRepo
   , gitInitIfNeeded
+  , GitMeta (..)
+  , noGitMeta
+  , gitMetaOf
   ) where
 
 import Data.Char (isSpace)
@@ -15,6 +18,7 @@ import Data.List (stripPrefix)
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
 import System.Process (CreateProcess (env), proc, readCreateProcessWithExitCode)
+import Text.Read (readMaybe)
 
 -- | Split a repo spec into its clone URL and an optional in-repo subdirectory,
 -- encoded as a @url#subdir@ suffix. This lets a dependency point at a package
@@ -49,6 +53,39 @@ listTags repo = fmap (fmap parseTags) (run "git" ["ls-remote", "--tags", "--refs
 -- @zinc new@ won't nest a fresh repo inside an existing one (zinc-6hf.3).
 isInsideRepo :: FilePath -> IO Bool
 isInsideRepo dir = either (const False) (const True) <$> run "git" ["-C", dir, "rev-parse", "--is-inside-work-tree"]
+
+-- | Git metadata for a checkout (zinc-3x4): the HEAD commit, the count of
+-- commits reachable from it, and whether the working tree has uncommitted
+-- changes to TRACKED files. Best-effort: a non-git dir (or absent git) yields
+-- 'noGitMeta'. For a dependency the checkout is the store clone pinned at the
+-- locked commit, so this is a deterministic function of that commit (HEAD == the
+-- rev, clean, fixed count) — safe for the commit-keyed build cache. Untracked
+-- files are ignored (@--untracked-files=no@) so zinc's own build dir (@.zinc/@)
+-- never reads as dirty.
+data GitMeta = GitMeta
+  { gmHash        :: String -- ^ HEAD commit (full sha), @""@ if unknown
+  , gmCommitCount :: Int    -- ^ commits reachable from HEAD, @0@ if unknown
+  , gmDirty       :: Bool   -- ^ tracked working-tree changes present
+  }
+  deriving (Eq, Show)
+
+-- | The metadata for a non-git (or git-less) checkout: empty, clean.
+noGitMeta :: GitMeta
+noGitMeta = GitMeta "" 0 False
+
+gitMetaOf :: FilePath -> IO GitMeta
+gitMetaOf dir = do
+  hash <- ask ["rev-parse", "HEAD"]
+  cnt <- ask ["rev-list", "--count", "HEAD"]
+  st <- ask ["status", "--porcelain", "--untracked-files=no"]
+  pure
+    GitMeta
+      { gmHash = maybe "" trim hash
+      , gmCommitCount = maybe 0 id (cnt >>= readMaybe . trim)
+      , gmDirty = maybe False (not . null . trim) st
+      }
+  where
+    ask args = either (const Nothing) Just <$> run "git" (["-C", dir] ++ args)
 
 -- | @git init@ a repo at @dir@ unless it is already inside one. Best-effort:
 -- the caller decides how to surface a failure (e.g. git absent).

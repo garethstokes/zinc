@@ -69,7 +69,7 @@ import Zinc.Doctor (doctorJson, doctorOk, flakesOffDiagnostic, lockDriftDiagnost
 import Zinc.Introspect (DepStatus (..), explainJson, graphJson, runStatus, statusJson)
 import Zinc.Prime (onboardText, primeText)
 import Zinc.Json (Json (..), parseJson, renderJson)
-import Zinc.Git (cloneAt, gitEnv, gitInitIfNeeded, isInsideRepo, listTags, splitRepoSubdir)
+import Zinc.Git (GitMeta (..), cloneAt, gitEnv, gitInitIfNeeded, isInsideRepo, listTags, noGitMeta, splitRepoSubdir)
 import Zinc.Hackage (hackageCabalUrl, hackageTarballUrl, newestNormalVersion, sourceRepoOf)
 import Zinc.Outdated (OutdatedDep (..), Status (..), classify)
 import Zinc.Quirks (quirkGhcOptions)
@@ -2148,7 +2148,7 @@ main = hspec $ do
       (compExtensions <$> libc) `shouldBe` Just ["Haskell2010", "BangPatterns"]
 
   describe "synthesizePaths" $ do
-    let src = synthesizePaths "my-pkg" [0, 1, 0]
+    let src = synthesizePaths "my-pkg" [0, 1, 0] noGitMeta
 
     it "munges dashes to underscores in the module name" $
       pathsModuleName "my-pkg" `shouldBe` "Paths_my_pkg"
@@ -2159,6 +2159,20 @@ main = hspec $ do
 
     it "encodes the version via makeVersion" $
       ("makeVersion [0,1,0]" `isInfixOf` src) `shouldBe` True
+
+    it "emits git version metadata bindings (zinc-3x4)" $ do
+      let s = synthesizePaths "my-pkg" [0, 1, 0] (GitMeta "abc1234def5678" 42 True)
+      all (`isInfixOf` s)
+        [ "gitHash, gitCommitCount, gitDirty, fullVersion" -- exported
+        , "gitHash = \"abc1234def5678\""
+        , "gitCommitCount = 42"
+        , "gitDirty = True"
+        , "fullVersion = \"0.1.0-gabc1234d-dirty\"" -- version + short hash + dirty
+        ]
+        `shouldBe` True
+
+    it "fullVersion is bare when there is no git metadata (deterministic stub)" $
+      ("fullVersion = \"0.1.0\"" `isInfixOf` src) `shouldBe` True
 
     it "leads with pragmas overriding a package's NoImplicitPrelude/RebindableSyntax defaults (zinc-2lv)" $ do
       -- basement/foundation declare these as default-extensions, which would
