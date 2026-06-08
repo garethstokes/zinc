@@ -44,6 +44,7 @@ commands.
 | `zinc doctor` | Diagnose environment and project problems, with fixes. |
 | `zinc perf` | Build performance history: slowest dependencies, cache hit rate. |
 | `zinc prime` | An orientation summary for an agent landing in the project. |
+| `zinc version` | zinc's own version, derived from git at build time (`<base>+<commits>.g<hash>`). |
 
 ## Targets and deployment
 
@@ -51,6 +52,7 @@ commands.
 |---|---|
 | `zinc build --target wasm32-wasi` | Build to WebAssembly. |
 | `zinc package <format>` | Produce a deployable artifact (`docker`, `static`, `bundle`, `nix`). |
+| `zinc deploy <host>` | Build, copy, and activate the closure on a remote NixOS host. `--list`, `--rollback[-to N]`, `--init`. |
 | `zinc skill <add\|list\|remove\|sync>` | Manage installed agentic skills. |
 
 ## How

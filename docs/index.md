@@ -38,7 +38,7 @@ git pull. zinc build. Done.
 ## Targets and deployment
 
 - [WebAssembly targets](wasm.md): `zinc build --target wasm32-wasi`.
-- [Packaging and deployment](deploy.md): `zinc package` for Docker images, static binaries, and portable bundles.
+- [Packaging and deployment](deploy.md): `zinc package` for Docker images, static binaries, and portable bundles; `zinc deploy` to push and activate a closure on a remote NixOS host with generations and rollback.
 - [Skills](skills.md): install agentic skills as a package kind.
 
 ## The name
