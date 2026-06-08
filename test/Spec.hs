@@ -9,7 +9,7 @@ import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (IOException, try)
 import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (find, isInfixOf, isPrefixOf, isSuffixOf, sort)
-import Data.Maybe (isJust)
+import Data.Maybe (isJust, listToMaybe)
 import System.Directory
   ( createDirectoryIfMissing
   , doesDirectoryExist
@@ -939,6 +939,17 @@ main = hspec $ do
       gitVersion "0.1.0.0" "abc1234def" 267 False `shouldBe` "0.1.0.0+267.gabc1234"
       gitVersion "0.1.0.0" "abc1234def" 267 True `shouldBe` "0.1.0.0+267.gabc1234.dirty"
       gitVersion "0.1.0.0" "" 0 False `shouldBe` "0.1.0.0" -- non-git build: bare base
+
+    it "zinc's version is consistent across zinc.toml, zincVersion, and flake.nix (zinc-b3z drift guard)" $ do
+      -- zinc's base version is hand-written in three places; this guards them
+      -- against drift instead of plumbing them through one source (which would
+      -- recompile the library on every commit / need Nix-side wiring).
+      tomlSrc <- readFile "zinc.toml"
+      flakeSrc <- readFile "flake.nix"
+      let tomlVer = either (const "") pkgVersion (parseMember tomlSrc)
+          quotedAfterVersion l = case dropWhile (/= '"') l of ('"' : r) -> Just (takeWhile (/= '"') r); _ -> Nothing
+          flakeVer = listToMaybe [v | l <- lines flakeSrc, "version = \"" `isInfixOf` l, Just v <- [quotedAfterVersion l]]
+      (tomlVer, flakeVer) `shouldBe` (zincVersion, Just zincVersion)
 
     it "parses `outdated` and `outdated --all` (90j.1)" $ do
       parseArgs ["outdated"] `shouldBe` Right (OutputFlags False False, Outdated False)
