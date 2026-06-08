@@ -594,6 +594,24 @@ main = hspec $ do
     it "leaves a nested array unchanged (conservative, never mangles)" $
       reflowArrays "matrix = [[1, 2], [3, 4]]\n" `shouldBe` "matrix = [[1, 2], [3, 4]]\n"
 
+    it "preserves inline comments on dependency fields through fmt + is idempotent" $ do
+      let src = unlines
+            [ "[workspace]", "members = []", "ghc = \"9.6.5\"", ""
+            , "[dependencies]", ""
+            , "[dependencies.postgresql-libpq]"
+            , "rev = \"abc123\"   # v0.11.0.0"
+            , "repo = \"https://example/pq\""
+            , "flags = { use-pkg-config = true }   # pkgconfig provider"
+            ]
+          out1 = either error id (canonicalizeManifest src)
+      ("rev = \"abc123\"  # v0.11.0.0" `isInfixOf` out1) `shouldBe` True
+      ("flags = { use-pkg-config = true }  # pkgconfig provider" `isInfixOf` out1) `shouldBe` True
+      canonicalizeManifest out1 `shouldBe` Right out1 -- idempotent
+
+    it "preserves a trailing comment on a shorthand dependency line" $ do
+      let src = unlines ["[workspace]", "members = []", "ghc = \"9.6.5\"", "[dependencies]", "aeson = \"2.2\"  # pinned"]
+      ("aeson = \"2.2\"  # pinned" `isInfixOf` either error id (canonicalizeManifest src)) `shouldBe` True
+
   describe "zinc fmt (8n6.3)" $ do
     it "parses fmt and fmt --check" $ do
       parseArgs ["fmt"] `shouldBe` Right (OutputFlags False False, Fmt False)

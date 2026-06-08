@@ -124,10 +124,89 @@ canonicalizeManifest :: String -> Either String String
 canonicalizeManifest src = do
   ws <- parseWorkspace src
   out <- setManifestDependencies src (wsDependencies ws)
-  -- Reflow multi-item arrays one-per-line across the whole manifest (the build
-  -- sections kept verbatim AND the rendered [dependencies]) so fmt gives a
-  -- single canonical array layout.
-  pure (reflowArrays out)
+  -- Re-attach inline comments on dependency fields (the canonical re-render drops
+  -- them), then reflow multi-item arrays one-per-line across the whole manifest
+  -- (build sections kept verbatim AND the rendered [dependencies]).
+  pure (reflowArrays (reattachDepComments src out))
+
+-- | Re-attach inline comments on @[dependencies.*]@ field lines and shorthand
+-- dependency lines that the canonical re-render drops, so @zinc fmt@ keeps
+-- helpful annotations like @rev = "..."  # v0.11.0.0@. Matched by
+-- @(dependency, field)@ so a comment survives dependency sorting and form
+-- canonicalization. Array-valued fields are skipped (item-level comments ride
+-- through 'reflowArrays'); run BEFORE 'reflowArrays' so a (rare) array-field
+-- comment lands after the closing @]@. Idempotent.
+reattachDepComments :: String -> String -> String
+reattachDepComments src canon = unlines (go DepOther (lines canon))
+  where
+    inlineC = scanComments DepOther (lines src)
+    go _ [] = []
+    go ctx (l : ls)
+      | isHeaderLine l = l : go (depCtx l) ls
+      | otherwise = apply ctx l : go ctx ls
+    apply ctx l = case commentKey ctx l of
+      Just k | Just c <- lookup k inlineC, not (hasInlineComment l) -> l ++ "  " ++ c
+      _ -> l
+
+    scanComments _ [] = []
+    scanComments ctx (l : ls)
+      | isHeaderLine l = scanComments (depCtx l) ls
+      | otherwise = case (commentKey ctx l, snd (splitComment l)) of
+          (Just k, Just cmt) -> (k, dropWhileEnd isSpace cmt) : scanComments ctx ls
+          _                  -> scanComments ctx ls
+
+-- | The dependency context a top-level header introduces.
+depCtx :: String -> DepCtx
+depCtx l
+  | isDepHeaderLine l = if null (subName l) then DepShort else DepSub (subName l)
+  | otherwise = DepOther
+
+-- | The @(dependency, field)@ key a non-header line contributes to (the field a
+-- comment would attach to), if it is a single-line @field = value@ in a
+-- dependency context. Array-valued fields and headers/com-only lines yield
+-- 'Nothing'.
+commentKey :: DepCtx -> String -> Maybe (String, String)
+commentKey ctx l = do
+  f <- fieldName l
+  case ctx of
+    DepSub x -> Just (x, f)
+    DepShort -> Just (f, f) -- a shorthand line's dep name IS its field key
+    DepOther -> Nothing
+
+-- | The field name of a single-line @field = value@ line (the text before @=@),
+-- or 'Nothing' for a header, a comment-only line, or an ARRAY-valued field.
+fieldName :: String -> Maybe String
+fieldName l =
+  let (code, _) = splitComment l
+      (k, eqRest) = break (== '=') code
+   in case eqRest of
+        ('=' : v)
+          | not (isHeaderLine l)
+          , let f = dropWhileEnd isSpace (dropWhile isSpace k)
+          , not (null f)
+          , take 1 (dropWhile isSpace v) /= "[" -> Just f
+        _ -> Nothing
+
+hasInlineComment :: String -> Bool
+hasInlineComment l = case splitComment l of (_, Just _) -> True; _ -> False
+
+-- | Split a line into (code before a comment, the @#@-comment incl. leading @#@)
+-- — respecting string literals so a @#@ inside a quoted value is not a comment.
+splitComment :: String -> (String, Maybe String)
+splitComment = goS "" False
+  where
+    goS acc inStr s = case s of
+      [] -> (reverse acc, Nothing)
+      (c : cs)
+        | inStr, c == '\\' -> case cs of (d : ds) -> goS (d : '\\' : acc) True ds; [] -> (reverse ('\\' : acc), Nothing)
+        | inStr, c == '"' -> goS ('"' : acc) False cs
+        | inStr -> goS (c : acc) True cs
+        | c == '"' -> goS ('"' : acc) True cs
+        | c == '#' -> (reverse acc, Just (c : cs))
+        | otherwise -> goS (c : acc) False cs
+
+-- | Dependency-region context for comment re-attachment.
+data DepCtx = DepSub String | DepShort | DepOther
 
 -- | Reflow every @key = [ ... ]@ array to ONE ITEM PER LINE — the canonical
 -- @zinc fmt@ array layout. A multi-item array becomes:
