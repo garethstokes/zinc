@@ -4,6 +4,7 @@ module Zinc.Version
   ( newestTag
   , newestTagFor
   , parseVersion
+  , gitVersion
   ) where
 
 import Control.Applicative ((<|>))
@@ -53,6 +54,16 @@ newestPairFor mpkg isSubdir tags
     -- The version part after a "<pkg>" + separator scope prefix.
     stripScope pkg t =
       stripPrefix (pkg ++ "-") t <|> stripPrefix (pkg ++ "/") t <|> stripPrefix (pkg ++ "_") t
+
+-- | A git-derived full version string (zinc-b3z): the base version, plus
+-- @+\<commitCount\>.g\<shortHash\>@ when a commit hash is known, plus @.dirty@
+-- when the working tree has uncommitted changes. With no hash (a non-git build)
+-- it is just the base — the deterministic fallback. Pure, so the format is
+-- testable without a build.
+gitVersion :: String -> String -> Int -> Bool -> String
+gitVersion base hash count dirty
+  | null hash = base
+  | otherwise = base ++ "+" ++ show count ++ ".g" ++ take 7 hash ++ (if dirty then ".dirty" else "")
 
 parseVersion :: String -> Maybe [Int]
 parseVersion raw =

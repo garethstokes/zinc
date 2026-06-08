@@ -12,7 +12,8 @@ import System.Process (CreateProcess (std_err, std_in, std_out), StdStream (Inhe
 import Zinc.Add (addInWorkspace, updateInWorkspace, vendorInWorkspace)
 import Zinc.CLI (Command (..), helpOverview, parseArgs)
 import Zinc.Closure (closureReportJson, renderClosure, runClosure)
-import Zinc.Diagnostic (ZincError (OtherError), envelope, exitCodeFor, humanError, rawToolOutput, toDiagnostic, toDiagnostics, zincVersion, zincVersionLine)
+import Zinc.BuildInfo (zincBaseVersion, zincFullVersion)
+import Zinc.Diagnostic (ZincError (OtherError), envelope, exitCodeFor, humanError, rawToolOutput, toDiagnostic, toDiagnostics)
 import Zinc.Delta (deltaJson, renderDelta)
 import Zinc.Deploy (ProbeChecks (..), ResolvedDeploy (..), deployReadyJson, dhHost, generationsJson, profileName, renderGenerations, resolveDeploy, runActivate, runBlueGreen, runDeploy, runDeployList, runInit, runNixCopy, runProfileInstall, runRollback, runSwitchGeneration)
 import Zinc.Docker (runDockerfile)
@@ -289,8 +290,10 @@ dispatch mode Dockerfile =
 dispatch mode (Closure pkg) =
   runClosure pkg >>= emitIntrospection "closure" mode closureReportJson renderClosure
 dispatch mode Version
-  | machine mode = putStrLn (renderJson (envelope "version" True (Just (JObject [("version", JString zincVersion)])) Nothing []))
-  | otherwise    = putStrLn zincVersionLine
+  -- `zinc version` / --version reports the git-derived full version baked in at
+  -- build time (zinc-b3z); the machine block also carries the base for tooling.
+  | machine mode = putStrLn (renderJson (envelope "version" True (Just (JObject [("version", JString zincFullVersion), ("baseVersion", JString zincBaseVersion)])) Nothing []))
+  | otherwise    = putStrLn ("zinc " ++ zincFullVersion)
 dispatch _ Help = putStr helpOverview
 dispatch mode (Package fmtStr tag out to) =
   case parsePackageFormat fmtStr of

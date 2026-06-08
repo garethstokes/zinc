@@ -114,7 +114,7 @@ import Zinc.Paths (pathsModuleName, synthesizePaths)
 import Zinc.Report (BuildOutcome (..), CacheStats (..), PackageReport (..), PackageStatus (..), Timing (..), buildBreakdownLine, buildDataJson, buildSummaryLine, cacheStatsOf, fmtMs, packageReportJson, renderResolution, resolutionJson, statusText, timingJson)
 import Zinc.SysLibs (pkgconfigLinkName, toNixpkgs)
 import Zinc.Resolve (DepManifest (..), ResolvedDep (..), isBootLib, resolve, topoLevels, topoSort)
-import Zinc.Version (newestTag, newestTagFor)
+import Zinc.Version (gitVersion, newestTag, newestTagFor)
 import Zinc.Lock (LockedPackage (..), Source (..), lockRepo, lockRev, parseLock, renderLock, srcKey)
 import Zinc.Skill (LockedSkill (..), SkillDep (..), parseSkillLock, parseSkills, readSkillFrontmatter, renderSkillLock)
 import Zinc.SkillCmd (renderSkillList, runSkillAdd, runSkillList, runSkillRemove, runSkillSync, skillRepoName, writeSkillLockEntry)
@@ -934,6 +934,11 @@ main = hspec $ do
 
     it "zincVersionLine reads `zinc <semver>` (plus optional commit/date)" $
       zincVersionLine `shouldSatisfy` isInfixOf ("zinc " ++ zincVersion)
+
+    it "gitVersion appends git metadata to the base, falling back to base (zinc-b3z)" $ do
+      gitVersion "0.1.0.0" "abc1234def" 267 False `shouldBe` "0.1.0.0+267.gabc1234"
+      gitVersion "0.1.0.0" "abc1234def" 267 True `shouldBe` "0.1.0.0+267.gabc1234.dirty"
+      gitVersion "0.1.0.0" "" 0 False `shouldBe` "0.1.0.0" -- non-git build: bare base
 
     it "parses `outdated` and `outdated --all` (90j.1)" $ do
       parseArgs ["outdated"] `shouldBe` Right (OutputFlags False False, Outdated False)
