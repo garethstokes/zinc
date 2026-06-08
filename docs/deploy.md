@@ -77,10 +77,64 @@ zinc deploy myhost --rollback      # revert to the previous generation
 zinc deploy myhost --rollback-to 3 # switch to a specific generation
 ```
 
-`<host>` is a `[user@]host[:port]` address or an ssh-config alias. Run
-`zinc deploy <host> --init` first: it resolves the host over SSH and prints the
-NixOS module snippet that makes it a deploy target (the deploy user in
-`trusted-users`, lingering enabled). It is printed, never applied unprompted.
+`<host>` is a `[user@]host[:port]` address or an ssh-config alias.
+
+### What the host needs
+
+A deploy target is an ordinary NixOS host. Three preconditions must hold; before
+every deploy zinc probes them over SSH and, if one is missing, stops with a
+typed diagnostic that names the gap rather than failing partway through:
+
+| Requirement | Why | If missing |
+|---|---|---|
+| **SSH access** to the host (key-based; zinc never prompts for a password) | every step runs over SSH | `ZINC_DEPLOY_SSH` |
+| **Nix** installed (a working `nix` with the daemon) | the closure is copied and activated with Nix | `ZINC_DEPLOY_NO_NIX` |
+| The **deploy user in `nix.settings.trusted-users`** (directly, via a `@group`, or `*`) | so the host accepts the pushed store paths from `nix copy` | `ZINC_DEPLOY_NOT_TRUSTED` |
+| **User lingering** enabled for the deploy user | so the user-level systemd service keeps running without an active login | `ZINC_DEPLOY_NO_LINGER` |
+
+You never hand-edit Nix config by guesswork. Run `--init` first — it resolves
+the deploy user (the explicit `user@`, else the host's own `id -un` over SSH)
+and prints the exact NixOS module to add to that host's configuration:
+
+```
+$ zinc deploy prod --init
+{
+  nix.settings.trusted-users = [ "deploy" ];
+  users.users.deploy.linger  = true;
+}
+```
+
+zinc never silently mutates a remote system, so the snippet is **printed, not
+applied** — add it to the host's `configuration.nix` (or a module it imports),
+`nixos-rebuild switch` once, and the host is a permanent deploy target. No agent
+or daemon is installed on the host; everything zinc needs is stock Nix +
+systemd-user.
+
+### How a deploy works
+
+Each `zinc deploy` runs the same sequence; any step's failure stops with a typed
+diagnostic and leaves the running service untouched:
+
+1. **Probe** the host's preconditions (above).
+2. **Build** the executable's Nix closure locally (the same closure as
+   `zinc package nix`).
+3. **Copy** the closure to the host with `nix copy` (signatures unchecked — the
+   trust is the SSH channel + `trusted-users`).
+4. **Install** it into a dedicated per-service profile,
+   `~/.local/state/nix/profiles/zinc-<service>`, with `nix-env --set` — which
+   makes the profile contain *exactly* this closure as one new **generation**, so
+   a redeploy cleanly replaces the previous version and every release is
+   retained for rollback. The app version is stamped against the generation in a
+   sidecar so `--list` can label each release.
+5. **Activate** a user-systemd unit `zinc-<service>.service` whose `ExecStart`
+   points at the profile's `bin/` (a fixed path) — so a rollback only re-points
+   the profile and restarts, never rewrites the unit. `args`/`env` from the
+   target become the unit's command line and `Environment=` lines.
+6. **Health-check**: restart the unit, wait for it to become `active`, then
+   confirm after a short settle window that it stayed up (`NRestarts = 0`). If
+   the new version crashes or crash-loops, zinc **auto-rolls-back** to the
+   previous generation, restarts, and reports the failure — the host is never
+   left on a broken release.
 
 ### Named targets
 
