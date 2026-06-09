@@ -34,7 +34,45 @@
             nativeBuildInputs = [ ghc ];
             buildPhase = ''
               runHook preBuild
-              ghc -O -threaded -rtsopts -with-rtsopts=-N -isrc -iapp \
+              # zinc's own source imports the synthesized Paths_zinc (git version
+              # metadata, zinc-3x4/b3z). A cold-start nix build has no existing
+              # zinc to synthesize it, and no .git in the sandbox (the fileset is
+              # src+app only), so emit a no-git stub here — matching
+              # Zinc.Paths.synthesizePaths with noGitMeta — before driving ghc
+              # directly (zinc-z9w). version mirrors [package].version in zinc.toml.
+              mkdir -p .boot
+              cat > .boot/Paths_zinc.hs <<'PATHS_EOF'
+{-# LANGUAGE NoRebindableSyntax #-}
+{-# LANGUAGE ImplicitPrelude #-}
+module Paths_zinc (version, gitHash, gitCommitCount, gitDirty, fullVersion, getDataFileName, getDataDir, getBinDir, getLibDir, getSysconfDir) where
+
+import Data.Version (Version, makeVersion)
+
+version :: Version
+version = makeVersion [0,1,0,0]
+
+gitHash :: String
+gitHash = ""
+
+gitCommitCount :: Int
+gitCommitCount = 0
+
+gitDirty :: Bool
+gitDirty = False
+
+fullVersion :: String
+fullVersion = "0.1.0.0"
+
+getDataFileName :: FilePath -> IO FilePath
+getDataFileName name = return name
+
+getDataDir, getBinDir, getLibDir, getSysconfDir :: IO FilePath
+getDataDir = return "."
+getBinDir = return "."
+getLibDir = return "."
+getSysconfDir = return "."
+PATHS_EOF
+              ghc -O -threaded -rtsopts -with-rtsopts=-N -isrc -iapp -i.boot \
                 -outputdir .build -o zinc app/Main.hs
               runHook postBuild
             '';
