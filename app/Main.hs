@@ -28,7 +28,7 @@ import Zinc.GC (runGc)
 import Zinc.Introspect (explainJson, graphJson, renderExplain, renderGraph, renderStatus, runExplain, runGraph, runStatus, statusJson)
 import Zinc.Json (Json (..), renderJson)
 import Zinc.Metrics (recordBuild)
-import Zinc.Orchestrate (buildDeployClosure, checkLockDrift, resolveRunTargetFor, runBuildReport, runCachePush, runClean, runPackage, runRepl, runTests, runWarm)
+import Zinc.Orchestrate (buildDeployClosure, buildTestExes, checkLockDrift, resolveRunTargetFor, runBuildReport, runCachePush, runClean, runPackage, runRepl, runTestExes, runWarm)
 import Zinc.Package (parsePackageFormat)
 import Zinc.Skill (LockedSkill (..))
 import Zinc.SkillCmd (renderSkillList, runSkillAdd, runSkillList, runSkillRemove, runSkillSync)
@@ -93,7 +93,7 @@ provisionToolchainHere target ghcOverride = do
   -- (zinc-389). Read from the lock alone (no fetch), deduped.
   lockSrc <- readFile "zinc.lock" `catchIOError` const (pure "")
   let systemLibs = nub (concatMap lockSystemLibs (either (const []) id (parseLock lockSrc)))
-      ghc = maybe (either (const "9.6.5") wsGhc (parseWorkspace manifest)) id ghcOverride
+      ghc = maybe (either (const "9.12.2") wsGhc (parseWorkspace manifest)) id ghcOverride
       cacheRoot = storeRoot ++ "/devenv"
       -- Target-suffixed flake dir so the native + wasm toolchains don't clobber
       -- each other's flake/lock (zinc-9po.3).
@@ -217,8 +217,11 @@ dispatch mode (Run sel args targetStr) =
   -- Resolve the compile target (zinc-9po.4); an unknown --target is a usage error.
   case maybe (Right Native) parseTarget targetStr of
     Left err -> hPutStrLn stderr err >> exitWith (ExitFailure 2)
-    Right tgt ->
-      resolveRunTargetFor tgt "." sel >>= \r -> case r of
+    Right tgt -> do
+      -- Build with live compile progress (zinc-ec4); the renderer drains before
+      -- the resolved binary inherits the terminal below.
+      r <- withRenderer mode (\sink -> resolveRunTargetFor sink tgt "." sel)
+      case r of
         Left e -> failCmd mode e
         Right exe -> do
           -- A wasm artifact is not directly executable — run it through the
@@ -227,10 +230,16 @@ dispatch mode (Run sel args targetStr) =
           let (prog, pargs) = if isWasm tgt then ("wasmtime", exe : args) else (exe, args)
           (_, _, _, ph) <- createProcess (proc prog pargs) {std_in = Inherit, std_out = Inherit, std_err = Inherit}
           waitForProcess ph >>= exitWith
-dispatch mode (Test _) =
-  runTests "." >>= \r -> case r of
-    Left e  -> failCmd mode e
-    Right n -> putStrLn (show n ++ " test suite(s) passed")
+dispatch mode (Test _) = do
+  -- Compile with live progress, then run the suites OUTSIDE the renderer so
+  -- their inherited-stdio output never races the live progress line (zinc-ec4).
+  built <- withRenderer mode (\sink -> buildTestExes sink ".")
+  case built of
+    Left e -> failCmd mode e
+    Right exes ->
+      runTestExes exes >>= \r -> case r of
+        Left e  -> failCmd mode e
+        Right n -> putStrLn (show n ++ " test suite(s) passed")
 dispatch mode (Repl _) =
   runRepl "." >>= either (failCmd mode) (const (pure ()))
 dispatch mode (Update mpkg dryRun) =

@@ -1,6 +1,6 @@
 {
   description = "zinc-managed GHC toolchain";
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
   outputs = { self, nixpkgs }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
@@ -11,7 +11,7 @@
         in {
           default = pkgs.mkShell {
             packages = [
-              pkgs.haskell.compiler.ghc965
+              pkgs.haskell.compiler.ghc9122
               pkgs.haskellPackages.alex
               pkgs.haskellPackages.happy
             ];

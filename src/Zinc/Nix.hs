@@ -47,7 +47,7 @@ generateFlakeFor Native ghcVersion systemLibs =
     preamble =
       [ "{"
       , "  description = \"zinc-managed GHC toolchain\";"
-      , "  inputs.nixpkgs.url = \"github:NixOS/nixpkgs/nixos-24.05\";"
+      , "  inputs.nixpkgs.url = \"github:NixOS/nixpkgs/nixos-25.05\";"
       , "  outputs = { self, nixpkgs }:"
       , "    let"
       , "      systems = [ \"x86_64-linux\" \"aarch64-linux\" \"x86_64-darwin\" \"aarch64-darwin\" ];"
@@ -76,7 +76,7 @@ generateFlakeFor Wasm32Wasi _ghcVersion _systemLibs =
   unlines
     [ "{"
     , "  description = \"zinc-managed GHC wasm32-wasi toolchain\";"
-    , "  inputs.nixpkgs.url = \"github:NixOS/nixpkgs/nixos-24.05\";"
+    , "  inputs.nixpkgs.url = \"github:NixOS/nixpkgs/nixos-25.05\";"
     , "  inputs.ghc-wasm-meta.url = \"github:haskell-wasm/ghc-wasm-meta\";"
     , "  outputs = { self, nixpkgs, ghc-wasm-meta }:"
     , "    let"

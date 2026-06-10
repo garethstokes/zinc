@@ -70,7 +70,7 @@ failing build into a self-repairing loop for an agent.
 
 ```
 $ zinc prime
-zinc project: myapp (GHC 9.6.5)
+zinc project: myapp (GHC 9.12.2)
 Build: zinc build   Run: zinc run   Test: zinc test
 …
 

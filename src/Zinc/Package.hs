@@ -102,7 +102,7 @@ packagingFlake name imageName imageTag depPaths =
   unlines
     ( [ "{"
       , "  description = \"zinc package: " ++ name ++ "\";"
-      , "  inputs.nixpkgs.url = \"github:NixOS/nixpkgs/nixos-24.05\";"
+      , "  inputs.nixpkgs.url = \"github:NixOS/nixpkgs/nixos-25.05\";"
       , "  outputs = { self, nixpkgs }:"
       , "    let"
       , "      systems = [ \"x86_64-linux\" \"aarch64-linux\" \"x86_64-darwin\" \"aarch64-darwin\" ];"

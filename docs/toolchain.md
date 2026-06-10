@@ -31,7 +31,7 @@ The compiler is set in the manifest:
 
 ```toml
 [workspace]
-ghc = "9.6.5"
+ghc = "9.12.2"
 ```
 
 System libraries are declared per build component and Nix supplies them:

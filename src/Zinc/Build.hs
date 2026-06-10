@@ -4,6 +4,7 @@ module Zinc.Build
   ( GhcInvocation (..)
   , ghcMakeArgs
   , externalInterpFlags
+  , parMakeFlags
   , packageFlags
   , zincBuiltUnitIds
   , PackageConf (..)
@@ -98,6 +99,20 @@ ghcMakeArgs gi =
 -- wire up their own iserv via the toolchain, so this is native-only (zinc-1wa).
 externalInterpFlags :: Target -> [String]
 externalInterpFlags t = if isWasm t then [] else ["-fexternal-interpreter"]
+
+-- | The @--make@ parallelism flag, paired with 'externalInterpFlags'
+-- (zinc-2zd). Native compiles always route TH through the external
+-- interpreter, and GHC < 9.12.1 shares ONE ghc-iserv pipe across all @-j@
+-- worker threads with no locking (GHC #25285): a parallel compile with a TH
+-- splice deadlocks (ghc in futex_wait, iserv idle in poll) or crashes
+-- (@remoteCall: end of file@, @mallocStrings@ panic) nondeterministically.
+-- The iserv locking fix (GHC MR !13447) shipped in 9.12.1, so newer compilers
+-- keep the parallel @-j@. Wasm keeps @-j@: its cross-toolchain's GHC comes
+-- from ghc-wasm-meta, independent of the manifest's @ghc@ pin.
+parMakeFlags :: Target -> String -> [String]
+parMakeFlags t ghcVersion
+  | isWasm t || versionInts ghcVersion >= [9, 12, 1] = ["-j"]
+  | otherwise = ["-j1"]
 
 -- | A synthesized installed-package description (@.conf@) — the metadata
 -- @ghc-pkg register@ records so later compiles can @-package@ this build.
@@ -263,6 +278,7 @@ data MemberBuild = MemberBuild
   , mbComponent :: Component
   , mbPackageName    :: String -- ^ the PACKAGE name (for Paths_<pkg>; the component may be a differently-named exe)
   , mbPackageVersion :: String
+  , mbGhcVersion     :: String -- ^ the toolchain GHC version (gates --make -j vs -j1, zinc-2zd)
   }
 
 -- | A member's build-output directory: @\<memberDir\>\/.zinc\/build@. The path
@@ -331,7 +347,7 @@ buildMemberFor target mb = runResult $ do
       exe = mbBuildDir mb </> compName comp ++ (if isWasm target then ".wasm" else "")
       mainFile = mbMemberDir mb </> head srcDirs </> maybe "Main.hs" id (compMain comp)
       args =
-        ["--make", "-j"]
+        ("--make" : parMakeFlags target (mbGhcVersion mb))
           ++ maybe [] (\db -> ["-package-db", db]) (mbPackageDb mb)
           ++ ["-hide-all-packages"]
           ++ packageFlags zincBuilt (map fst installed) (compDepends comp)
@@ -397,6 +413,7 @@ data LibBuild = LibBuild
   , lbName      :: String
   , lbVersion   :: String
   , lbComponent :: Component  -- ^ the library component
+  , lbGhcVersion :: String    -- ^ the toolchain GHC version (gates --make -j vs -j1, zinc-2zd)
   }
 
 -- | Compile a library component, archive it, and register it into the
@@ -502,7 +519,8 @@ buildLibArtifactsFor target lb = runResult $ do
   absDb <- liftIO (makeAbsolute (lbPackageDb lb))
   let modules = nub (discovered ++ [pathsMod])
       compileArgs =
-        ["--make", "-j", "-hide-all-packages", "-package-db", absDb]
+        ("--make" : parMakeFlags target (lbGhcVersion lb))
+          ++ ["-hide-all-packages", "-package-db", absDb]
           ++ packageFlags zincBuilt (map fst installed) (compDepends comp)
           ++ map (\d -> "-i" ++ (absMemberDir </> d)) srcDirs
           ++ ["-i" ++ gen, "-i" ++ ppGen, "-optP-include", "-optP" ++ macrosHeader]

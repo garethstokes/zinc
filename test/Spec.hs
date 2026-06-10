@@ -103,7 +103,7 @@ import Zinc.Manifest
 import Zinc.Fetch (gitFetchManifest, isHpackOnly, namedCabal, packageDirIn)
 import Zinc.GC (GCRoot (..), gcStore, runGc)
 import Zinc.Add (enrichWithRepos, freezeClosure, lockEntry, runAdd, runUpdate, runVendor, splitNameVersion, vendoredSoftPins)
-import Zinc.Build (GhcInvocation (..), LibBuild (..), MemberBuild (..), PackageConf (..), archiveArgs, buildLib, buildMember, discoverModules, externalInterpFlags, ghcMakeArgs, initPackageDb, installedVersions, memberBuildDir, packageFlags, parsePkgconfigLibs, ppCommand, preprocessorFor, reactorLinkFlags, registeredExposedMatches, registerPackage, renderConf, replArgs, runPreprocessor, wasmSupported, writeFileIfChanged, zincBuiltUnitIds)
+import Zinc.Build (GhcInvocation (..), LibBuild (..), MemberBuild (..), PackageConf (..), archiveArgs, buildLib, buildMember, discoverModules, externalInterpFlags, ghcMakeArgs, initPackageDb, installedVersions, memberBuildDir, packageFlags, parMakeFlags, parsePkgconfigLibs, ppCommand, preprocessorFor, reactorLinkFlags, registeredExposedMatches, registerPackage, renderConf, replArgs, runPreprocessor, wasmSupported, writeFileIfChanged, zincBuiltUnitIds)
 import Zinc.Cache (BuildKey (..), buildCacheKey, buildCacheKeyFor, cacheHit, cacheKeyPayload, confCodegenEpoch, storeConfPath, storePkgPath, writeCachedConf)
 import Zinc.Cabal (bootConflicts, cabalBuildType, cabalJsSources, cabalVersion, parseCabalComponents, parseCabalComponentsForGhc, parseCabalComponentsForPlatform)
 import Zinc.Configure (configureIncludeDirs)
@@ -113,7 +113,7 @@ import Zinc.Env (devEnvVars, envCacheKey, envCacheKeyFor, nixPrintDevEnv, provis
 import Zinc.Macros (emitCabalMacros)
 import Zinc.Nix (generateFlake, generateFlakeFor)
 import Zinc.Target (Target (..), ghcFor, ghcPkgFor, hsc2hsFor, isWasm, parseTarget, targetTriple, toolPrefix)
-import Zinc.Orchestrate (buildAndRun, lockDrift, orderMembers, parMapBounded, resolveTarget, runBuild, runBuildMember, runClean, runTests, runWarm)
+import Zinc.Orchestrate (buildAndRun, lockDrift, orderMembers, parMapBounded, resolveTarget, runBuild, runBuildMember, runClean, runTestExes, runTests, runWarm)
 import Zinc.Paths (pathsModuleName, synthesizePaths)
 import Zinc.Report (BuildOutcome (..), CacheStats (..), PackageReport (..), PackageStatus (..), Timing (..), buildBreakdownLine, buildDataJson, buildSummaryLine, cacheStatsOf, fmtMs, packageReportJson, renderResolution, resolutionJson, statusText, timingJson)
 import Zinc.SysLibs (pkgconfigLinkName, toNixpkgs)
@@ -1022,7 +1022,7 @@ main = hspec $ do
 
     it "ships a zinc-managed flake.nix: pinned GHC + preprocessors (6hf.2)" $ do
       let fl = maybe "" id (bodyOf "flake.nix" files)
-      all (`isInfixOf` fl) ["ghc965", "alex", "happy", "devShells"] `shouldBe` True
+      all (`isInfixOf` fl) ["ghc9122", "alex", "happy", "devShells"] `shouldBe` True
 
   describe "scaffoldWorkspace (--workspace multi-member, 6hf.1)" $ do
     let files = scaffoldWorkspace "myapp"
@@ -1895,6 +1895,12 @@ main = hspec $ do
 
     it "pins nixpkgs and exposes a devShell" $
       all (`isInfixOf` flake) ["nixpkgs.url", "devShells"] `shouldBe` True
+
+    -- nixos-25.05 is the one branch carrying BOTH the default ghc9122 AND the
+    -- older attrs existing projects pin (ghc965, ghc9101 — nixos-25.11 drops
+    -- them), so bumping the default GHC doesn't strand a pinned workspace.
+    it "pins the nixpkgs branch that has ghc9122 plus the older pinned attrs" $
+      ("nixos-25.05" `isInfixOf` flake) `shouldBe` True
 
     it "works with no system libraries" $
       ("haskell.compiler.ghc965" `isInfixOf` generateFlake "9.6.5" []) `shouldBe` True
@@ -2966,7 +2972,7 @@ main = hspec $ do
               , compWasmExports = []
               , compFromCabal = False
               }
-      r <- buildMember (MemberBuild dir (dir ++ "/build") Nothing comp "hello" "0.1.0")
+      r <- buildMember (MemberBuild dir (dir ++ "/build") Nothing comp "hello" "0.1.0" "9.6.5")
       case r of
         Right exe -> do
           out <- readProcess exe [] ""
@@ -3046,7 +3052,7 @@ main = hspec $ do
       -- origin package: exposes a module with a real symbol the consumer uses.
       createDirectoryIfMissing True (base ++ "/origin/src")
       writeFile (base ++ "/origin/src/Origin.hs") "module Origin (secret) where\nsecret :: Int\nsecret = 42\n"
-      origR <- buildLib (LibBuild (base ++ "/origin") (base ++ "/origin/dist") db "origin" "1.0" (lib "origin"))
+      origR <- buildLib (LibBuild (base ++ "/origin") (base ++ "/origin/dist") db "origin" "1.0" (lib "origin") "9.6.5")
       -- umbrella: no own modules, re-exports Origin from the origin package. Built
       -- as a hand-registered conf (the reexport form a cabal umbrella produces).
       -- Its import/library dirs are its OWN (empty) dir, NOT the origin's — so the
@@ -3072,7 +3078,7 @@ main = hspec $ do
       createDirectoryIfMissing True (base ++ "/app/app")
       writeFile (base ++ "/app/app/Main.hs") "module Main where\nimport Origin (secret)\nmain :: IO ()\nmain = print secret\n"
       let consumer = (lib "app") {compKind = Executable, compName = "app", compSourceDirs = ["app"], compMain = Just "Main.hs", compDepends = ["umbrella"]}
-      r <- buildMember (MemberBuild (base ++ "/app") (base ++ "/app/build") (Just db) consumer "app" "0.1.0")
+      r <- buildMember (MemberBuild (base ++ "/app") (base ++ "/app/build") (Just db) consumer "app" "0.1.0" "9.6.5")
       (origR, umbR) `shouldBe` (Right (), Right ())
       case r of
         Right exe -> do
@@ -3100,6 +3106,31 @@ main = hspec $ do
       writeFileIn (dir ++ "/packages/t/test/Spec.hs") "module Main where\nmain :: IO ()\nmain = putStrLn \"tests ok\"\n"
       r <- runTests dir
       r `shouldBe` Right 1
+
+  describe "runTestExes (zinc-ec4)" $ do
+    it "runs every suite and reports the count" $ do
+      let dir = "/tmp/zinc-test-exes"
+      stale <- doesDirectoryExist dir
+      when stale $ removeDirectoryRecursive dir
+      createDirectoryIfMissing True dir
+      writeFile (dir ++ "/ok1") "#!/bin/sh\nexit 0\n"
+      writeFile (dir ++ "/ok2") "#!/bin/sh\nexit 0\n"
+      _ <- readProcess "chmod" ["+x", dir ++ "/ok1", dir ++ "/ok2"] ""
+      r <- runTestExes [dir ++ "/ok1", dir ++ "/ok2"]
+      r `shouldBe` Right 2
+    it "fails with the suite path and exit code on the first failing suite" $ do
+      let dir = "/tmp/zinc-test-exes-fail"
+      stale <- doesDirectoryExist dir
+      when stale $ removeDirectoryRecursive dir
+      createDirectoryIfMissing True dir
+      writeFile (dir ++ "/bad") "#!/bin/sh\nexit 3\n"
+      _ <- readProcess "chmod" ["+x", dir ++ "/bad"] ""
+      r <- runTestExes [dir ++ "/bad"]
+      case r of
+        Left e  -> do
+          renderError e `shouldContain` (dir ++ "/bad")
+          renderError e `shouldContain` "exit code 3"
+        Right n -> expectationFailure ("expected a failure, got Right " ++ show n)
 
   describe "git dependency build (end-to-end)" $
     it "fetches a git dep, builds its library, and links a member against it" $ do
@@ -4313,6 +4344,20 @@ main = hspec $ do
     it "uses -fexternal-interpreter for native, nothing for wasm" $
       (externalInterpFlags Native, externalInterpFlags Wasm32Wasi)
         `shouldBe` (["-fexternal-interpreter"], [])
+
+  describe "Zinc.Build parMakeFlags (zinc-2zd)" $ do
+    -- GHC < 9.12.1 shares one unsynchronized iserv pipe across all --make -j
+    -- worker threads (GHC #25285): with -fexternal-interpreter always on for
+    -- native TH, a parallel compile deadlocks or crashes nondeterministically.
+    -- The iserv locking fix (GHC MR !13447) shipped in 9.12.1.
+    it "serializes native --make on GHC < 9.12.1 (iserv race, GHC #25285)" $
+      (parMakeFlags Native "9.6.5", parMakeFlags Native "9.10.1")
+        `shouldBe` (["-j1"], ["-j1"])
+    it "keeps parallel -j on native GHC >= 9.12.1 (iserv locking fix shipped)" $
+      (parMakeFlags Native "9.12.1", parMakeFlags Native "9.12.2")
+        `shouldBe` (["-j"], ["-j"])
+    it "keeps parallel -j for wasm (its toolchain GHC is separate from the manifest pin)" $
+      parMakeFlags Wasm32Wasi "9.6.5" `shouldBe` ["-j"]
 
   describe "Zinc.Cabal.bootConflicts (sib)" $ do
     let isBoot = (`elem` ["transformers", "base"])

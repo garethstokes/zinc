@@ -16,6 +16,8 @@ module Zinc.Orchestrate
   , resolveRunTargetFor
   , resolveTarget
   , runTests
+  , buildTestExes
+  , runTestExes
   , orderMembers
   , lockDrift
   , checkLockDrift
@@ -44,7 +46,7 @@ import Data.Maybe (catMaybes, fromMaybe, isNothing, mapMaybe)
 import System.Directory (canonicalizePath, copyFile, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, doesPathExist, findExecutable, listDirectory, makeAbsolute, removeDirectoryRecursive)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, takeExtension, takeFileName, (</>))
-import System.Process (callProcess, readProcess, readProcessWithExitCode)
+import System.Process (callProcess, readProcess, readProcessWithExitCode, spawnProcess, waitForProcess)
 import Zinc.Build (LibBuild (..), MemberBuild (..), buildLibArtifactsFor, buildLibFor, buildMemberFor, initPackageDb, initPackageDbFor, installedVersionsFor, isRegistered, memberBuildDir, registeredExposedMatches, registerPackage, replArgs)
 import Zinc.Cabal (bootConflicts, cabalBuildType, cabalJsSources, cabalVersion, parseCabalComponentsForPlatform)
 import Zinc.Cache (BuildKey (..), buildCacheKey, buildCacheKeyFor, storeConfPath, storePkgPath)
@@ -126,7 +128,7 @@ buildWorkspaceReport sink target wsDir member ghcOverride keep = runResult $ do
   acc <- liftIO (newIORef Map.empty)
   overrides <- liftIO (loadOverrides wsDir)
   (pkgs, closureMs) <- timed (orFailE (buildClosure sink target wsDir storeRoot wsDb effectiveGhc (depGhcOptionsOf ws) (depFlagsOf ws) overrides (Just acc)))
-  (exes, memberMs) <- timed (concat <$> traverse (buildMemberAll (Just acc) wsDb) (orderMembers members))
+  (exes, memberMs) <- timed (concat <$> traverse (buildMemberAll (Just acc) wsDb effectiveGhc) (orderMembers members))
   -- For a wasm build, surface each member's + closure deps' js-sources next to
   -- the built .wasm so a browser page can load them (zinc-gdk).
   liftIO (when (isWasm target) (surfaceWasmJsSources storeRoot wsDir members))
@@ -148,7 +150,7 @@ buildWorkspaceReport sink target wsDir member ghcOverride keep = runResult $ do
     -- step) carrying its own wall-clock.
     -- @acc@ collects the finer breakdown (nti.3): the member library counts as
     -- @compile@, its executables as @link@ (the final ghc --make against the libs).
-    buildMemberAll acc wsDb (dir, mem) = do
+    buildMemberAll acc wsDb ghcVer (dir, mem) = do
       liftIO (emit sink (CompileStart (pkgName mem)))
       t0 <- liftIO getMonotonicTime
       case filter ((== Library) . compKind) (pkgComponents mem) of
@@ -158,8 +160,8 @@ buildWorkspaceReport sink target wsDir member ghcOverride keep = runResult $ do
           -- rejects relative paths, and (with the db now persisted) a relative
           -- entry can't be cleanly re-registered across builds.
           libDir <- liftIO (makeAbsolute (dir </> ".zinc" </> "lib"))
-          orFailE (accuminto acc "compile" (buildLibFor target (LibBuild dir libDir wsDb (pkgName mem) (pkgVersion mem) lib)))
-      exes <- traverse (\comp -> orFailE (accuminto acc "link" (buildMemberFor target (MemberBuild dir (memberBuildDir dir) (Just wsDb) comp (pkgName mem) (pkgVersion mem))))) (wanted mem)
+          orFailE (accuminto acc "compile" (buildLibFor target (LibBuild dir libDir wsDb (pkgName mem) (pkgVersion mem) lib ghcVer)))
+      exes <- traverse (\comp -> orFailE (accuminto acc "link" (buildMemberFor target (MemberBuild dir (memberBuildDir dir) (Just wsDb) comp (pkgName mem) (pkgVersion mem) ghcVer)))) (wanted mem)
       t1 <- liftIO getMonotonicTime
       liftIO (emit sink (CompileDone (pkgName mem) (round ((t1 - t0) * 1000) :: Int) False))
       pure exes
@@ -303,32 +305,49 @@ resolveTarget (Just t) exes =
 -- executable path. The caller execs it (inheriting stdio, propagating the exit
 -- code) — building is separated from running so @run@ has live, interactive I/O.
 resolveRunTarget :: FilePath -> Maybe String -> IO (Either ZincError FilePath)
-resolveRunTarget = resolveRunTargetFor Native
+resolveRunTarget = resolveRunTargetFor nullSink Native
 
 -- | As 'resolveRunTarget', for an explicit 'Target' (zinc-9po.4): builds the
 -- workspace for the target and resolves the selector to one artifact. A wasm
 -- artifact is @\<name\>.wasm@, so the selector matches on the name with any
--- @.wasm@ suffix stripped. Native is byte-identical.
-resolveRunTargetFor :: Target -> FilePath -> Maybe String -> IO (Either ZincError FilePath)
-resolveRunTargetFor target wsDir sel = runResult $ do
-  (outcome, _, _) <- orFailE (buildWorkspaceReport nullSink target wsDir Nothing Nothing (== Executable))
+-- @.wasm@ suffix stripped. Native is byte-identical. Compile progress streams
+-- into @sink@ (zinc-ec4 — the run path used to build in silence too).
+resolveRunTargetFor :: Sink -> Target -> FilePath -> Maybe String -> IO (Either ZincError FilePath)
+resolveRunTargetFor sink target wsDir sel = runResult $ do
+  (outcome, _, _) <- orFailE (buildWorkspaceReport sink target wsDir Nothing Nothing (== Executable))
   liftEitherE (resolveTarget sel [(runName e, e) | e <- boExes outcome])
   where
     runName e = let n = takeFileName e in if ".wasm" `isSuffixOf` n then take (length n - 5) n else n
 
--- | @zinc test@: build and run all test-suite components, returning how many
--- passed. Fails on the first non-zero exit.
-runTests :: FilePath -> IO (Either ZincError Int)
-runTests wsDir = runResult $ do
-  exes <- orFailE (buildWorkspace wsDir Nothing (== TestSuite))
-  mapM_ runOne exes
-  pure (length exes)
+-- | @zinc test@'s build half: compile every test-suite component, reporting
+-- compile progress into @sink@ — the test path used to be silent for the whole
+-- build (zinc-ec4). Split from 'runTestExes' so the CLI can drain the renderer
+-- before the test binaries inherit the terminal.
+buildTestExes :: Sink -> FilePath -> IO (Either ZincError [FilePath])
+buildTestExes sink wsDir =
+  fmap (fmap (\(o, _, _) -> boExes o)) (buildWorkspaceReport sink Native wsDir Nothing Nothing (== TestSuite))
+
+-- | Run built test-suite binaries with inherited stdio, so each suite's own
+-- output (pass/fail detail, a hang's last line) streams live to the user —
+-- the old 'readProcessWithExitCode' captured and DISCARDED it (zinc-ec4).
+-- Fails on the first non-zero exit, naming the suite and exit code; returns
+-- how many suites passed.
+runTestExes :: [FilePath] -> IO (Either ZincError Int)
+runTestExes exes = runResult (mapM_ runOne exes >> pure (length exes))
   where
     runOne exe = do
-      (code, _, _) <- liftIO (readProcessWithExitCode exe [] "")
+      code <- liftIO (spawnProcess exe [] >>= waitForProcess)
       case code of
         ExitSuccess   -> pure ()
-        ExitFailure _ -> failWith (exe ++ ": test suite failed")
+        ExitFailure c -> failWith (exe ++ ": test suite failed (exit code " ++ show c ++ ")")
+
+-- | @zinc test@: build and run all test-suite components, returning how many
+-- passed. The silent composition of the two halves (no progress events); the
+-- CLI calls them separately with a live renderer between.
+runTests :: FilePath -> IO (Either ZincError Int)
+runTests wsDir = runResult $ do
+  exes <- orFailE (buildTestExes nullSink wsDir)
+  orFailE (runTestExes exes)
 
 -- | Resolve a manifest @[package] version@ to a concrete version string. The
 -- literal @"git"@ (zinc-7z7) opts a package into git-derived versioning: the
@@ -589,7 +608,7 @@ buildClosure sink target wsDir storeRoot wsDb ghcVersion buildOpts depFlagsMap o
               then pure lib'
               else orFail (configureComponent (lockName l) version pkgDir pkgOut lib')
           liftIO (emit sink (CompileStart (lockName l)))
-          built <- liftIO (accuminto mAcc "compile" (buildLibArtifactsFor target (LibBuild pkgDir pkgOut wsDb (lockName l) version lib2)))
+          built <- liftIO (accuminto mAcc "compile" (buildLibArtifactsFor target (LibBuild pkgDir pkgOut wsDb (lockName l) version lib2 ghcVersion)))
           case built of
             Right (conf, _) -> pure (report Built, Just (lockName l, pkgOut, conf))
             -- sib: cabal version bounds are ADVISORY (GHC ignores them), so we

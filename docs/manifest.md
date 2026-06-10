@@ -29,7 +29,7 @@ Workspace root:
 ```toml
 [workspace]
 members = ["packages/myapp", "packages/mylib"]
-ghc = "9.6.5"                      # Nix pins exactly this compiler
+ghc = "9.12.2"                      # Nix pins exactly this compiler
 
 [dependencies]
 aeson = "v2.3.0.0"                 # a ref; the repo is resolved and frozen into zinc.lock
@@ -98,7 +98,7 @@ A minimal single-package executable:
 ```toml
 [workspace]
 members = ["."]
-ghc = "9.6.5"
+ghc = "9.12.2"
 
 [dependencies]
 

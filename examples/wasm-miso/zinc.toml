@@ -5,7 +5,7 @@
 # makes the exe a reactor; the page calls hs_init then hs_start to mount the app.
 [workspace]
 members = ["."]
-ghc = "9.6.5"
+ghc = "9.12.2"
 
 [package]
 name = "misoapp"

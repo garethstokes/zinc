@@ -12,7 +12,7 @@ import Zinc.Nix (generateFlake)
 -- | The GHC version a fresh project pins (kept in step between the scaffolded
 -- @zinc.toml@ and its @flake.nix@).
 scaffoldGhc :: String
-scaffoldGhc = "9.6.5"
+scaffoldGhc = "9.12.2"
 
 -- | A file the scaffolder intends to create: a path plus its contents.
 -- Keeping this pure (no IO) makes `zinc new` fully testable; the actual

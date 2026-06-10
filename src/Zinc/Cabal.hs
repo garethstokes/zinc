@@ -1,3 +1,5 @@
+{-# LANGUAGE CPP #-}
+
 -- | Opt-2 @.cabal@ reader (spec §3): parse a Hackage @.cabal@ file with the
 -- @Cabal@ library (as a parser only — never its builder) and derive the same
 -- 'Component' model zinc-native @[build]@ blocks produce. This lets zinc build
@@ -70,6 +72,19 @@ import Distribution.Version (mkVersion, withinRange)
 import Zinc.Manifest (Component (..), ComponentKind (..))
 import Zinc.SysLibs (toNixpkgs)
 
+-- | Cabal 3.14 (GHC 9.12's boot library) types package-description paths as
+-- @SymbolicPath@/@RelativePath@ where earlier Cabal used plain 'FilePath'.
+-- One conversion point covers both, keyed on the compiler (zinc uses the
+-- boot Cabal, so the GHC version tracks the Cabal version): 'getSymbolicPath'
+-- on 9.12+, identity before. Eta-expanded so it generalizes over the path's
+-- phantom type parameters without naming Cabal-internal types.
+#if __GLASGOW_HASKELL__ >= 912
+symPath p = getSymbolicPath p
+#else
+symPath :: FilePath -> FilePath
+symPath p = p
+#endif
+
 -- | Derive zinc 'Component's from @.cabal@ source, resolving conditionals
 -- against a recent default GHC. See 'parseCabalComponentsForGhc'.
 parseCabalComponents :: String -> Either String [Component]
@@ -123,7 +138,7 @@ cabalJsSources platform src =
     Right gpd ->
       case finalizePD (mkFlagAssignment []) (ComponentRequestedSpec False False) (const True) platform ghc [] gpd of
         Left _        -> []
-        Right (pd, _) -> nub (concatMap jsSources (allBuildInfo pd))
+        Right (pd, _) -> nub (map symPath (concatMap jsSources (allBuildInfo pd)))
   where
     ghc = unknownCompilerInfo (CompilerId GHC (mkVersion [9, 6, 5])) NoAbiTag
 
@@ -257,7 +272,7 @@ mergeLib sub acc =
 executableComponents :: PackageDescription -> [Component]
 executableComponents pd =
   [ (fromBuildInfo Executable (unUnqualComponentName (exeName exe)) (buildInfo exe))
-      { compMain = Just (modulePath exe) }
+      { compMain = Just (symPath (modulePath exe)) }
   | exe <- executables pd
   ]
 
@@ -270,7 +285,7 @@ testComponents pd =
 
 testMain :: TestSuite -> Maybe String
 testMain ts = case testInterface ts of
-  TestSuiteExeV10 _ path -> Just path
+  TestSuiteExeV10 _ path -> Just (symPath path)
   _                      -> Nothing
 
 fromLibrary :: Library -> Component
@@ -316,9 +331,9 @@ fromBuildInfo kind name bi =
       -- name (pkgconfig @zlib@ -> @-lz@, not @-lzlib@; zinc-mmx).
       compExtraLibs = nub (extraLibs bi)
     , compPkgconfig = nub (pkgconfigNames bi)
-    , compIncludeDirs = includeDirs bi
+    , compIncludeDirs = map symPath (includeDirs bi)
     , compCppOptions = cppOptions bi
-    , compCSources = cSources bi
+    , compCSources = map symPath (cSources bi)
     , compReexports = [] -- set by 'fromLibrary' (only libraries reexport); exes/tests have none
     , compWasmExports = [] -- wasm reactor exports are a zinc.toml exe setting, not a cabal field (zinc-9po.5)
     , compFromCabal = True -- cabal-sourced: trust the .cabal module list even when empty (Configure deps), never auto-discover (zinc-iaj.1)

@@ -3,7 +3,7 @@
 # and [package]/[build] sections coexist in one file (member ".").
 [workspace]
 members = ["."]
-ghc = "9.6.5"
+ghc = "9.12.2"
 
 [package]
 name = "zinc"

@@ -5,7 +5,7 @@
 # module); zinc also auto-exports hs_init so the page can start the RTS.
 [workspace]
 members = ["."]
-ghc = "9.6.5"
+ghc = "9.12.2"
 
 [package]
 name = "reactorapp"
