@@ -474,7 +474,8 @@ main = hspec $ do
       r `shouldBe` 42
 
     it "OutputFlags has the expected shape" $
-      (ofJson (OutputFlags True False), ofQuiet (OutputFlags True False)) `shouldBe` (True, False)
+      (ofJson (OutputFlags True False False), ofQuiet (OutputFlags True False False), ofVerbose (OutputFlags True False True))
+        `shouldBe` (True, False, True)
 
     it "Plan is a tagged JSONL object carrying the closure total (hw6.2)" $
       renderJson (eventJson (Plan 47)) `shouldBe` "{\"event\":\"plan\",\"total\":47}"
@@ -539,12 +540,12 @@ main = hspec $ do
 
   describe "closure discovery (49o)" $ do
     it "parses the `closure` subcommand (+ --json)" $ do
-      parseArgs ["closure", "aeson"] `shouldBe` Right (OutputFlags False False, Closure "aeson")
-      parseArgs ["closure", "aeson", "--json"] `shouldBe` Right (OutputFlags True False, Closure "aeson")
+      parseArgs ["closure", "aeson"] `shouldBe` Right (OutputFlags False False False, Closure "aeson")
+      parseArgs ["closure", "aeson", "--json"] `shouldBe` Right (OutputFlags True False False, Closure "aeson")
 
     it "parses the `vendor` subcommand with one or more packages (b1z.2)" $ do
-      parseArgs ["vendor", "colour"] `shouldBe` Right (OutputFlags False False, Vendor ["colour"])
-      parseArgs ["vendor", "colour", "tf-random"] `shouldBe` Right (OutputFlags False False, Vendor ["colour", "tf-random"])
+      parseArgs ["vendor", "colour"] `shouldBe` Right (OutputFlags False False False, Vendor ["colour"])
+      parseArgs ["vendor", "colour", "tf-random"] `shouldBe` Right (OutputFlags False False False, Vendor ["colour", "tf-random"])
       parseArgs ["vendor"] `shouldSatisfy` isLeft -- at least one package required
 
     it "extracts the package name from an installed unit-id" $ do
@@ -618,8 +619,8 @@ main = hspec $ do
 
   describe "zinc fmt (8n6.3)" $ do
     it "parses fmt and fmt --check" $ do
-      parseArgs ["fmt"] `shouldBe` Right (OutputFlags False False, Fmt False)
-      parseArgs ["fmt", "--check"] `shouldBe` Right (OutputFlags False False, Fmt True)
+      parseArgs ["fmt"] `shouldBe` Right (OutputFlags False False False, Fmt False)
+      parseArgs ["fmt", "--check"] `shouldBe` Right (OutputFlags False False False, Fmt True)
 
     it "canonicalizes deps (sorted, shorthand) and is idempotent" $ do
       let src = unlines ["[workspace]", "members = []", "ghc = \"9.6.5\"", "[dependencies]", "zebra = { tag = \"v2\" }", "alpha = \"*\""]
@@ -651,7 +652,7 @@ main = hspec $ do
 
   describe "dockerfile recipe (vwn.2)" $ do
     it "parses the `dockerfile` subcommand" $
-      parseArgs ["dockerfile"] `shouldBe` Right (OutputFlags False False, Dockerfile)
+      parseArgs ["dockerfile"] `shouldBe` Right (OutputFlags False False False, Dockerfile)
 
     it "emits the multi-stage closure-cached recipe" $ do
       let t = dockerfileText "9.6.5"
@@ -667,18 +668,18 @@ main = hspec $ do
 
   describe "warm / build --deps-only (vwn.1)" $ do
     it "parses warm and build --deps-only to the same closure-only command" $ do
-      parseArgs ["warm"] `shouldBe` Right (OutputFlags False False, Warm Nothing Nothing)
-      parseArgs ["warm", "--json"] `shouldBe` Right (OutputFlags True False, Warm Nothing Nothing)
-      parseArgs ["build", "--deps-only"] `shouldBe` Right (OutputFlags False False, Warm Nothing Nothing)
-      parseArgs ["build", "--deps-only", "--json"] `shouldBe` Right (OutputFlags True False, Warm Nothing Nothing)
+      parseArgs ["warm"] `shouldBe` Right (OutputFlags False False False, Warm Nothing Nothing)
+      parseArgs ["warm", "--json"] `shouldBe` Right (OutputFlags True False False, Warm Nothing Nothing)
+      parseArgs ["build", "--deps-only"] `shouldBe` Right (OutputFlags False False False, Warm Nothing Nothing)
+      parseArgs ["build", "--deps-only", "--json"] `shouldBe` Right (OutputFlags True False False, Warm Nothing Nothing)
 
     it "threads --target through deps-only/warm instead of dropping it (zinc-hte)" $ do
       -- the bug: `build --deps-only --target wasm32-wasi` discarded the target
       -- and built Native. Both spellings must now carry the target.
       parseArgs ["build", "--deps-only", "--target", "wasm32-wasi"]
-        `shouldBe` Right (OutputFlags False False, Warm Nothing (Just "wasm32-wasi"))
+        `shouldBe` Right (OutputFlags False False False, Warm Nothing (Just "wasm32-wasi"))
       parseArgs ["warm", "--target", "wasm32-wasi"]
-        `shouldBe` Right (OutputFlags False False, Warm Nothing (Just "wasm32-wasi"))
+        `shouldBe` Right (OutputFlags False False False, Warm Nothing (Just "wasm32-wasi"))
 
     it "builds the closure only (empty for a depless workspace)" $ do
       let d = "/tmp/zinc-warm-test"
@@ -746,8 +747,8 @@ main = hspec $ do
 
   describe "context priming (rdy.5)" $ do
     it "parses prime / onboard" $ do
-      parseArgs ["prime"] `shouldBe` Right (OutputFlags False False, Prime)
-      parseArgs ["onboard"] `shouldBe` Right (OutputFlags False False, Onboard)
+      parseArgs ["prime"] `shouldBe` Right (OutputFlags False False False, Prime)
+      parseArgs ["onboard"] `shouldBe` Right (OutputFlags False False False, Onboard)
 
     it "prime reflects toolchain, members, and the no-cabal gotcha" $ do
       let t = primeText (WorkspaceManifest ["packages/app"] "9.6.5" [])
@@ -759,10 +760,10 @@ main = hspec $ do
 
   describe "introspection (rdy.4)" $ do
     it "parses status / graph / explain (+ --json)" $ do
-      parseArgs ["status"] `shouldBe` Right (OutputFlags False False, Status)
-      parseArgs ["graph", "--json"] `shouldBe` Right (OutputFlags True False, Graph)
-      parseArgs ["explain", "aeson"] `shouldBe` Right (OutputFlags False False, Explain "aeson")
-      parseArgs ["explain", "aeson", "--json"] `shouldBe` Right (OutputFlags True False, Explain "aeson")
+      parseArgs ["status"] `shouldBe` Right (OutputFlags False False False, Status)
+      parseArgs ["graph", "--json"] `shouldBe` Right (OutputFlags True False False, Graph)
+      parseArgs ["explain", "aeson"] `shouldBe` Right (OutputFlags False False False, Explain "aeson")
+      parseArgs ["explain", "aeson", "--json"] `shouldBe` Right (OutputFlags True False False, Explain "aeson")
 
     it "renders status as JSON (incl. installed skills; lmm + overrides g1b)" $
       renderJson (statusJson "9.6.5" ["packages/app"] [DepStatus "colour" "abc1234" True] ["aeson"] ["brainstorming"] [("toml-parser", "/local/tp")])
@@ -794,8 +795,8 @@ main = hspec $ do
 
   describe "doctor (rdy.6)" $ do
     it "parses the `doctor` subcommand (+ --json)" $ do
-      parseArgs ["doctor"] `shouldBe` Right (OutputFlags False False, Doctor)
-      parseArgs ["doctor", "--json"] `shouldBe` Right (OutputFlags True False, Doctor)
+      parseArgs ["doctor"] `shouldBe` Right (OutputFlags False False False, Doctor)
+      parseArgs ["doctor", "--json"] `shouldBe` Right (OutputFlags True False False, Doctor)
 
     it "reports lock drift as a warning with a nextAction" $ do
       lockDriftDiagnostic [] `shouldBe` Nothing
@@ -822,8 +823,8 @@ main = hspec $ do
 
   describe "perf analyzer (hbv.3)" $ do
     it "parses the `perf` subcommand (+ --json)" $ do
-      parseArgs ["perf"] `shouldBe` Right (OutputFlags False False, Perf)
-      parseArgs ["perf", "--json"] `shouldBe` Right (OutputFlags True False, Perf)
+      parseArgs ["perf"] `shouldBe` Right (OutputFlags False False False, Perf)
+      parseArgs ["perf", "--json"] `shouldBe` Right (OutputFlags True False False, Perf)
 
     it "decodes a metrics record's analyzer-relevant fields" $ do
       let j = either (error "parse") id (parseJson "{\"command\":\"build\",\"timing\":{\"totalMs\":42,\"cache\":{\"hits\":3,\"misses\":1}}}")
@@ -877,9 +878,9 @@ main = hspec $ do
 
   describe "non-interactive contract (rdy.7)" $ do
     it "accepts (and ignores) --yes on add: zinc never prompts" $ do
-      parseArgs ["add", "--yes", "aeson"] `shouldBe` Right (OutputFlags False False, Add "aeson" False)
-      parseArgs ["add", "-y", "aeson"] `shouldBe` Right (OutputFlags False False, Add "aeson" False)
-      parseArgs ["add", "aeson", "--dry-run"] `shouldBe` Right (OutputFlags False False, Add "aeson" True)
+      parseArgs ["add", "--yes", "aeson"] `shouldBe` Right (OutputFlags False False False, Add "aeson" False)
+      parseArgs ["add", "-y", "aeson"] `shouldBe` Right (OutputFlags False False False, Add "aeson" False)
+      parseArgs ["add", "aeson", "--dry-run"] `shouldBe` Right (OutputFlags False False False, Add "aeson" True)
 
     it "gitEnv sets the non-interactive guards so git can't block on a tty" $ do
       let e = gitEnv [("PATH", "/usr/bin"), ("GIT_TERMINAL_PROMPT", "1")]
@@ -899,42 +900,47 @@ main = hspec $ do
     setEnv "ZINC_STORE" testStoreDir
   describe "parseArgs" $ do
     it "parses the `build` subcommand" $
-      parseArgs ["build"] `shouldBe` Right (OutputFlags False False, Build Nothing Nothing Nothing)
+      parseArgs ["build"] `shouldBe` Right (OutputFlags False False False, Build Nothing Nothing Nothing)
 
     it "parses `build <member>` with a target" $
-      parseArgs ["build", "mylib"] `shouldBe` Right (OutputFlags False False, Build (Just "mylib") Nothing Nothing)
+      parseArgs ["build", "mylib"] `shouldBe` Right (OutputFlags False False False, Build (Just "mylib") Nothing Nothing)
 
     it "parses `build --json` (machine surface)" $ do
-      parseArgs ["build", "--json"] `shouldBe` Right (OutputFlags True False, Build Nothing Nothing Nothing)
-      parseArgs ["build", "mylib", "--json"] `shouldBe` Right (OutputFlags True False, Build (Just "mylib") Nothing Nothing)
+      parseArgs ["build", "--json"] `shouldBe` Right (OutputFlags True False False, Build Nothing Nothing Nothing)
+      parseArgs ["build", "mylib", "--json"] `shouldBe` Right (OutputFlags True False False, Build (Just "mylib") Nothing Nothing)
+
+    it "parses the global --verbose flag on any subcommand (zinc-1sk)" $ do
+      parseArgs ["build", "--verbose"] `shouldBe` Right (OutputFlags False False True, Build Nothing Nothing Nothing)
+      parseArgs ["test", "--verbose"] `shouldBe` Right (OutputFlags False False True, Test Nothing)
+      parseArgs ["build", "--json", "--verbose"] `shouldBe` Right (OutputFlags True False True, Build Nothing Nothing Nothing)
 
     it "parses `build --target wasm32-wasi` (zinc-9po.3)" $ do
-      parseArgs ["build", "--target", "wasm32-wasi"] `shouldBe` Right (OutputFlags False False, Build Nothing Nothing (Just "wasm32-wasi"))
-      parseArgs ["build", "mylib", "--target", "native"] `shouldBe` Right (OutputFlags False False, Build (Just "mylib") Nothing (Just "native"))
+      parseArgs ["build", "--target", "wasm32-wasi"] `shouldBe` Right (OutputFlags False False False, Build Nothing Nothing (Just "wasm32-wasi"))
+      parseArgs ["build", "mylib", "--target", "native"] `shouldBe` Right (OutputFlags False False False, Build (Just "mylib") Nothing (Just "native"))
 
     it "parses the `--ghc <version>` override on build and warm (ey4)" $ do
-      parseArgs ["build", "--ghc", "9.10"] `shouldBe` Right (OutputFlags False False, Build Nothing (Just "9.10") Nothing)
-      parseArgs ["build", "mylib", "--ghc", "9.8.2"] `shouldBe` Right (OutputFlags False False, Build (Just "mylib") (Just "9.8.2") Nothing)
-      parseArgs ["warm", "--ghc", "9.10"] `shouldBe` Right (OutputFlags False False, Warm (Just "9.10") Nothing)
-      parseArgs ["build", "--deps-only", "--ghc", "9.10"] `shouldBe` Right (OutputFlags False False, Warm (Just "9.10") Nothing)
+      parseArgs ["build", "--ghc", "9.10"] `shouldBe` Right (OutputFlags False False False, Build Nothing (Just "9.10") Nothing)
+      parseArgs ["build", "mylib", "--ghc", "9.8.2"] `shouldBe` Right (OutputFlags False False False, Build (Just "mylib") (Just "9.8.2") Nothing)
+      parseArgs ["warm", "--ghc", "9.10"] `shouldBe` Right (OutputFlags False False False, Warm (Just "9.10") Nothing)
+      parseArgs ["build", "--deps-only", "--ghc", "9.10"] `shouldBe` Right (OutputFlags False False False, Warm (Just "9.10") Nothing)
 
     it "parses `new <name>` (flat default) and `new --workspace <name>`" $ do
-      parseArgs ["new", "myapp"] `shouldBe` Right (OutputFlags False False, New "myapp" False)
-      parseArgs ["new", "--workspace", "myapp"] `shouldBe` Right (OutputFlags False False, New "myapp" True)
+      parseArgs ["new", "myapp"] `shouldBe` Right (OutputFlags False False False, New "myapp" False)
+      parseArgs ["new", "--workspace", "myapp"] `shouldBe` Right (OutputFlags False False False, New "myapp" True)
 
     it "parses `add <pkg>` with its argument" $
-      parseArgs ["add", "aeson"] `shouldBe` Right (OutputFlags False False, Add "aeson" False)
+      parseArgs ["add", "aeson"] `shouldBe` Right (OutputFlags False False False, Add "aeson" False)
 
     it "parses `clean`" $
-      parseArgs ["clean"] `shouldBe` Right (OutputFlags False False, Clean)
+      parseArgs ["clean"] `shouldBe` Right (OutputFlags False False False, Clean)
 
     it "parses `gc`" $
-      parseArgs ["gc"] `shouldBe` Right (OutputFlags False False, Gc)
+      parseArgs ["gc"] `shouldBe` Right (OutputFlags False False False, Gc)
 
     it "parses the version command and the --version/-V flags (gtv.3)" $ do
-      parseArgs ["version"] `shouldBe` Right (OutputFlags False False, Version)
-      parseArgs ["--version"] `shouldBe` Right (OutputFlags False False, Version)
-      parseArgs ["-V"] `shouldBe` Right (OutputFlags False False, Version)
+      parseArgs ["version"] `shouldBe` Right (OutputFlags False False False, Version)
+      parseArgs ["--version"] `shouldBe` Right (OutputFlags False False False, Version)
+      parseArgs ["-V"] `shouldBe` Right (OutputFlags False False False, Version)
 
     it "zincVersionLine reads `zinc <semver>` (plus optional commit/date)" $
       zincVersionLine `shouldSatisfy` isInfixOf ("zinc " ++ zincVersion)
@@ -964,39 +970,39 @@ main = hspec $ do
       (tomlVer, flakeVer) `shouldBe` (zincVersion, Just zincVersion)
 
     it "parses `outdated` and `outdated --all` (90j.1)" $ do
-      parseArgs ["outdated"] `shouldBe` Right (OutputFlags False False, Outdated False)
-      parseArgs ["outdated", "--all"] `shouldBe` Right (OutputFlags False False, Outdated True)
+      parseArgs ["outdated"] `shouldBe` Right (OutputFlags False False False, Outdated False)
+      parseArgs ["outdated", "--all"] `shouldBe` Right (OutputFlags False False False, Outdated True)
 
     it "parses the nested `cache push` (vwn.5)" $
-      parseArgs ["cache", "push"] `shouldBe` Right (OutputFlags False False, CachePush)
+      parseArgs ["cache", "push"] `shouldBe` Right (OutputFlags False False False, CachePush)
 
     it "no args / help / --help parse to the friendly Help overview (hw6.6)" $ do
-      parseArgs [] `shouldBe` Right (OutputFlags False False, Help)
-      parseArgs ["help"] `shouldBe` Right (OutputFlags False False, Help)
-      parseArgs ["--help"] `shouldBe` Right (OutputFlags False False, Help)
+      parseArgs [] `shouldBe` Right (OutputFlags False False False, Help)
+      parseArgs ["help"] `shouldBe` Right (OutputFlags False False False, Help)
+      parseArgs ["--help"] `shouldBe` Right (OutputFlags False False False, Help)
 
     it "helpOverview lists the common commands grouped" $
       all (`isInfixOf` helpOverview) ["Usage: zinc", "new", "build", "run", "Getting started:"]
         `shouldBe` True
 
     it "parses `repl` with no target" $
-      parseArgs ["repl"] `shouldBe` Right (OutputFlags False False, Repl Nothing)
+      parseArgs ["repl"] `shouldBe` Right (OutputFlags False False False, Repl Nothing)
 
     it "parses `repl <target>`" $
-      parseArgs ["repl", "mylib"] `shouldBe` Right (OutputFlags False False, Repl (Just "mylib"))
+      parseArgs ["repl", "mylib"] `shouldBe` Right (OutputFlags False False False, Repl (Just "mylib"))
 
     it "parses `test` with no target" $
-      parseArgs ["test"] `shouldBe` Right (OutputFlags False False, Test Nothing)
+      parseArgs ["test"] `shouldBe` Right (OutputFlags False False False, Test Nothing)
 
     it "parses `update` (with --dry-run)" $ do
-      parseArgs ["update"] `shouldBe` Right (OutputFlags False False, Update Nothing False)
-      parseArgs ["update", "--dry-run"] `shouldBe` Right (OutputFlags False False, Update Nothing True)
+      parseArgs ["update"] `shouldBe` Right (OutputFlags False False False, Update Nothing False)
+      parseArgs ["update", "--dry-run"] `shouldBe` Right (OutputFlags False False False, Update Nothing True)
 
     it "parses `run [TARGET] [-- ARGS]` (target first, then program args)" $ do
-      parseArgs ["run"] `shouldBe` Right (OutputFlags False False, Run Nothing [] Nothing)
-      parseArgs ["run", "web"] `shouldBe` Right (OutputFlags False False, Run (Just "web") [] Nothing)
-      parseArgs ["run", "web", "--", "a", "b"] `shouldBe` Right (OutputFlags False False, Run (Just "web") ["a", "b"] Nothing)
-      parseArgs ["run", "--target", "wasm32-wasi"] `shouldBe` Right (OutputFlags False False, Run Nothing [] (Just "wasm32-wasi"))
+      parseArgs ["run"] `shouldBe` Right (OutputFlags False False False, Run Nothing [] Nothing)
+      parseArgs ["run", "web"] `shouldBe` Right (OutputFlags False False False, Run (Just "web") [] Nothing)
+      parseArgs ["run", "web", "--", "a", "b"] `shouldBe` Right (OutputFlags False False False, Run (Just "web") ["a", "b"] Nothing)
+      parseArgs ["run", "--target", "wasm32-wasi"] `shouldBe` Right (OutputFlags False False False, Run Nothing [] (Just "wasm32-wasi"))
 
     it "rejects an unknown subcommand" $
       parseArgs ["frobnicate"] `shouldSatisfy` isLeft
@@ -1819,10 +1825,10 @@ main = hspec $ do
       map formatName [Docker, Static, Bundle, NixClosure] `shouldBe` ["docker", "static", "bundle", "nix"]
 
     it "parses the `package <format>` verb with --tag, -o and --to" $ do
-      parseArgs ["package", "docker"] `shouldBe` Right (OutputFlags False False, Package "docker" Nothing Nothing Nothing)
-      parseArgs ["package", "docker", "--tag", "app:1.0"] `shouldBe` Right (OutputFlags False False, Package "docker" (Just "app:1.0") Nothing Nothing)
-      parseArgs ["package", "nix", "-o", "./dist"] `shouldBe` Right (OutputFlags False False, Package "nix" Nothing (Just "./dist") Nothing)
-      parseArgs ["package", "nix", "--to", "ssh://build-host"] `shouldBe` Right (OutputFlags False False, Package "nix" Nothing Nothing (Just "ssh://build-host"))
+      parseArgs ["package", "docker"] `shouldBe` Right (OutputFlags False False False, Package "docker" Nothing Nothing Nothing)
+      parseArgs ["package", "docker", "--tag", "app:1.0"] `shouldBe` Right (OutputFlags False False False, Package "docker" (Just "app:1.0") Nothing Nothing)
+      parseArgs ["package", "nix", "-o", "./dist"] `shouldBe` Right (OutputFlags False False False, Package "nix" Nothing (Just "./dist") Nothing)
+      parseArgs ["package", "nix", "--to", "ssh://build-host"] `shouldBe` Right (OutputFlags False False False, Package "nix" Nothing Nothing (Just "ssh://build-host"))
 
     it "generates a packaging flake: packages.default wraps the binary, plus a docker image (7m6.2)" $ do
       let fl = packagingFlake "myapp" "myapp" "1.0" ["/nix/store/s8q3rch0wd3shdnznz9bcj8mj6pvz1gr-gmp-with-cxx-6.3.0"]
@@ -2639,9 +2645,9 @@ main = hspec $ do
   describe "zinc skill add (dp6.2)" $ do
     it "parses `skill add <repo> [--ref]`" $ do
       parseArgs ["skill", "add", "https://github.com/o/s"]
-        `shouldBe` Right (OutputFlags False False, SkillAdd "https://github.com/o/s" Nothing)
+        `shouldBe` Right (OutputFlags False False False, SkillAdd "https://github.com/o/s" Nothing)
       parseArgs ["skill", "add", "https://github.com/o/s", "--ref", "v1"]
-        `shouldBe` Right (OutputFlags False False, SkillAdd "https://github.com/o/s" (Just "v1"))
+        `shouldBe` Right (OutputFlags False False False, SkillAdd "https://github.com/o/s" (Just "v1"))
 
     it "skillRepoName drops a .git suffix and trailing slash" $ do
       skillRepoName "https://github.com/o/brainstorming.git" `shouldBe` "brainstorming"
@@ -2684,9 +2690,9 @@ main = hspec $ do
 
   describe "zinc skill list / remove / sync (dp6.3, dp6.4)" $ do
     it "parses `skill list`, `skill remove <name>`, `skill sync`" $ do
-      parseArgs ["skill", "list"] `shouldBe` Right (OutputFlags False False, SkillList)
-      parseArgs ["skill", "remove", "brainstorming"] `shouldBe` Right (OutputFlags False False, SkillRemove "brainstorming")
-      parseArgs ["skill", "sync"] `shouldBe` Right (OutputFlags False False, SkillSync)
+      parseArgs ["skill", "list"] `shouldBe` Right (OutputFlags False False False, SkillList)
+      parseArgs ["skill", "remove", "brainstorming"] `shouldBe` Right (OutputFlags False False False, SkillRemove "brainstorming")
+      parseArgs ["skill", "sync"] `shouldBe` Right (OutputFlags False False False, SkillSync)
 
     it "renders an installed-skills table (and an empty-state line)" $ do
       renderSkillList [] `shouldSatisfy` isInfixOf "No skills installed"
@@ -3957,23 +3963,23 @@ main = hspec $ do
   describe "deploy verb parsing (nbk.1)" $ do
     it "parses `deploy <host>` with the v1 flag surface" $ do
       parseArgs ["deploy", "gareth@box"]
-        `shouldBe` Right (OutputFlags False False, Deploy "gareth@box" Nothing False False False False Nothing "recreate")
+        `shouldBe` Right (OutputFlags False False False, Deploy "gareth@box" Nothing False False False False Nothing "recreate")
       parseArgs ["deploy", "homelab", "--service", "myapp", "--dry-run"]
-        `shouldBe` Right (OutputFlags False False, Deploy "homelab" (Just "myapp") False False True False Nothing "recreate")
+        `shouldBe` Right (OutputFlags False False False, Deploy "homelab" (Just "myapp") False False True False Nothing "recreate")
       parseArgs ["deploy", "box", "--init"]
-        `shouldBe` Right (OutputFlags False False, Deploy "box" Nothing True False False False Nothing "recreate")
+        `shouldBe` Right (OutputFlags False False False, Deploy "box" Nothing True False False False Nothing "recreate")
       parseArgs ["deploy", "box", "--rollback"]
-        `shouldBe` Right (OutputFlags False False, Deploy "box" Nothing False True False False Nothing "recreate")
+        `shouldBe` Right (OutputFlags False False False, Deploy "box" Nothing False True False False Nothing "recreate")
 
     it "parses --list and --rollback-to <gen> (nbk.7)" $ do
       parseArgs ["deploy", "box", "--list"]
-        `shouldBe` Right (OutputFlags False False, Deploy "box" Nothing False False False True Nothing "recreate")
+        `shouldBe` Right (OutputFlags False False False, Deploy "box" Nothing False False False True Nothing "recreate")
       parseArgs ["deploy", "box", "--rollback-to", "3"]
-        `shouldBe` Right (OutputFlags False False, Deploy "box" Nothing False False False False (Just 3) "recreate")
+        `shouldBe` Right (OutputFlags False False False, Deploy "box" Nothing False False False False (Just 3) "recreate")
 
     it "parses --strategy (default recreate; blue-green opt-in) (nbk.8)" $ do
       parseArgs ["deploy", "box", "--strategy", "blue-green"]
-        `shouldBe` Right (OutputFlags False False, Deploy "box" Nothing False False False False Nothing "blue-green")
+        `shouldBe` Right (OutputFlags False False False, Deploy "box" Nothing False False False False Nothing "blue-green")
 
   describe "Zinc.Deploy --init snippet (nbk.5)" $ do
     it "generates a NixOS trusted-users + linger snippet for the deploy user" $ do

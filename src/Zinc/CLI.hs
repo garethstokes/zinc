@@ -50,11 +50,11 @@ parseArgs args
   -- `--version`/`-V` are top-level flags (not subcommands), so short-circuit
   -- them before the subparser, which would reject them (zinc-gtv.3). The
   -- `version` subcommand flows through the parser below.
-  | args `elem` [["--version"], ["-V"]] = Right (OutputFlags False False, Version)
+  | args `elem` [["--version"], ["-V"]] = Right (OutputFlags False False False, Version)
   -- No args / `help` / `--help` show a friendly overview (exit 0), not
   -- optparse's terse "Missing: COMMAND" (zinc-hw6.6). Per-command help
   -- (`zinc build --help`) still flows through the subparser.
-  | args `elem` [[], ["help"], ["--help"], ["-h"]] = Right (OutputFlags False False, Help)
+  | args `elem` [[], ["help"], ["--help"], ["-h"]] = Right (OutputFlags False False False, Help)
 parseArgs args =
   case execParserPure defaultPrefs opts args of
     Success r           -> Right r
@@ -131,6 +131,8 @@ commandParser =
       OutputFlags
         <$> switch (long "json" <> help "Machine-readable output (JSONL stream + result envelope)")
         <*> switch (long "quiet" <> short 'q' <> help "Suppress progress output")
+        -- No -v short form: it reads as --version in too many CLIs (zinc-1sk).
+        <*> switch (long "verbose" <> help "Print full tool output on failure (e.g. GHC's complete stderr); ZINC_VERBOSE=1 is the env equivalent")
 
 -- | The friendly overview shown for @zinc@ (no args), @zinc help@, and
 -- @zinc --help@ (zinc-hw6.6) — a curated, grouped command list, not optparse's
@@ -173,5 +175,5 @@ helpOverview =
     , "  version            Print the zinc version"
     , ""
     , "Run `zinc <command> --help` for command-specific options."
-    , "Every command accepts --json (machine output) and --quiet."
+    , "Every command accepts --json (machine output), --quiet, and --verbose (full tool output on failure)."
     ]

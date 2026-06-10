@@ -94,15 +94,17 @@ data OutputMode
 -- | The parsed output flags (the runtime mode is resolved from these +
 -- TTY/@NO_COLOR@ at 'Main' via 'resolveMode').
 data OutputFlags = OutputFlags
-  { ofJson  :: Bool
-  , ofQuiet :: Bool
+  { ofJson    :: Bool
+  , ofQuiet   :: Bool
+  , ofVerbose :: Bool -- ^ full tool output on failure (zinc-1sk); @ZINC_VERBOSE@ is the env fallback
   }
   deriving (Eq, Show)
 
 -- | Resolve the one 'OutputMode' for a run: @--json@ → 'Machine'; otherwise
 -- human, with color iff stdout is a TTY, @NO_COLOR@ is unset, and not @--quiet@.
+-- Verbosity doesn't affect the mode (it only widens failure output).
 resolveMode :: OutputFlags -> IO OutputMode
-resolveMode (OutputFlags json quiet)
+resolveMode (OutputFlags json quiet _verbose)
   | json = pure Machine
   | otherwise = do
       tty <- hIsTerminalDevice stdout

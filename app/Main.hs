@@ -5,7 +5,7 @@ import System.IO.Error (catchIOError)
 import Data.List (intercalate, nub)
 import Zinc.Lock (lockSystemLibs, parseLock)
 import Data.Maybe (fromMaybe, maybeToList)
-import System.Environment (getArgs, lookupEnv)
+import System.Environment (getArgs, lookupEnv, setEnv)
 import System.Exit (ExitCode (ExitFailure), exitWith)
 import System.IO (hPutStrLn, stderr)
 import System.Process (CreateProcess (std_err, std_in, std_out), StdStream (Inherit), createProcess, proc, waitForProcess)
@@ -33,7 +33,7 @@ import Zinc.Package (parsePackageFormat)
 import Zinc.Skill (LockedSkill (..))
 import Zinc.SkillCmd (renderSkillList, runSkillAdd, runSkillList, runSkillRemove, runSkillSync)
 import Zinc.Outdated (outdatedJson, renderOutdated, runOutdated)
-import Zinc.Output (OutputEvent (..), OutputMode (..), emit, resolveMode, withRenderer)
+import Zinc.Output (OutputEvent (..), OutputMode (..), emit, ofVerbose, resolveMode, withRenderer)
 import Zinc.Perf (perfSummaryJson, renderPerf, runPerf)
 import Zinc.Prime (runOnboard, runPrime)
 import Zinc.Report (PackageReport, PackageStatus (Built, Cached), boExes, boPackages, buildBreakdownLine, buildDataJson, buildSummaryLine, packageReportJson, prName, prStatus, prTimeMs, renderResolution, resolutionJson, timingJson)
@@ -48,6 +48,10 @@ main = do
     Left err          -> putStrLn err
     Right (flags, cmd) -> do
       mode <- resolveMode flags
+      -- --verbose and ZINC_VERBOSE share one switch: the flag sets the env var,
+      -- and 'isVerbose' (read at failure time in failCmd) sees either source —
+      -- no verbosity plumbing through every dispatch arm (zinc-1sk).
+      when (ofVerbose flags) (setEnv "ZINC_VERBOSE" "1")
       when (buildsToolchain cmd) (provisionToolchainHere (targetOf cmd) (ghcOverrideOf cmd))
       dispatch mode cmd
 
@@ -125,7 +129,7 @@ failCmd mode e = do
   verbose <- isVerbose
   case rawToolOutput e of
     Just raw | verbose -> hPutStrLn stderr ("\n--- full compiler output (ZINC_VERBOSE) ---\n" ++ raw)
-    Just _             -> hPutStrLn stderr "   (set ZINC_VERBOSE=1 to see the full compiler output)"
+    Just _             -> hPutStrLn stderr "   (re-run with --verbose to see the full compiler output)"
     Nothing            -> pure ()
   exitWith (exitCodeFor e)
 
