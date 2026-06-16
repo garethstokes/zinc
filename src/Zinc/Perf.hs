@@ -4,8 +4,9 @@
 -- against a rolling-median baseline. This closes the perf feedback loop for the
 -- inner-loop (5ko) and caching (vwn) work: measure -> persist -> analyze.
 --
--- "Slowest dependencies" (perf spec §3.2) needs per-package @timeMs@, which is
--- not yet recorded (deferred follow-up), so it is intentionally omitted here.
+-- "Slowest dependencies" (perf spec §3.2) ranks packages by cumulative compile
+-- @timeMs@. Cache hits aren't compiles (0ms), so a fully-cached project reports
+-- no slowest deps rather than a list of 0ms entries.
 module Zinc.Perf
   ( PerfRecord (..)
   , CommandStats (..)
@@ -27,6 +28,7 @@ import Data.Ord (Down (Down), comparing)
 import System.Directory (doesFileExist)
 import Zinc.Json (Json (..), parseJson)
 import Zinc.Metrics (metricsPath)
+import Zinc.Report (fmtMs)
 
 -- | The slice of a metrics record the analyzer needs (one build invocation).
 data PerfRecord = PerfRecord
@@ -70,10 +72,13 @@ data PerfSummary = PerfSummary
 
 -- | The slowest dependencies across all recorded builds, ranked by cumulative
 -- compile time (perf spec §3.2). Returns up to the top N as
--- @(name, cumulativeMs, builds)@.
+-- @(name, cumulativeMs, compiles)@. Cache hits aren't compiles (they record
+-- 0ms), so they are excluded outright: a dep's count reflects how many times it
+-- was actually compiled, not how many builds it appeared in, and a fully-cached
+-- project reports no slowest deps rather than a list of 0ms entries.
 slowestDeps :: [PerfRecord] -> [(String, Int, Int)]
 slowestDeps recs =
-  let byName = Map.fromListWith (\(t1, c1) (t2, c2) -> (t1 + t2, c1 + c2)) [(n, (ms, 1 :: Int)) | r <- recs, (n, ms) <- perfPackages r]
+  let byName = Map.fromListWith (\(t1, c1) (t2, c2) -> (t1 + t2, c1 + c2)) [(n, (ms, 1 :: Int)) | r <- recs, (n, ms) <- perfPackages r, ms > 0]
       ranked = sortBy (comparing (Down . (\(_, (t, _)) -> t))) (Map.toList byName)
    in [(n, t, c) | (n, (t, c)) <- take 5 ranked]
 
@@ -196,16 +201,16 @@ renderPerf s
   | otherwise = unlines (header : map cmdLine (sumCommands s) ++ cacheLine : regLines ++ slowLines)
   where
     header = show (sumRecords s) ++ " build(s) recorded:"
-    cmdLine c = "  " ++ csCommand c ++ ": " ++ show (csCount c) ++ " run(s), p50 " ++ show (csP50Ms c) ++ "ms, p95 " ++ show (csP95Ms c) ++ "ms"
+    cmdLine c = "  " ++ csCommand c ++ ": " ++ show (csCount c) ++ " run(s), p50 " ++ fmtMs (csP50Ms c) ++ ", p95 " ++ fmtMs (csP95Ms c)
     cacheLine = "  cache: " ++ show (hitRatePct s) ++ "% hit-rate (" ++ show (sumCacheHits s) ++ " hits, " ++ show (sumCacheMiss s) ++ " misses)"
     slowLines = case sumSlowest s of
       [] -> []
-      ds -> "  slowest deps (cumulative):" : ["    " ++ n ++ ": " ++ show t ++ "ms over " ++ show c ++ " build(s)" | (n, t, c) <- ds]
+      ds -> "  slowest deps (cumulative):" : ["    " ++ n ++ ": " ++ fmtMs t ++ " over " ++ show c ++ " compile(s)" | (n, t, c) <- ds]
     regLines = case sumRegression s of
       Nothing -> []
       Just r
-        | regSlowdown r -> ["  REGRESSION: " ++ regCommand r ++ " " ++ show (regCurrentMs r) ++ "ms vs " ++ show (regBaselineMs r) ++ "ms baseline"]
-        | otherwise -> ["  latest " ++ regCommand r ++ ": " ++ show (regCurrentMs r) ++ "ms vs " ++ show (regBaselineMs r) ++ "ms baseline (ok)"]
+        | regSlowdown r -> ["  REGRESSION: " ++ regCommand r ++ " " ++ fmtMs (regCurrentMs r) ++ " vs " ++ fmtMs (regBaselineMs r) ++ " baseline"]
+        | otherwise -> ["  latest " ++ regCommand r ++ ": " ++ fmtMs (regCurrentMs r) ++ " vs " ++ fmtMs (regBaselineMs r) ++ " baseline (ok)"]
 
 -- | Read and decode the workspace's metrics history (chronological). Missing
 -- file or unparseable lines yield no records rather than an error.

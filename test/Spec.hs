@@ -849,12 +849,29 @@ main = hspec $ do
       renderJson (perfSummaryJson (summarize []))
         `shouldBe` "{\"records\":0,\"commands\":[],\"cache\":{\"hits\":0,\"misses\":0,\"hitRatePct\":0},\"regression\":null,\"slowestDeps\":[]}"
 
-    it "ranks slowest dependencies by cumulative build time across records (nti)" $ do
+    it "ranks slowest deps by cumulative compile time, counting compiles not cache hits (nti)" $ do
       let recs =
             [ PerfRecord "build" 100 0 1 [("alpha", 900), ("beta", 100)]
             , PerfRecord "build" 50 1 0 [("alpha", 0), ("beta", 100)]
             ]
-      sumSlowest (summarize recs) `shouldBe` [("alpha", 900, 2), ("beta", 200, 2)]
+      -- alpha compiled once (900ms) then cached (0ms) -> 1 compile; beta twice.
+      sumSlowest (summarize recs) `shouldBe` [("alpha", 900, 1), ("beta", 200, 2)]
+
+    it "drops cache-only (0ms) deps from the slowest list (a fully-cached build has none)" $ do
+      let recs = [PerfRecord "build" 50 5 0 [("alpha", 0), ("beta", 0)]]
+          rendered = renderPerf (summarize recs)
+      sumSlowest (summarize recs) `shouldBe` []
+      rendered `shouldNotSatisfy` isInfixOf "slowest deps"
+      rendered `shouldNotSatisfy` isInfixOf "alpha"
+
+    it "renders durations human-readably (ms under a second, seconds above)" $ do
+      let recs =
+            [ PerfRecord "build" 16541 0 1 [("alpha", 22665)]
+            , PerfRecord "build" 22665 402 0 [("alpha", 22665)]
+            ]
+          rendered = renderPerf (summarize recs)
+      rendered `shouldSatisfy` isInfixOf "22.6s"
+      rendered `shouldNotSatisfy` isInfixOf "22665ms"
 
   describe "metrics persistence (hbv.2)" $ do
     it "renders a metrics record as one JSON line (packages omitted when empty)" $

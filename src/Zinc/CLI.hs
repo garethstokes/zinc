@@ -165,6 +165,7 @@ helpOverview =
     , "  graph              The closure build DAG"
     , "  explain <pkg>      Why a package is in the build"
     , "  closure <pkg>      A package's non-boot closure + repos"
+    , "  perf               Build performance history (latency, cache, regressions)"
     , "  doctor             Diagnose environment and project problems"
     , ""
     , "Other:"
